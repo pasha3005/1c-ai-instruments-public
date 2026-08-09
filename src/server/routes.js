@@ -1,0 +1,572 @@
+/**
+ * HTTP API приложения.
+ *
+ * Аудит запускается асинхронно: POST /api/audits возвращает идентификатор,
+ * а ход выполнения клиент читает через SSE (/api/audits/:id/stream).
+ */
+
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import { Router, sendJson, sendText, sendError, readJsonBody, openSse } from './http.js';
+import { createProgress, getProgress, runningProgresses, STAGES } from './progress.js';
+import { runAudit } from '../pipeline/runAudit.js';
+import * as store from '../store/auditStore.js';
+import { newAuditId } from '../util/id.js';
+import { discoverPlatforms } from '../onec/platform.js';
+import { parseConnection } from '../onec/connection.js';
+import { isAvailable as aiAvailable } from '../ai/client.js';
+import { pickPath, dialogsAvailable, FILE_FILTERS, defaultInitialDir } from '../util/dialogs.js';
+import { inspectWorkDir, clearWorkDir } from '../util/workDir.js';
+import { licenseStatus, activate } from '../util/license.js';
+import { renderMarkdown } from '../report/markdownToHtml.js';
+import { openUrl } from '../util/browser.js';
+import { APP, ROOT_DIR, SERVER } from '../config.js';
+import { readText, pathExists } from '../util/fsx.js';
+import { createLogger } from '../util/logger.js';
+
+const log = createLogger('routes');
+
+/**
+ * Маршруты, доступные без ключа.
+ *
+ * `/api/health` — по нему запускаемый экземпляр находит уже работающий и не
+ * плодит второй сервер. `/api/license` — сама форма ввода. `/api/shutdown` —
+ * иначе не введя ключ нельзя было бы завершить работу, а пока процесс жив,
+ * Windows не даёт удалить каталог приложения.
+ */
+const OPEN_PATHS = new Set(['/api/health', '/api/license', '/api/shutdown', '/api/presence']);
+
+/**
+ * Сколько окон интерфейса сейчас открыто.
+ *
+ * Кнопки «Завершить работу» больше нет — пользователь убрал её: закрытие окна
+ * должно останавливать программу само. Отследить закрытие можно только со
+ * стороны сервера: страница при закрытии успевает не всегда, а `beforeunload`
+ * срабатывает и на обновлении страницы. Поэтому окно держит открытым поток
+ * `/api/presence`, и обрыв этого потока — сигнал «окно закрыли».
+ *
+ * Перезагрузка страницы (F5) тоже рвёт поток, поэтому выход не мгновенный:
+ * ждём `GRACE_MS`, и если за это время никто не подключился — завершаемся
+ * вместе со всеми запущенными процессами (их снимает обработчик `exit`).
+ *
+ * Сторож взводится только после первого подключения: при запуске с
+ * ONEC_AUDIT_NO_BROWSER=1 окна нет вовсе, и сервер не должен из-за этого
+ * выключаться.
+ */
+const GRACE_MS = Number(process.env.ONEC_AUDIT_PRESENCE_GRACE_MS || 8000);
+const presence = { clients: 0, seen: false, timer: null };
+
+function clientAttached() {
+  presence.clients += 1;
+  presence.seen = true;
+  if (presence.timer) {
+    clearTimeout(presence.timer);
+    presence.timer = null;
+  }
+}
+
+function clientDetached() {
+  presence.clients = Math.max(0, presence.clients - 1);
+  if (presence.clients > 0 || !presence.seen) return;
+  if (presence.timer) clearTimeout(presence.timer);
+
+  // Пока идёт аудит, отсрочка длиннее. Обрыв потока — не всегда закрытое окно:
+  // браузер может выгрузить неактивную вкладку из памяти, и тогда соединение
+  // пропадает, хотя окно у пользователя открыто. Восемь секунд хватает на
+  // перезагрузку страницы, но не на такой случай, а оборвать четырёхминутный
+  // аудит по ошибке — потеря куда дороже минуты лишней работы сервера.
+  const grace = runningProgresses().length ? GRACE_MS * 8 : GRACE_MS;
+
+  presence.timer = setTimeout(() => {
+    if (presence.clients > 0) return;
+    log.info('Окно приложения закрыто — останавливаем работу');
+    stopEverything();
+  }, grace);
+  presence.timer.unref?.();
+}
+
+/**
+ * Полная остановка: сначала прерываем аудиты, потом выходим.
+ *
+ * Выйти сразу нельзя: внешние процессы платформы (`ibcmd`, конфигуратор,
+ * powershell) переживают родителя и продолжают держать базу. Прерывание
+ * снимает их вместе с потомками (`util/proc.js`), поэтому даём ему секунду —
+ * ровно столько, сколько на практике занимает снятие `ibcmd`.
+ */
+export function stopEverything(delayMs = 1000) {
+  const running = runningProgresses();
+  for (const progress of running) {
+    try {
+      progress.requestCancel();
+    } catch {
+      // Прогресс мог завершиться между выборкой и вызовом.
+    }
+  }
+  const wait = running.length ? delayMs : 200;
+  setTimeout(() => process.exit(0), wait).unref?.();
+}
+
+/**
+ * Ключ проверяется НА СЕРВЕРЕ, а не в интерфейсе: иначе достаточно было бы
+ * обратиться к API напрямую, минуя форму.
+ *
+ * Проверка вешается одной точкой — подменой `match`, а не обёрткой вокруг
+ * каждого обработчика. Так её нельзя забыть у нового маршрута: чтобы маршрут
+ * стал открытым, его надо назвать в `OPEN_PATHS` явно.
+ *
+ * Статика под проверку не попадает — она отдаётся мимо роутера. Иначе форму
+ * ввода ключа неоткуда было бы загрузить.
+ */
+function guardRouter(router) {
+  const match = router.match.bind(router);
+  router.match = (method, pathname) => {
+    const found = match(method, pathname);
+    if (!found || OPEN_PATHS.has(pathname)) return found;
+    return {
+      ...found,
+      handler: async (req, res, ctx) => {
+        if (!(await licenseStatus()).active) {
+          sendError(res, 403, 'Требуется лицензионный ключ', { licenseRequired: true });
+          return undefined;
+        }
+        return found.handler(req, res, ctx);
+      },
+    };
+  };
+  return router;
+}
+
+export function buildRouter() {
+  const router = new Router();
+
+  // --- Служебное ---
+
+  router.get('/api/health', (req, res) => {
+    sendJson(res, 200, { ok: true, app: APP.name, version: APP.version });
+  });
+
+  /**
+   * Признак того, что окно интерфейса открыто.
+   *
+   * Поток держится всё время, пока страница жива; его обрыв означает, что окно
+   * закрыли, и программа останавливается сама — отдельной кнопки выхода больше
+   * нет. Данные по потоку не идут: важен сам факт соединения.
+   */
+  router.get('/api/presence', (req, res) => {
+    const sse = openSse(req, res);
+    clientAttached();
+    sse.send({ ok: true }, 'hello');
+    req.on('close', () => clientDetached());
+  });
+
+  // --- Лицензионный ключ ---
+
+  router.get('/api/license', async (req, res) => {
+    sendJson(res, 200, await licenseStatus());
+  });
+
+  router.post('/api/license', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+    const result = await activate(body.key);
+    if (!result.ok) {
+      sendError(res, 403, result.reason);
+      return;
+    }
+    sendJson(res, 200, { ok: true, active: true, expiresAt: result.expiresAt });
+  });
+
+  /** Сведения об окружении: версии платформы, доступность AI. */
+  router.get('/api/environment', async (req, res) => {
+    const platforms = await discoverPlatforms();
+    sendJson(res, 200, {
+      app: APP.name,
+      version: APP.version,
+      platforms: platforms.map((p) => ({
+        version: p.version,
+        hasIbcmd: Boolean(p.ibcmd),
+        hasComConnector: p.hasComConnector,
+      })),
+      recommendedPlatform: platforms[0]?.version || null,
+      aiConfigured: await aiAvailable(),
+      stages: STAGES,
+      isWindows: process.platform === 'win32',
+      canPickPaths: dialogsAvailable(),
+    });
+  });
+
+  /**
+   * Системный диалог выбора файла или каталога.
+   * Браузер не может отдать форме полный путь, а сервер работает на той же
+   * машине — поэтому диалог показывает он.
+   */
+  router.post('/api/pick', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+
+    const mode = body.mode === 'file' ? 'file' : 'folder';
+    try {
+      const picked = await pickPath({
+        mode,
+        title: String(body.title || '').slice(0, 200),
+        filter: FILE_FILTERS[body.filter] || (mode === 'file' ? FILE_FILTERS.any : ''),
+        initial: defaultInitialDir(body.initial),
+      });
+      sendJson(res, 200, { path: picked, cancelled: picked === '' });
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
+  });
+
+  /**
+   * README — для раздела «О программе».
+   *
+   * Отдаётся уже разметкой: разбирать Markdown в браузере нечем, а тянуть ради
+   * этого библиотеку нельзя — у продукта ноль зависимостей. Тот же
+   * преобразователь используется в отчёте.
+   */
+  router.get('/api/about', async (req, res) => {
+    const file = path.join(ROOT_DIR, 'README.md');
+    if (!(await pathExists(file))) {
+      sendError(res, 404, 'Файл README.md не найден рядом с программой');
+      return;
+    }
+    sendJson(res, 200, {
+      html: renderMarkdown(await readText(file)),
+      version: APP.version,
+      vendor: APP.vendor,
+    });
+  });
+
+  /** Разбор пути к базе — используется формой для подсказки типа базы. */
+  router.post('/api/parse-path', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const conn = parseConnection(body.infobasePath);
+      sendJson(res, 200, { kind: conn.kind, display: conn.display });
+    } catch (err) {
+      sendJson(res, 200, { error: err.message });
+    }
+  });
+
+  // --- Аудиты ---
+
+  router.post('/api/audits', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+
+    if (!body.infobasePath || !String(body.infobasePath).trim()) {
+      sendError(res, 400, 'Не указан путь к информационной базе');
+      return;
+    }
+
+    // Каталог выгрузки обязателен. Раньше при пустом значении выгрузка уходила
+    // во временный каталог, и проверить, убралось ли за аудитом, было негде —
+    // а на ERP это семь гигабайт. Пусть пользователь всегда называет место сам.
+    if (!body.workDir || !String(body.workDir).trim()) {
+      sendError(res, 400, 'Не указан каталог для выгрузки конфигурации');
+      return;
+    }
+
+    const auditId = newAuditId();
+    const input = {
+      infobasePath: String(body.infobasePath).trim(),
+      platformVersion: String(body.platformVersion || '').trim(),
+      vendorConfigPath: String(body.vendorConfigPath || '').trim(),
+      workDir: String(body.workDir || '').trim(),
+      user: String(body.user || '').trim(),
+      password: typeof body.password === 'string' ? body.password : '',
+      clientName: String(body.clientName || '').trim(),
+      hourlyRate: Number(body.hourlyRate) || 0,
+      collectLiveData: body.collectLiveData !== false,
+      keepDump: body.keepDump === true,
+      // Тема отчёта. По умолчанию тёмная — как окно программы.
+      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      // Каталог выгрузки задаётся всегда — см. проверку ниже.
+      // По умолчанию снят: типовой код вендора не оценивается.
+      analyzeVendorCode: body.analyzeVendorCode === true,
+    };
+
+    await store.createAudit(auditId, input);
+    const progress = createProgress(auditId);
+
+    // Аудит выполняется в фоне; ошибки уже отражены в progress и meta.
+    runAudit({ auditId, input, progress }).catch((err) => {
+      log.warn(`Фоновый аудит ${auditId} завершился ошибкой: ${err.message}`);
+    });
+
+    sendJson(res, 202, { auditId });
+  });
+
+  /** Поток событий выполнения. */
+  router.get('/api/audits/:id/stream', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress) {
+      sendError(res, 404, 'Аудит не найден или уже выгружен из памяти');
+      return;
+    }
+
+    const sse = openSse(req, res);
+    sse.send(progress.snapshot(), 'snapshot');
+
+    const onEvent = (event) => {
+      sse.send({ ...event, snapshot: progress.snapshot() }, event.type);
+      if (event.type === 'finish' || event.type === 'error' || event.type === 'cancelled') {
+        setTimeout(() => sse.close(), 250).unref?.();
+      }
+    };
+
+    progress.on('event', onEvent);
+    req.on('close', () => progress.off('event', onEvent));
+  });
+
+  /** Прерывание выполняющегося аудита по кнопке «Прервать». */
+  router.post('/api/audits/:id/cancel', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress) {
+      sendError(res, 404, 'Аудит не найден: возможно, он уже завершён');
+      return;
+    }
+    if (progress.status !== 'running') {
+      sendError(res, 409, 'Аудит уже завершён');
+      return;
+    }
+    progress.requestCancel();
+    log.info(`Запрошено прерывание аудита ${params.id}`);
+    sendJson(res, 202, { ok: true });
+  });
+
+  /**
+   * Что лежит в каталоге выгрузки — чтобы предупредить перед очисткой
+   * при повторном запуске после прерывания.
+   */
+  router.post('/api/workdir/inspect', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, await inspectWorkDir(body.workDir));
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
+  });
+
+  /** Очистка каталога выгрузки. Вызывается только после подтверждения на форме. */
+  router.post('/api/workdir/clear', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const result = await clearWorkDir(body.workDir);
+      log.info(`Каталог выгрузки очищен: ${result.dir} (удалено элементов: ${result.removed})`);
+      sendJson(res, 200, result);
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
+  });
+
+  /** Текущее состояние (для клиентов без SSE и при перезагрузке страницы). */
+  router.get('/api/audits/:id/status', async (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (progress) {
+      sendJson(res, 200, progress.snapshot());
+      return;
+    }
+    const meta = await store.getMeta(params.id);
+    if (!meta) {
+      sendError(res, 404, 'Аудит не найден');
+      return;
+    }
+    sendJson(res, 200, {
+      auditId: meta.id,
+      status: meta.status,
+      error: meta.error,
+      durationMs: meta.durationMs ?? null,
+      percent: meta.status === 'done' ? 100 : 0,
+      stages: [],
+      log: [],
+      restored: true,
+    });
+  });
+
+  router.get('/api/audits', async (req, res, { query }) => {
+    const limit = Number(query.get('limit')) || 100;
+    sendJson(res, 200, { items: await store.listAudits({ limit }) });
+  });
+
+  router.get('/api/audits/:id', async (req, res, { params }) => {
+    const meta = await store.getMeta(params.id);
+    if (!meta) {
+      sendError(res, 404, 'Аудит не найден');
+      return;
+    }
+    sendJson(res, 200, meta);
+  });
+
+  /** Полный результат анализа в JSON — для интеграций и повторной обработки. */
+  router.get('/api/audits/:id/result', async (req, res, { params }) => {
+    const result = await store.getResult(params.id);
+    if (!result) {
+      sendError(res, 404, 'Результат ещё не готов');
+      return;
+    }
+    sendJson(res, 200, result);
+  });
+
+  router.get('/api/audits/:id/report.html', async (req, res, { params }) => {
+    const html = await store.readReport(params.id, 'html');
+    if (!html) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    sendText(res, 200, html, 'text/html; charset=utf-8');
+  });
+
+  router.get('/api/audits/:id/report.md', async (req, res, { params }) => {
+    const md = await store.readReport(params.id, 'markdown');
+    if (!md) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="audit-${params.id}.md"`,
+    });
+    res.end(md);
+  });
+
+  /**
+   * Открыть готовый отчёт отдельным окном.
+   *
+   * Делает это сервер, а не страница. `window.open` из обработчика события
+   * SSE браузер считает всплывающим окном и блокирует: нажатия кнопки не было,
+   * отчёт открывается сам по завершении аудита.
+   */
+  router.post('/api/audits/:id/open', async (req, res, { params }) => {
+    if (!(await store.readReport(params.id, 'html'))) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    openUrl(`http://${SERVER.host}:${SERVER.port}/api/audits/${params.id}/report.html`, {
+      appWindow: SERVER.appWindow,
+      size: '1400,960',
+    });
+    sendJson(res, 200, { ok: true });
+  });
+
+  /**
+   * Сохранить отчёт куда укажет пользователь.
+   *
+   * Через `<a download>` браузер положил бы файл в свою папку загрузок
+   * с именем вида `report.html`, и выбора места не было бы вовсе. Диалог
+   * показывает сервер — он работает на этой же машине, — а имя файла
+   * складывается из организации, конфигурации и даты, чтобы десяток отчётов
+   * в одной папке различались без открытия.
+   */
+  router.post('/api/audits/:id/save', async (req, res, { params }) => {
+    const html = await store.readReport(params.id, 'html');
+    if (!html) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    if (!dialogsAvailable()) {
+      sendError(res, 400, 'Диалог сохранения доступен только под Windows');
+      return;
+    }
+
+    const meta = await store.getMeta(params.id);
+    try {
+      const target = await pickPath({
+        mode: 'save',
+        title: 'Куда сохранить отчёт об обследовании',
+        filter: FILE_FILTERS.html,
+        fileName: reportFileName(meta),
+        initial: downloadsDir(),
+      });
+      if (!target) {
+        sendJson(res, 200, { cancelled: true });
+        return;
+      }
+      const file = /\.html?$/i.test(target) ? target : `${target}.html`;
+      await fs.writeFile(file, html, 'utf8');
+      log.info(`Отчёт ${params.id} сохранён: ${file}`);
+      sendJson(res, 200, { cancelled: false, path: file });
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
+  });
+
+  router.delete('/api/audits/:id', async (req, res, { params }) => {
+    await store.deleteAudit(params.id);
+    sendJson(res, 200, { ok: true });
+  });
+
+  // --- Управление приложением ---
+
+  /**
+   * Остановка сервера. Нужна, чтобы новая версия занимала тот же адрес:
+   * `node src/main.js --restart` просит работающий экземпляр освободить порт.
+   *
+   * Заголовок обязателен намеренно: он вызывает предварительный CORS-запрос,
+   * поэтому произвольная веб-страница не сможет остановить приложение.
+   */
+  router.post('/api/shutdown', (req, res) => {
+    if (req.headers['x-onec-audit-control'] !== '1') {
+      sendError(res, 403, 'Требуется заголовок X-Onec-Audit-Control');
+      return;
+    }
+    sendJson(res, 200, { ok: true });
+    log.info('Получена команда остановки, завершаем работу');
+    stopEverything(200);
+  });
+
+  return guardRouter(router);
+}
+
+/**
+ * Имя файла отчёта: «Обследование — Организация — Конфигурация — дата.html».
+ *
+ * Понятное имя важнее короткого: отчёты складывают в одну папку по нескольким
+ * заказчикам, и `report(3).html` там не различить. Запрещённые в именах файлов
+ * знаки заменяются, длина ограничена — Windows не примет путь длиннее 255.
+ */
+export function reportFileName(meta) {
+  const summary = meta?.summary || {};
+  const parts = ['Обследование'];
+  if (meta?.input?.clientName) parts.push(meta.input.clientName);
+  if (summary.configName) parts.push(summary.configName);
+  if (summary.configVersion) parts.push(summary.configVersion);
+  parts.push(dateStamp(meta?.finishedAt || meta?.createdAt));
+
+  const name = parts
+    .map((p) => String(p).replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' — ');
+
+  return `${name.slice(0, 150)}.html`;
+}
+
+function dateStamp(iso) {
+  const date = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** Куда предложить сохранить: папка «Загрузки», если она есть. */
+function downloadsDir() {
+  const candidate = path.join(os.homedir(), 'Downloads');
+  return defaultInitialDir(candidate);
+}

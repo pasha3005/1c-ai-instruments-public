@@ -1,0 +1,13 @@
+{
+  "name": "AI-аудит базы 1С",
+  "short_name": "AI-аудит 1С",
+  "description": "Автоматическое обследование информационных баз 1С:Предприятие 8",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#14161b",
+  "theme_color": "#1b1e25",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

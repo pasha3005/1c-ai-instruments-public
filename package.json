@@ -1,0 +1,19 @@
+{
+  "name": "onec-audit",
+  "version": "1.9.0",
+  "description": "AI-аудит базы 1С — автоматическое обследование информационных баз 1С:Предприятие 8.x",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test test/*.test.js",
+    "audit:cli": "node src/cli.js",
+    "build": "node tools/makePortable.mjs",
+    "publish:public": "node tools/publishPublic.mjs"
+  },
+  "author": "1C Audit",
+  "license": "UNLICENSED"
+}

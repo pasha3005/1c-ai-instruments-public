@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-аудит базы 1С</title>
+<!--
+  Цвет заголовка окна.
+
+  Интерфейс открывается отдельным окном Edge (--app=), и его верхнюю полосу
+  рисует браузер, а не страница. Управлять ею можно ровно одним способом —
+  этим тегом: Chromium красит рамку окна приложения в theme-color, и полоса
+  перестаёт быть светлой системной. Значение совпадает с цветом шапки
+  интерфейса, поэтому окно выглядит цельным. Манифест рядом нужен для того же
+  в установленном виде.
+-->
+<meta name="theme-color" content="#1b1e25">
+<meta name="color-scheme" content="dark">
+<link rel="manifest" href="app.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!--
+  Страница — интерфейс к локальному серверу приложения, а не самостоятельный
+  документ. Открытая двойным кликом (file://) она бессильна: браузер запрещает
+  файлам с диска загружать модули JS и обращаться к API. Чтобы это не выглядело
+  «сломавшейся вёрсткой», подменяем содержимое понятным объяснением.
+-->
+<div class="file-warning" id="fileWarning" hidden>
+  <h1>Откройте приложение через ярлык запуска</h1>
+  <p>
+    Этот файл — интерфейс к локальной службе аудита. Открытый напрямую с диска,
+    он не работает: браузер по соображениям безопасности запрещает страницам
+    с файловой системы обращаться к серверу приложения.
+  </p>
+  <p>
+    Запустите <b>ЗАПУСТИТЬ.cmd</b> в каталоге приложения — браузер откроется сам
+    по адресу <b>http://127.0.0.1:7345</b>, и всё заработает.
+  </p>
+</div>
+<script>
+  // Проверка до загрузки модулей: на file:// они всё равно не загрузятся.
+  if (location.protocol === 'file:') {
+    document.documentElement.classList.add('is-file-protocol');
+    document.getElementById('fileWarning').hidden = false;
+  }
+</script>
+
+<!--
+  Ключ спрашивается до всего остального и перекрывает интерфейс целиком:
+  без действующего ключа сервер всё равно отвечает 403 на любой запрос,
+  и показывать форму аудита под замком было бы обманом.
+-->
+<div class="license-gate" id="licenseGate" hidden>
+  <form class="license-card" id="licenseForm" autocomplete="off">
+    <img class="license-card__mark" src="icon.svg" alt="" width="52" height="52">
+    <h1>Лицензионный ключ</h1>
+    <p>
+      Программа распространяется по ключу. Введите ключ, выданный владельцем
+      продукта, — он действует <b>сутки</b>, затем понадобится ввести его снова.
+      Ограничений на число вводов нет.
+    </p>
+    <input type="text" id="licenseKey" name="licenseKey" required
+           placeholder="Ключ из 64 символов" spellcheck="false" autocomplete="off">
+    <div class="license-error" id="licenseError" hidden></div>
+    <button type="submit" class="btn btn--primary" id="licenseSubmit">Продолжить</button>
+    <p class="license-card__foot">
+      Чтобы закрыть программу, просто закройте это окно.
+    </p>
+  </form>
+</div>
+
+<header class="topbar">
+  <div class="topbar__inner">
+    <div class="brand">
+      <img class="brand__mark" src="icon.svg" alt="" width="40" height="40">
+      <div>
+        <div class="brand__title">
+          AI-аудит базы 1С
+          <span class="brand__engine">локальный движок</span>
+        </div>
+        <div class="brand__sub" id="envSummary">Проверка окружения…</div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-view="new" role="tab">Новый аудит</button>
+      <button class="tab" data-view="history" role="tab">История</button>
+      <!--
+        «О программе» открывает README тем же интерфейсом, что и всё остальное:
+        отдельное окно с текстовым файлом выглядело бы как выпадение из
+        приложения, а искать документацию в каталоге программы никто не станет.
+      -->
+      <button class="tab tab--about" data-view="about" role="tab" title="Описание программы (README)">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M12 11v5"></path>
+          <path d="M12 7.6v.1"></path>
+        </svg>
+        О программе
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ================= НОВЫЙ АУДИТ ================= -->
+  <section class="view is-active" data-view="new">
+
+    <div class="hero">
+      <h1>Обследование информационной базы</h1>
+      <p>
+        Укажите путь к базе — система сама выгрузит конфигурацию, разберёт код,
+        расширения, права и данные и соберёт <b>отчёт об обследовании</b>.
+        Изменения в базу не вносятся: все операции выполняются в режиме чтения.
+      </p>
+    </div>
+
+    <form id="auditForm" class="card form" autocomplete="off">
+
+      <div class="field">
+        <label for="infobasePath">
+          Путь к информационной базе <span class="req">*</span>
+        </label>
+        <input type="text" id="infobasePath" name="infobasePath" required
+               placeholder="D:\Bases\УправлениеТорговлей   или   srv-1c:1541\UT_Prod"
+               spellcheck="false">
+        <div class="hint" id="pathHint">
+          Файловая база — путь к каталогу. Серверная — «сервер\имя_базы» или «сервер:порт\имя_базы».
+        </div>
+      </div>
+
+      <!-- Пользователь и пароль стоят рядом с базой: это часть доступа к ней. -->
+      <div class="field-row">
+        <div class="field">
+          <label for="user">Пользователь 1С</label>
+          <input type="text" id="user" name="user" placeholder="Администратор" autocomplete="off">
+          <div class="hint">Нужен, если в базе заданы пользователи.</div>
+        </div>
+        <div class="field">
+          <label for="password">Пароль</label>
+          <input type="password" id="password" name="password" autocomplete="new-password">
+          <div class="hint">Не сохраняется на диск, используется только в этом запуске.</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="platformVersion">Версия платформы 1С</label>
+          <select id="platformVersion" name="platformVersion">
+            <option value="">Новейшая установленная</option>
+          </select>
+          <div class="hint">Список установленных на этом компьютере платформ.</div>
+        </div>
+
+        <div class="field">
+          <label for="clientName">Клиент / проект</label>
+          <input type="text" id="clientName" name="clientName" placeholder="ООО «Ромашка»">
+          <div class="hint">Попадает в шапку отчёта, в имя файла и в историю проверок.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="vendorConfigPath">Конфигурация поставщика</label>
+        <div class="picker">
+          <input type="text" id="vendorConfigPath" name="vendorConfigPath"
+                 placeholder="D:\Эталоны\ERP_2.4.13.111.cf   или   каталог XML-выгрузки"
+                 spellcheck="false">
+          <button type="button" class="btn btn--pick" data-pick="file"
+                  data-target="vendorConfigPath" data-filter="cf"
+                  data-title="Выберите файл конфигурации поставщика (.cf)">Файл .cf…</button>
+          <button type="button" class="btn btn--pick" data-pick="folder"
+                  data-target="vendorConfigPath"
+                  data-title="Выберите каталог XML-выгрузки конфигурации поставщика">Каталог…</button>
+        </div>
+        <div class="hint">
+          <b>Обычно заполнять не нужно.</b> Если база стоит на поддержке, конфигурация
+          поставщика берётся прямо из неё — анализ сам ограничится доработками.
+          Указывайте файл, только если база снята с поддержки либо сравнение с базой
+          не удалось: Конфигуратор → Конфигурация → Поддержка →
+          «Сохранить конфигурацию поставщика в файл».
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="workDir">Каталог для выгрузки <span class="req">*</span></label>
+          <div class="picker">
+            <input type="text" id="workDir" name="workDir" required
+                   placeholder="D:\Выгрузка" spellcheck="false">
+            <button type="button" class="btn btn--pick" data-pick="folder"
+                    data-target="workDir"
+                    data-title="Выберите каталог для выгрузки конфигурации">Обзор…</button>
+          </div>
+          <div class="hint">
+            Сюда выгружается конфигурация. Каталог указывается явно, чтобы было
+            видно, что в нём осталось после аудита.
+          </div>
+        </div>
+        <div class="field">
+          <label for="hourlyRate">Ставка, ₽/час</label>
+          <input type="number" id="hourlyRate" name="hourlyRate" min="0" step="100" placeholder="3000">
+          <div class="hint">Если задана — в отчёте появится оценка бюджета.</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="reportTheme">Тема оформления отчёта</label>
+          <select id="reportTheme" name="reportTheme">
+            <option value="dark" selected>Тёмная — как интерфейс программы</option>
+            <option value="light">Светлая — классический документ</option>
+          </select>
+          <div class="hint">
+            На печать не влияет: в PDF отчёт всегда выходит светлым, чтобы не
+            заливать лист краской.
+          </div>
+        </div>
+        <div class="field"></div>
+      </div>
+
+      <div class="checks">
+        <label class="check">
+          <input type="checkbox" id="collectLiveData" checked>
+          <span>Считать количество записей в базе
+            <em>Подключение через COM в режиме только чтение. Требует, чтобы
+            COM-соединитель (<span class="mono">comcntr.dll</span>) был
+            <b>зарегистрирован именно для выбранной выше версии платформы</b>:
+            регистрация выполняется один раз командой
+            <span class="mono">regsvr32 "C:\Program Files\1cv8\&lt;версия&gt;\bin\comcntr.dll"</span>
+            от имени администратора. Без регистрации этап пропускается,
+            а аудит продолжается — в отчёте появится оговорка.</em></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="keepDump">
+          <span>Сохранить выгрузку конфигурации после аудита
+            <em>(на ERP это 7 ГБ и более)</em></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="analyzeVendorCode">
+          <span>Проверять качество кода в типовой конфигурации
+            <em>Включено — проверяется весь код конфигурации и расширений, включая типовой
+            код поставщика. Выключено — только отличия от конфигурации поставщика
+            (если она доступна) и расширения целиком. Расширения проверяются
+            всегда, независимо от этого флага.</em></span>
+        </label>
+      </div>
+
+      <div class="form__actions">
+        <button type="submit" class="btn btn--primary" id="startBtn">
+          <span>Запустить аудит</span>
+        </button>
+        <div class="form__note" id="formNote"></div>
+      </div>
+    </form>
+
+    <!-- ---------- Прогресс ---------- -->
+    <div class="card progress-card" id="progressCard" hidden>
+      <div class="progress-head">
+        <div>
+          <h2 id="progressTitle">Выполняется аудит</h2>
+          <div class="progress-sub" id="progressSub">Подготовка…</div>
+        </div>
+        <div class="progress-side">
+          <div class="progress-percent" id="progressPercent">0%</div>
+          <div class="progress-timer" id="progressTimer">0 с</div>
+        </div>
+      </div>
+
+      <div class="progressbar"><i id="progressBar" style="width:0%"></i></div>
+
+      <ol class="stages" id="stages"></ol>
+
+      <!--
+        Две строки, и это принципиально. Пока аудит идёт, доступно только
+        «Прервать»: «Запустить заново» во время выполнения приводило ко второму
+        запуску поверх первого. Ссылки на результат не показываются вовсе,
+        пока отчёта нет, — неактивная кнопка выглядит как неисправная.
+      -->
+      <div class="run-actions" id="runActions">
+        <button class="btn btn--danger-solid" id="cancelBtn" type="button" disabled>Прервать</button>
+        <button class="btn btn--primary" id="restartBtn" type="button" hidden>Запустить заново</button>
+      </div>
+
+      <div class="result-actions" id="resultActions" hidden>
+        <a class="btn btn--success" id="openReport" target="_blank" rel="noopener">Открыть отчёт</a>
+        <button class="btn" id="saveReport" type="button">Скачать отчёт…</button>
+        <a class="btn" id="downloadMd" download>Скачать Markdown</a>
+        <a class="btn" id="downloadJson" target="_blank" rel="noopener">Данные JSON</a>
+        <button class="btn" id="printReport" type="button">Сохранить в PDF</button>
+      </div>
+      <div class="save-note" id="saveNote" hidden></div>
+
+      <div class="run-stats" id="runStats" hidden></div>
+
+      <div class="error-box" id="errorBox" hidden></div>
+    </div>
+  </section>
+
+  <!-- ================= ИСТОРИЯ ================= -->
+  <section class="view" data-view="history">
+    <div class="hero">
+      <h1>История проверок</h1>
+      <p>Все выполненные аудиты с оценками, затраченным временем и ссылками на отчёты.</p>
+    </div>
+    <div id="historyList" class="history"></div>
+  </section>
+
+  <!-- ================= О ПРОГРАММЕ ================= -->
+  <section class="view" data-view="about">
+    <div class="hero">
+      <h1>О программе</h1>
+      <p>Описание из файла README — то же, что лежит рядом с программой и в репозитории.</p>
+    </div>
+    <div class="card readme" id="aboutBody">
+      <div class="empty">Загрузка…</div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="appfoot">
+  <div class="appfoot__inner">
+    <span class="appfoot__author">
+      <span id="appCopyright">©</span>
+      Павел Плаксин, Первый БИТ (офис м. Павелецкая)
+    </span>
+    <span class="appfoot__version" id="appVersion"></span>
+  </div>
+</footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

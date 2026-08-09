@@ -1,0 +1,232 @@
+/**
+ * Хаб прогресса выполнения аудита.
+ *
+ * Каждый аудит — это последовательность именованных этапов. Клиент подписывается
+ * через Server-Sent Events и получает события в реальном времени; при
+ * переподключении сразу получает накопленное состояние (см. snapshot()).
+ */
+
+import { EventEmitter } from 'node:events';
+
+/** Полный список этапов конвейера — используется UI для отрисовки шкалы. */
+export const STAGES = [
+  { id: 'prepare', title: 'Подготовка', weight: 3 },
+  { id: 'platform', title: 'Поиск платформы 1С', weight: 2 },
+  { id: 'connect', title: 'Проверка доступа к базе', weight: 5 },
+  { id: 'export-config', title: 'Выгрузка конфигурации', weight: 30 },
+  { id: 'export-extensions', title: 'Выгрузка расширений', weight: 10 },
+  { id: 'parse-metadata', title: 'Разбор метаданных', weight: 10 },
+  { id: 'parse-modules', title: 'Разбор модулей кода', weight: 8 },
+  { id: 'live-data', title: 'Сбор данных из базы', weight: 12 },
+  { id: 'vendor', title: 'Сравнение с конфигурацией поставщика', weight: 6 },
+  { id: 'analyze', title: 'Анализ качества и рисков', weight: 12 },
+  { id: 'ai', title: 'AI-рекомендации', weight: 5 },
+  { id: 'report', title: 'Формирование отчёта', weight: 3 },
+  // Уборка — последний видимый этап, а не молчаливое послесловие. Выгрузка ERP
+  // весит гигабайты, и пользователь должен видеть, что каталог освобождается,
+  // и знать, что до конца этого шага аудит не завершён.
+  { id: 'cleanup', title: 'Очистка каталога выгрузки', weight: 4 },
+];
+
+const TOTAL_WEIGHT = STAGES.reduce((sum, s) => sum + s.weight, 0);
+
+export class AuditProgress extends EventEmitter {
+  /** @param {string} auditId */
+  constructor(auditId) {
+    super();
+    this.auditId = auditId;
+    this.startedAt = Date.now();
+    this.finishedAt = null;
+    this.status = 'running';
+    this.error = null;
+    /** Прерывание аудита по кнопке «Прервать». */
+    this.controller = new AbortController();
+    /** @type {Map<string, {id, title, weight, status, detail, startedAt, finishedAt, note}>} */
+    this.stages = new Map(
+      STAGES.map((s) => [s.id, { ...s, status: 'pending', detail: '', note: '', startedAt: null, finishedAt: null }]),
+    );
+    this.log = [];
+  }
+
+  /** Отмечает этап начатым. */
+  start(stageId, detail = '') {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    stage.status = 'running';
+    stage.detail = detail;
+    stage.startedAt = Date.now();
+    this.#push('stage', { stage: stageId, detail });
+  }
+
+  /** Обновляет пояснение внутри текущего этапа (например, «объект 120 из 900»). */
+  update(stageId, detail) {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    stage.detail = detail;
+    this.#push('stage', { stage: stageId, detail });
+  }
+
+  /** Завершает этап. `note` — краткий итог, показывается в UI справа. */
+  done(stageId, note = '') {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    stage.status = 'done';
+    stage.note = note;
+    stage.detail = '';
+    stage.finishedAt = Date.now();
+    this.#push('stage', { stage: stageId, note });
+  }
+
+  /** Этап пропущен (например, сбор живых данных недоступен). */
+  skip(stageId, note = '') {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    stage.status = 'skipped';
+    stage.note = note;
+    stage.detail = '';
+    stage.finishedAt = Date.now();
+    this.#push('stage', { stage: stageId, note });
+  }
+
+  /** Этап завершён с ошибкой, но конвейер продолжает работу. */
+  warn(stageId, note = '') {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    stage.status = 'warning';
+    stage.note = note;
+    stage.detail = '';
+    stage.finishedAt = Date.now();
+    this.#push('stage', { stage: stageId, note });
+  }
+
+  /** Сообщение в текстовый журнал выполнения. */
+  message(text, level = 'info') {
+    this.log.push({ ts: Date.now(), level, text });
+    if (this.log.length > 2000) this.log.splice(0, this.log.length - 2000);
+    this.#push('log', { level, text });
+  }
+
+  /** Сигнал прерывания для конвейера и внешних процессов. */
+  get signal() {
+    return this.controller.signal;
+  }
+
+  /**
+   * Просьба прервать аудит. Сам конвейер завершится чуть позже — когда снятый
+   * внешний процесс отдаст управление; тогда будет вызван cancelled().
+   */
+  requestCancel() {
+    if (this.status !== 'running' || this.controller.signal.aborted) return false;
+    this.message('Получена команда прерывания, останавливаем выполнение…', 'warn');
+    this.controller.abort();
+    return true;
+  }
+
+  get cancelRequested() {
+    return this.controller.signal.aborted;
+  }
+
+  finish(result) {
+    this.status = 'done';
+    this.finishedAt = Date.now();
+    this.#push('finish', { result });
+  }
+
+  /** Аудит остановлен пользователем: это не ошибка. */
+  cancelled(message = 'Аудит прерван пользователем') {
+    this.status = 'cancelled';
+    this.error = message;
+    this.finishedAt = Date.now();
+    for (const stage of this.stages.values()) {
+      if (stage.status === 'running') {
+        stage.status = 'skipped';
+        stage.detail = '';
+        stage.note = 'прервано';
+      }
+    }
+    this.#push('cancelled', { error: message, durationMs: this.durationMs() });
+  }
+
+  /** Длительность выполнения: у завершённого — итоговая, у текущего — накопленная. */
+  durationMs() {
+    return (this.finishedAt ?? Date.now()) - this.startedAt;
+  }
+
+  fail(error) {
+    this.status = 'failed';
+    this.error = error?.message || String(error);
+    this.finishedAt = Date.now();
+    for (const stage of this.stages.values()) {
+      if (stage.status === 'running') {
+        stage.status = 'failed';
+        stage.note = this.error;
+      }
+    }
+    this.#push('error', { error: this.error });
+  }
+
+  /** Доля выполнения 0..100, взвешенная по трудоёмкости этапов. */
+  percent() {
+    let acc = 0;
+    for (const stage of this.stages.values()) {
+      if (stage.status === 'done' || stage.status === 'skipped' || stage.status === 'warning') {
+        acc += stage.weight;
+      } else if (stage.status === 'running') {
+        acc += stage.weight * 0.4;
+      }
+    }
+    return Math.min(100, Math.round((acc / TOTAL_WEIGHT) * 100));
+  }
+
+  snapshot() {
+    return {
+      auditId: this.auditId,
+      status: this.status,
+      error: this.error,
+      percent: this.percent(),
+      startedAt: this.startedAt,
+      finishedAt: this.finishedAt,
+      durationMs: this.durationMs(),
+      cancelRequested: this.cancelRequested,
+      stages: [...this.stages.values()],
+      log: this.log.slice(-200),
+    };
+  }
+
+  #push(type, payload) {
+    this.emit('event', { type, ...payload, percent: this.percent(), ts: Date.now() });
+  }
+}
+
+/** Реестр активных и недавно завершённых прогрессов. */
+const registry = new Map();
+
+export function createProgress(auditId) {
+  const progress = new AuditProgress(auditId);
+  // Неограниченное число подписчиков: SSE-клиентов может быть несколько.
+  progress.setMaxListeners(0);
+  registry.set(auditId, progress);
+  // Держим завершённые прогрессы час — чтобы UI успел дочитать состояние.
+  progress.on('event', (ev) => {
+    if (ev.type === 'finish' || ev.type === 'error' || ev.type === 'cancelled') {
+      setTimeout(() => registry.delete(auditId), 60 * 60 * 1000).unref?.();
+    }
+  });
+  return progress;
+}
+
+export function getProgress(auditId) {
+  return registry.get(auditId) || null;
+}
+
+/**
+ * Выполняющиеся прямо сейчас аудиты.
+ *
+ * Нужны при остановке программы: закрытие окна должно снимать и внешние
+ * процессы платформы. Просто выйти из Node мало — `ibcmd`, конфигуратор
+ * и powershell переживут родителя и продолжат держать базу. Поэтому им
+ * сначала запрашивается прерывание, а оно уже снимает процессы с потомками.
+ */
+export function runningProgresses() {
+  return [...registry.values()].filter((p) => p.status === 'running');
+}
