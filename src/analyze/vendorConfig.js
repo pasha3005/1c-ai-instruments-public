@@ -165,10 +165,19 @@ function unavailable(reason) {
  * Побочная выгода: рабочая база клиента в операции вообще не участвует,
  * поэтому способ применим и к серверным базам, и не требует ни пользователя,
  * ни пароля.
+ *
+ * Имена подкаталогов задаются снаружи: обновление нетиповой конфигурации
+ * разворачивает ДВА файла .cf в одном рабочем каталоге — старую поставку
+ * и новую, — и общий каталог `vendor` они затирали бы друг другом.
+ *
+ * @param {object} params
+ * @param {string} params.cfFile
+ * @param {string} params.workDir
+ * @param {string} [params.name] имя подкаталога выгрузки (по умолчанию `vendor`)
  */
-async function exportCfToXml({ cfFile, platform, workDir, onProgress }) {
-  const outDir = path.join(workDir, 'vendor');
-  const tempDbDir = path.join(workDir, 'vendor-db');
+export async function exportCfToXml({ cfFile, platform, workDir, name = 'vendor', onProgress }) {
+  const outDir = path.join(workDir, name);
+  const tempDbDir = path.join(workDir, `${name}-db`);
 
   if (!platform.ibcmd) {
     return {
@@ -219,8 +228,14 @@ async function exportCfToXml({ cfFile, platform, workDir, onProgress }) {
   }
 }
 
-/** Читает свойства конфигурации из Configuration.xml. */
-async function readConfigurationProperties(configFile) {
+/**
+ * Читает свойства конфигурации из Configuration.xml.
+ *
+ * Экспортируется: обновление нетиповой конфигурации показывает в отчёте все три
+ * конфигурации — основную, текущую поставку и новую, — и читает свойства
+ * каждой тем же кодом.
+ */
+export async function readConfigurationProperties(configFile) {
   try {
     const node = parseXml(await readText(configFile));
     const configNode = child(node, 'Configuration');

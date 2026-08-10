@@ -6,9 +6,11 @@
  */
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
-
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+import { initUpdate, showUpdateStages } from './update.js';
+import {
+  $, $$, escapeHtml, setNote, renderStages as renderStageList,
+  formatDuration, formatNumber, formatDateTime, attachPathHint,
+} from './ui.js';
 
 const state = {
   environment: null,
@@ -97,7 +99,7 @@ async function loadEnvironment() {
     const env = await api.environment();
     state.environment = env;
 
-    fillPlatformList(env.platforms);
+    fillPlatformLists(env.platforms);
 
     // Про движок рекомендаций сказано в заголовке приложения — здесь только
     // то, что зависит от машины: какие платформы 1С установлены.
@@ -119,6 +121,7 @@ async function loadEnvironment() {
     }
 
     renderStages(env.stages.map((s) => ({ ...s, status: 'pending', detail: '', note: '' })));
+    if (env.updateStages?.length) showUpdateStages(env.updateStages);
   } catch (err) {
     $('#envSummary').textContent = `Ошибка проверки окружения: ${err.message}`;
   }
@@ -130,47 +133,18 @@ async function loadEnvironment() {
  * Раньше использовался <input list=datalist>: браузер фильтрует подсказки по
  * набранному тексту, поэтому после выбора версии в списке оставалась она одна.
  * Набор установленных платформ закрытый, свободный ввод не нужен.
+ *
+ * Список заполняется во ВСЕХ разделах разом (по атрибуту `data-platform-list`):
+ * форм с выбором платформы теперь две, и вторая молча оставалась бы пустой.
  */
-function fillPlatformList(platforms) {
-  const select = $('#platformVersion');
+function fillPlatformLists(platforms) {
   const options = ['<option value="">Новейшая установленная</option>'];
   platforms.forEach((p, index) => {
     const suffix = index === 0 ? ' — новейшая' : '';
     options.push(`<option value="${escapeHtml(p.version)}">${escapeHtml(p.version)}${suffix}</option>`);
   });
-  select.innerHTML = options.join('');
-}
-
-// -------------------------------------------------------- Подсказка по пути
-
-function initPathHint() {
-  const input = $('#infobasePath');
-  let timer = null;
-
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const value = input.value.trim();
-      const hint = $('#pathHint');
-      if (!value) {
-        hint.className = 'hint';
-        hint.textContent = 'Файловая база — путь к каталогу. Серверная — «сервер\\имя_базы» или «сервер:порт\\имя_базы».';
-        return;
-      }
-      try {
-        const parsed = await api.parsePath(value);
-        if (parsed.error) {
-          hint.className = 'hint is-warn';
-          hint.textContent = parsed.error;
-          return;
-        }
-        const kindRu = { file: 'файловая база', server: 'серверная база', web: 'веб-подключение' }[parsed.kind];
-        hint.className = 'hint is-ok';
-        hint.textContent = `Распознано как ${kindRu}: ${parsed.display}`;
-      } catch {
-        hint.className = 'hint';
-      }
-    }, 350);
+  $$('select[data-platform-list]').forEach((select) => {
+    select.innerHTML = options.join('');
   });
 }
 
@@ -501,18 +475,7 @@ function applySnapshot(snapshot) {
 }
 
 function renderStages(stages) {
-  const icons = {
-    pending: '', running: '', done: '✓', skipped: '–', warning: '!', failed: '✕',
-  };
-  $('#stages').innerHTML = stages.map((stage) => `
-    <li class="stage-item is-${stage.status}">
-      <span class="stage-icon">${icons[stage.status] ?? ''}</span>
-      <span class="stage-body">
-        <span class="stage-title">${escapeHtml(stage.title)}</span>
-        ${stage.detail ? `<span class="stage-detail">${escapeHtml(stage.detail)}</span>` : ''}
-        ${stage.note ? `<span class="stage-note">${escapeHtml(stage.note)}</span>` : ''}
-      </span>
-    </li>`).join('');
+  renderStageList($('#stages'), stages);
 }
 
 async function onAuditFinished(auditId) {
@@ -570,20 +533,6 @@ async function showRunStats(auditId) {
     showFinalDuration(null);
     box.hidden = true;
   }
-}
-
-function formatDuration(ms) {
-  const total = Math.round(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h) return `${h} ч ${m} мин`;
-  if (m) return `${m} мин ${s} с`;
-  return `${s} с`;
-}
-
-function formatNumber(value) {
-  return new Intl.NumberFormat('ru-RU').format(value);
 }
 
 function onAuditCancelled(message, durationMs) {
@@ -705,37 +654,13 @@ function renderHistoryItem(meta) {
 
 // ------------------------------------------------------------ Утилиты
 
-function setNote(selector, text, isError = false) {
-  const el = $(selector);
-  el.textContent = text;
-  el.classList.toggle('is-error', Boolean(isError));
-}
-
+/** Цвет оценки: 80+ хорошо, 60+ терпимо, 35+ плохо, ниже — критично. */
 function gradeClass(score) {
   if (score == null) return '';
   if (score >= 80) return 'grade-good';
   if (score >= 60) return 'grade-warn';
   if (score >= 35) return 'grade-bad';
   return 'grade-crit';
-}
-
-function formatDateTime(iso) {
-  try {
-    return new Date(iso).toLocaleString('ru-RU', {
-      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 // -------------------------------------------------------- Лицензионный ключ
@@ -799,7 +724,11 @@ $('#appCopyright').textContent = `© ${new Date().getFullYear()}`;
 requireLicense().then(() => {
   initTabs();
   initForm();
-  initPathHint();
+  attachPathHint($('#infobasePath'), $('#pathHint'), api.parsePath);
   initPickers();
+  // Второй рабочий раздел главного окна. Инициализируется здесь же, после
+  // ключа: без действующего ключа сервер отвечает 403 на любой запрос,
+  // и его форма выглядела бы работающей, но не работала.
+  initUpdate();
   loadEnvironment();
 });

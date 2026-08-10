@@ -94,6 +94,69 @@ export async function dumpConfigToFiles({
 }
 
 /**
+ * Загружает конфигурацию ИЗ XML-файлов в основную конфигурацию базы.
+ *
+ * Единственная операция продукта, которая пишет в базу, и потому устроена
+ * отдельно от всего остального:
+ *
+ * • загружается только **основная конфигурация**. Конфигурация базы данных
+ *   не обновляется намеренно: «Обновить конфигурацию базы данных» — это
+ *   реструктуризация таблиц, её выполняет человек в конфигураторе, увидев
+ *   предупреждения платформы о потере данных. Инструмент останавливается
+ *   ровно на границе, где начинается необратимое;
+ * • нужен монопольный доступ: при работающих сеансах конфигуратор откажет,
+ *   и его отказ передаётся пользователю дословно — гадать ему не о чем;
+ * • ibcmd здесь не используется, хотя для файловых баз он быстрее:
+ *   `/LoadConfigFromFiles` одинаково работает и с файловой, и с серверной
+ *   базой, а два разных пути загрузки означали бы два разных набора граблей
+ *   в самой опасной операции.
+ */
+export async function loadConfigFromFiles({
+  platform, conn, srcDir, user, password, logFile,
+}) {
+  if (!(await pathExists(path.join(srcDir, 'Configuration.xml')))) {
+    throw new Error(`В каталоге ${srcDir} нет Configuration.xml — загружать нечего`);
+  }
+  const logPath = logFile || path.join(path.dirname(srcDir), `designer-load-${Date.now()}.log`);
+
+  const args = [
+    'DESIGNER',
+    ...toClientArgs(conn),
+    ...authArgs({ user, password }),
+    '/LoadConfigFromFiles', srcDir,
+    ...COMMON_FLAGS,
+    '/Out', logPath,
+  ];
+
+  log.info(`Загрузка конфигурации из ${srcDir}`);
+  let procResult;
+  try {
+    procResult = await run(platform.client, args, {
+      timeout: TIMEOUTS.configExport,
+      allowNonZeroExit: true,
+    });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    const designerLog = await readLogSafe(logPath);
+    throw new ProcessError(
+      `Конфигуратор не смог загрузить конфигурацию: ${err.message}${designerLog ? `\n${designerLog}` : ''}`,
+      { code: err.code, stdout: err.stdout, stderr: err.stderr, command: platform.client },
+    );
+  }
+
+  const designerLog = await readLogSafe(logPath);
+  if (procResult.code !== 0 || /ошибк|error/i.test(designerLog)) {
+    throw new Error(
+      'Загрузка конфигурации не удалась.'
+      + (designerLog ? ` Журнал конфигуратора:\n${designerLog}` : ` Код возврата: ${procResult.code}.`)
+      + '\nЧастые причины: база занята другими сеансами (нужен монопольный доступ), '
+      + 'неверные имя пользователя или пароль, нет права «Администрирование».',
+    );
+  }
+  return { log: designerLog };
+}
+
+/**
  * Собирает .epf из XML-исходников (используется для служебной обработки сбора данных).
  * Доступно с 8.3.9.
  */

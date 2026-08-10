@@ -28,13 +28,38 @@ export const STAGES = [
   { id: 'cleanup', title: 'Очистка каталога выгрузки', weight: 4 },
 ];
 
-const TOTAL_WEIGHT = STAGES.reduce((sum, s) => sum + s.weight, 0);
+/**
+ * Этапы обновления нетиповой конфигурации.
+ *
+ * Уборки здесь нет намеренно: выгрузка с результатом объединения — это и есть
+ * результат работы. Её правят руками в местах, где решение за человеком,
+ * и из неё же потом загружают конфигурацию, иногда через день после прогона.
+ * Удалить её значило бы выбросить сделанную работу.
+ */
+export const UPDATE_STAGES = [
+  { id: 'prepare', title: 'Подготовка', weight: 2 },
+  { id: 'platform', title: 'Поиск платформы 1С', weight: 2 },
+  { id: 'connect', title: 'Проверка доступа к базе', weight: 3 },
+  { id: 'export-main', title: 'Выгрузка основной конфигурации', weight: 22 },
+  { id: 'vendor-old', title: 'Конфигурация поставщика (текущая поставка)', weight: 15 },
+  { id: 'vendor-new', title: 'Целевая конфигурация (новая поставка)', weight: 20 },
+  { id: 'merge', title: 'Трёхстороннее объединение', weight: 22 },
+  { id: 'report', title: 'Отчёт об объединении', weight: 4 },
+  { id: 'load', title: 'Загрузка в конфигурацию базы', weight: 10 },
+];
 
 export class AuditProgress extends EventEmitter {
-  /** @param {string} auditId */
-  constructor(auditId) {
+  /**
+   * @param {string} auditId
+   * @param {{id: string, title: string, weight: number}[]} [stages]
+   *   Состав этапов. Задаётся снаружи, потому что конвейеров два — обследование
+   *   и обновление, — а машинерия прогресса у них одна.
+   */
+  constructor(auditId, stages = STAGES) {
     super();
     this.auditId = auditId;
+    this.stageList = stages;
+    this.totalWeight = stages.reduce((sum, s) => sum + s.weight, 0) || 1;
     this.startedAt = Date.now();
     this.finishedAt = null;
     this.status = 'running';
@@ -43,7 +68,7 @@ export class AuditProgress extends EventEmitter {
     this.controller = new AbortController();
     /** @type {Map<string, {id, title, weight, status, detail, startedAt, finishedAt, note}>} */
     this.stages = new Map(
-      STAGES.map((s) => [s.id, { ...s, status: 'pending', detail: '', note: '', startedAt: null, finishedAt: null }]),
+      stages.map((s) => [s.id, { ...s, status: 'pending', detail: '', note: '', startedAt: null, finishedAt: null }]),
     );
     this.log = [];
   }
@@ -175,7 +200,7 @@ export class AuditProgress extends EventEmitter {
         acc += stage.weight * 0.4;
       }
     }
-    return Math.min(100, Math.round((acc / TOTAL_WEIGHT) * 100));
+    return Math.min(100, Math.round((acc / this.totalWeight) * 100));
   }
 
   snapshot() {
@@ -201,8 +226,8 @@ export class AuditProgress extends EventEmitter {
 /** Реестр активных и недавно завершённых прогрессов. */
 const registry = new Map();
 
-export function createProgress(auditId) {
-  const progress = new AuditProgress(auditId);
+export function createProgress(auditId, stages = STAGES) {
+  const progress = new AuditProgress(auditId, stages);
   // Неограниченное число подписчиков: SSE-клиентов может быть несколько.
   progress.setMaxListeners(0);
   registry.set(auditId, progress);

@@ -1,0 +1,578 @@
+/**
+ * Отчёт об обновлении нетиповой конфигурации.
+ *
+ * Главный вопрос этого отчёта один: ЧТО ОСТАЛОСЬ СДЕЛАТЬ РУКАМИ. Всё, что
+ * платформа объединила бы сама, объединено и показано числами; ценность
+ * документа — в перечне дважды изменённых мест, где решение может принять
+ * только человек, знающий, зачем делалась доработка.
+ *
+ * Поэтому раздел «Требуют вашего решения» стоит первым и не обрезается, а
+ * каждый его участок показан ТРЕМЯ колонками: что было в текущей поставке,
+ * что стало в новой и что у вас. Требование пользователя дословно: видеть
+ * изменения «по отношению к старой конфигурации поставщика и по отношению
+ * новой конфигурации поставщика к старой».
+ *
+ * Оформление и раскладка — те же, что у отчёта об обследовании (`styles.js`,
+ * `layoutScript.js`): это один продукт, и два разных вида документа в нём
+ * выглядели бы как две разные программы.
+ */
+
+import { REPORT_STYLES } from './styles.js';
+import { LAYOUT_SCRIPT } from './layoutScript.js';
+import { codeBlock, dedent } from './bslHighlight.js';
+import { esc, plural, signature, formatDate, formatDateTime } from './ui.js';
+import { formatNumber } from '../analyze/dataVolume.js';
+import { APP } from '../config.js';
+
+/**
+ * @param {object} result результат конвейера обновления (`pipeline/runUpdate.js`)
+ * @returns {string} самодостаточный HTML-документ
+ */
+export function renderUpdateReport(result) {
+  const cfg = result.configs?.main || {};
+  const title = `Обновление конфигурации — ${cfg.synonym || cfg.name || 'база 1С'}`;
+
+  const sectionDefs = [
+    { id: 'upd-summary', title: 'Итоги объединения', html: renderSummary(result) },
+    { id: 'upd-manual', title: 'Требуют вашего решения', html: renderManual(result) },
+    { id: 'upd-applied', title: 'Изменения поставщика, применённые автоматически', html: renderApplied(result) },
+    { id: 'upd-added', title: 'Новые объекты новой поставки', html: renderGroup(result, 'added') },
+    { id: 'upd-removed', title: 'Объекты, удалённые поставщиком', html: renderGroup(result, 'removed') },
+    { id: 'upd-kept', title: 'Ваши доработки, оставленные как есть', html: renderGroup(result, 'kept') },
+    { id: 'upd-next', title: 'Что делать дальше', html: renderNext(result) },
+  ].filter((s) => s.html);
+
+  return `<!doctype html>
+<html lang="ru" data-theme="${result.input?.reportTheme === 'light' ? 'light' : 'dark'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<style>${REPORT_STYLES}${UPDATE_STYLES}</style>
+</head>
+<body>
+<div class="layout">
+${renderNav(sectionDefs)}
+<div class="page">
+${renderCover(result)}
+${sectionDefs.map(section).join('')}
+<footer class="report-footer">
+  Отчёт сформирован автоматически системой «${esc(APP.name)}» v${esc(APP.version)}
+  ${esc(formatDateTime(result.generatedAt))}.
+  Объединение выполнено по файлам XML-выгрузки; решения по дважды изменённым местам
+  остаются за специалистом.
+  <div style="margin-top:10px">${signature()}</div>
+</footer>
+</div>
+</div>
+<script>${LAYOUT_SCRIPT}</script>
+</body>
+</html>`;
+}
+
+/**
+ * Раздел: заголовок в прилипающем summary, тело — внутри.
+ *
+ * Устроен так же, как в отчёте об обследовании: щелчок по заголовку сворачивает
+ * раздел штатным поведением элемента details, и при прокрутке видно, где ты.
+ * Номер проставляется здесь по порядку, а не заглушкой-подстановкой: разделы
+ * этого отчёта известны заранее, и разбирать готовую разметку регулярками
+ * (чем уже дважды рвало границы разделов в аудите) незачем.
+ */
+function section({ id, title, html }, index) {
+  return `
+<section class="section" id="${id}">
+  <details class="sec" open>
+    <summary><span class="section__num">Раздел ${index + 1}</span><h2>${esc(title)}</h2></summary>
+    <div class="sec__body">${html}</div>
+  </details>
+</section>`;
+}
+
+function renderNav(sectionDefs) {
+  return `
+<nav class="nav no-print" id="reportNav" aria-label="Содержание отчёта">
+  <div class="nav__brand">Содержание</div>
+  <ol class="nav__list">
+    ${sectionDefs.map((s) => `<li><a href="#${s.id}">${esc(s.title)}</a></li>`).join('')}
+  </ol>
+</nav>`;
+}
+
+// --- Титульный лист ----------------------------------------------------------
+
+function renderCover(result) {
+  const cfg = result.configs?.main || {};
+  const base = result.configs?.base;
+  const target = result.configs?.target || {};
+  const totals = result.merge?.totals || {};
+  const manual = manualCount(result);
+
+  return `
+<header class="cover">
+  <p class="cover__eyebrow">Обновление нетиповой конфигурации</p>
+  <h1 class="cover__title">${esc(cfg.synonym || cfg.name || 'Конфигурация 1С')}</h1>
+  <p class="cover__subtitle">${esc(coverSubtitle(result))}</p>
+  <dl class="cover__meta">
+    <div><dt>Основная конфигурация</dt><dd>${esc(cfg.version || 'версия не указана')}</dd></div>
+    <div><dt>Текущая поставка</dt><dd>${esc(base?.version || (base ? 'версия не указана' : 'исходники не предоставлены'))}</dd></div>
+    <div><dt>Новая поставка</dt><dd>${esc(target.version || 'версия не указана')}</dd></div>
+    <div><dt>Поставщик</dt><dd>${esc(target.vendor || cfg.vendor || 'не указан')}</dd></div>
+    <div><dt>Информационная база</dt><dd>${esc(result.infobase?.display || '—')}</dd></div>
+    <div><dt>Платформа</dt><dd>${esc(result.platformVersion || '—')}</dd></div>
+    <div><dt>Требует решения</dt><dd>${formatNumber(manual)}</dd></div>
+    <div><dt>Дата объединения</dt><dd>${esc(formatDate(result.generatedAt))}</dd></div>
+  </dl>
+  <p class="cover__scope">
+    Взято из новой поставки без вашего участия:
+    ${plural((totals.fromVendor || 0) + (totals.merged || 0), 'файл', 'файла', 'файлов')},
+    новых объектов ${formatNumber(totals.addedByVendor || 0)}.
+    Ваши доработки сохранены${manual ? `, кроме ${plural(manual, 'места', 'мест', 'мест')}, где правку сделали и вы, и поставщик` : ''}.
+  </p>
+</header>`;
+}
+
+function coverSubtitle(result) {
+  const from = result.configs?.main?.version;
+  const to = result.configs?.target?.version;
+  if (from && to) return `Объединение с версии ${from} на версию ${to}`;
+  return 'Трёхстороннее объединение конфигурации с новой поставкой';
+}
+
+// --- Итоги -------------------------------------------------------------------
+
+function renderSummary(result) {
+  const totals = result.merge?.totals || {};
+  const manual = manualCount(result);
+  const rows = [
+    ['Всего файлов в трёх выгрузках', totals.files, 'объединялись и сверялись'],
+    ['Совпадает во всех версиях', totals.unchanged, 'типовой код, которого никто не касался'],
+    ['Взято из новой поставки', totals.fromVendor, 'вы этих мест не меняли'],
+    ['Объединено построчно', totals.merged, 'правка поставщика легла рядом с вашей'],
+    ['Оставлено ваше', totals.keptOurs, 'поставщик этих мест не менял'],
+    ['Новых объектов поставщика', totals.addedByVendor, 'скопированы и внесены в состав'],
+    ['Удалено вслед за поставщиком', totals.removedByVendor, 'вы их не меняли'],
+    ['Ваши собственные файлы', totals.ourOwn, 'в поставках их нет — сохранены'],
+    ['Требует вашего решения', manual, 'изменено и вами, и поставщиком'],
+    ['Не удалось обработать', totals.failed, 'см. перечень ниже'],
+  ].filter(([, value]) => Number(value) > 0);
+
+  return `
+  ${renderModeNote(result)}
+  ${(result.warnings || []).map((text) => `
+  <div class="callout callout--warn">${esc(text)}</div>`).join('')}
+
+  ${renderBar(totals, manual)}
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Что</th><th style="text-align:right">Файлов</th><th>Пояснение</th></tr></thead>
+      <tbody>
+        ${rows.map(([label, value, note]) => `
+        <tr><td>${esc(label)}</td><td style="text-align:right"><b>${formatNumber(value)}</b></td><td class="muted">${esc(note)}</td></tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout--plain">
+    <div class="callout__title">Где лежит результат</div>
+    Объединённые файлы конфигурации: <span class="mono">${esc(result.mergedDir || '—')}</span>.
+    ${result.conflictDir ? `Три версии каждого спорного файла (текущая поставка, новая поставка, ваша) —
+    в каталоге <span class="mono">${esc(result.conflictDir)}</span>, соответствие номеров и путей — в файле
+    <span class="mono">список.txt</span>.` : ''}
+    ${result.loaded
+    ? 'Результат <b>загружен в основную конфигурацию базы</b>. Конфигурация базы данных не обновлялась.'
+    : 'В конфигурацию базы результат <b>ещё не загружен</b>.'}
+  </div>
+
+  ${(result.merge?.notes || []).length ? `
+  <div class="callout callout--info">
+    <div class="callout__title">Что сделано с составом выгрузки</div>
+    ${result.merge.notes.map((n) => `<div>${esc(n)}</div>`).join('')}
+  </div>` : ''}`;
+}
+
+/**
+ * Оговорка о способе объединения.
+ *
+ * Без неё читатель не отличит полное трёхстороннее объединение от сокращённого
+ * и будет считать, что код объединён построчно, когда этого не было.
+ */
+function renderModeNote(result) {
+  if (result.merge?.mode === 'three-way') {
+    return `
+  <div class="callout callout--good">
+    <div class="callout__title">Полное трёхстороннее объединение</div>
+    Исходники текущей поставки были предоставлены, поэтому по каждому файлу известно, кто внёс
+    каждое отличие. Правки поставщика применены автоматически, ваши сохранены, а участки,
+    изменённые обеими сторонами, вынесены в раздел «Требуют вашего решения» — ровно так же,
+    как это делает конфигуратор при обновлении конфигурации на поддержке.
+  </div>`;
+  }
+  return `
+  <div class="callout callout--warn">
+    <div class="callout__title">Сокращённый режим: текущая поставка не предоставлена</div>
+    Файл .cf текущей конфигурации поставщика указан не был, поэтому исходников для построчного
+    объединения нет. Сравнение выполнено средствами платформы прямо в базе: известно, какие
+    объекты вы изменили. Объекты без доработок взяты из новой поставки целиком, изменённые
+    оставлены вашими и перечислены ниже вместе с отличиями от новой поставки — их предстоит
+    перенести вручную. Чтобы объединять код автоматически, сохраните конфигурацию поставщика
+    в файл (Конфигуратор → Конфигурация → Поддержка → «Сохранить конфигурацию поставщика
+    в файл») и повторите объединение.
+  </div>`;
+}
+
+function renderBar(totals, manual) {
+  const parts = [
+    ['unchanged', 'Совпадает', totals.unchanged || 0],
+    ['added', 'Взято из поставки', (totals.fromVendor || 0) + (totals.merged || 0) + (totals.addedByVendor || 0)],
+    ['modified', 'Оставлено ваше', totals.keptOurs || 0],
+    ['removed', 'Требует решения', manual],
+  ].filter(([, , value]) => value > 0);
+  const sum = parts.reduce((s, [, , value]) => s + value, 0) || 1;
+
+  return `
+  <div class="diffbar">
+    ${parts.map(([key, , value]) => (key === 'unchanged'
+    ? '<span class="diffbar__part diffbar__part--unchanged" style="flex:1"></span>'
+    : `<span class="diffbar__part diffbar__part--${key}" style="width:${Math.max((value / sum) * 100, 1.5)}%"></span>`)).join('')}
+  </div>
+  <div class="legend">
+    ${parts.map(([key, label, value]) => `
+    <span><i class="diffbar__swatch diffbar__swatch--${key}"></i>${label} — ${formatNumber(value)}</span>`).join('')}
+  </div>`;
+}
+
+// --- Требуют решения ---------------------------------------------------------
+
+function renderManual(result) {
+  const objects = result.merge?.manual || [];
+  if (!objects.length) {
+    return `
+  <div class="callout callout--good">
+    <div class="callout__title">Ручной работы не осталось</div>
+    Ни одного места, изменённого одновременно вами и поставщиком, не найдено: всё объединено
+    автоматически. Проверьте результат в конфигураторе и обновите конфигурацию базы данных.
+  </div>`;
+  }
+
+  return `
+  <p class="section__lead">
+    Это места, где правку относительно текущей поставки внесли и вы, и поставщик. Автоматически
+    выбрать нельзя: обе правки осмысленны. В файлы выгрузки записан ВАШ вариант — обновление
+    не должно молча терять доработку, — поэтому если нужна версия поставщика, перенесите её
+    руками в файл выгрузки и загрузите конфигурацию.
+  </p>
+
+  <div class="tree-legend">
+    <span><i class="tree-mark tree-mark--removed">1</i>Текущая поставка — то, с чего начинали обе стороны</span>
+    <span><i class="tree-mark tree-mark--added">2</i>Новая поставка — что здесь изменил поставщик</span>
+    <span><i class="tree-mark tree-mark--modified">3</i>Основная конфигурация — ваша правка, она и записана в файл</span>
+  </div>
+
+  <div class="difftree">
+    ${objects.map(renderManualObject).join('')}
+  </div>
+
+  ${result.merge.conflictsSkipped ? `
+  <p class="muted wide-note" style="font-size:13px">
+    Ещё ${plural(result.merge.conflictsSkipped, 'участок', 'участка', 'участков')} не показан текстом:
+    подробности ограничены, иначе отчёт разрастается до десятков мегабайт. Полные данные —
+    в JSON-выгрузке результата и в каталоге со спорными файлами.
+  </p>` : ''}`;
+}
+
+function renderManualObject(object) {
+  const elements = object.elements.filter((e) => MANUAL_ACTIONS.has(e.action));
+  const stat = plural(
+    elements.reduce((sum, e) => sum + (e.conflictCount || 1), 0),
+    'участок', 'участка', 'участков',
+  );
+
+  return `
+  <details class="dt dt--object">
+    <summary>
+      <span class="tree-mark tree-mark--modified">±</span>
+      <span class="dt__label">${esc(object.title)}</span>
+      <span class="dt__stat">${stat}</span>
+    </summary>
+    <div class="dt__body">
+      ${elements.map(renderManualElement).join('')}
+    </div>
+  </details>`;
+}
+
+const MANUAL_ACTIONS = new Set([
+  'conflict', 'conflict-binary', 'conflict-too-big', 'conflict-vendor-deleted',
+  'conflict-both-added', 'manual-two-way', 'manual-deleted-by-us', 'failed',
+]);
+
+function renderManualElement(element) {
+  const conflicts = element.conflicts || [];
+  // Спорным бывает не весь файл: в том же файле часть правок поставщика могла
+  // примениться автоматически. Не сказать об этом — значит оставить читателя
+  // в уверенности, что файл не обновился вовсе.
+  const applied = element.autoFromVendor
+    ? `<p class="dt__note">Остальное в этом файле объединено автоматически: правок поставщика
+        применено ${formatNumber(element.autoFromVendor)}.</p>`
+    : '';
+  const body = `
+      ${element.note ? `<p class="dt__note">${esc(element.note)}</p>` : ''}
+      ${applied}
+      <p class="dt__note"><span class="mono">${esc(element.rel)}</span></p>
+      ${conflicts.map((c) => renderConflict(c, element)).join('')}
+      ${element.conflictsTruncated ? `
+      <p class="muted" style="font-size:12.5px">…и ещё
+        ${plural(element.conflictsTruncated, 'участок', 'участка', 'участков')} в этом файле.</p>` : ''}
+      ${!conflicts.length ? `<p class="dt__note">${esc(noCodeNote(element))}</p>` : ''}`;
+
+  return `
+  <details class="dt dt--module">
+    <summary>
+      <span class="dt__label">${esc(element.element)}</span>
+      <span class="dt__status dt__status--modified">${esc(ACTION_RU[element.action] || 'требует решения')}</span>
+      ${element.conflictCount ? `<span class="dt__stat">${plural(element.conflictCount, 'участок', 'участка', 'участков')}</span>` : ''}
+    </summary>
+    <div class="dt__body">${body}</div>
+  </details>`;
+}
+
+const ACTION_RU = {
+  conflict: 'изменено дважды',
+  'conflict-binary': 'двоичный файл',
+  'conflict-too-big': 'объединить не удалось',
+  'conflict-vendor-deleted': 'поставщик удалил',
+  'conflict-both-added': 'добавлено обоими',
+  'manual-two-way': 'нет точки отсчёта',
+  'manual-deleted-by-us': 'удалено у вас',
+  failed: 'ошибка обработки',
+};
+
+function noCodeNote(element) {
+  if (element.action === 'conflict-binary') {
+    return 'Файл двоичный — показать отличия текстом нечем. Три версии файла лежат в каталоге '
+      + 'со спорными файлами, сравните их в конфигураторе.';
+  }
+  if (element.action === 'manual-deleted-by-us') {
+    return 'В вашей конфигурации этого элемента нет, поэтому и показывать нечего: решение — '
+      + 'нужен ли он снова.';
+  }
+  return 'Текст отличий в отчёт не попал: подробности ограничены по объёму. Сравните три версии '
+    + 'файла в каталоге со спорными файлами.';
+}
+
+/**
+ * Один участок — тремя колонками.
+ *
+ * Две колонки, как в отчёте об обследовании, здесь не годятся: там сравнивались
+ * две версии, а тут их три, и без средней («что изменил поставщик») невозможно
+ * понять, чем именно новая поставка отличается от прежней.
+ */
+function renderConflict(conflict, element) {
+  const panes = [
+    ['base', 'Текущая поставка', conflict.base, conflict.baseStartLine],
+    ['target', 'Новая поставка', conflict.theirs, conflict.theirsStartLine],
+    ['ours', 'Основная конфигурация', conflict.ours, conflict.oursStartLine],
+  ];
+
+  return `
+    <div class="dt__fragment">
+      <div class="dt__fragment-head">
+        ${conflict.where ? `${esc(conflict.where)} · ` : ''}строка ${formatNumber(conflict.oursStartLine || 0)}
+        в основной конфигурации
+      </div>
+      <div class="mg__diff">
+        ${panes.map(([key, label, part, line]) => `
+        <div class="dt__diff-pane mg__pane--${key}">
+          <div class="dt__diff-pane-head">${label}${line ? ` · строка ${formatNumber(line)}` : ''}</div>
+          ${renderPane(part, element)}
+        </div>`).join('')}
+      </div>
+      ${tailNote(panes)}
+    </div>`;
+}
+
+function renderPane(part, element) {
+  const lines = part?.lines || [];
+  if (!lines.length) {
+    return '<div class="dt__diff-empty">здесь этих строк нет</div>';
+  }
+  const text = lines.join('\n');
+  return element.isModule ? codeBlock(text) : `<pre class="snippet">${esc(dedent(text))}</pre>`;
+}
+
+/**
+ * Оговорка об обрезке — ПОД блоком кода, а не внутри.
+ * Строка «и ещё N строк» внутри кода читается как часть модуля.
+ */
+function tailNote(panes) {
+  const cut = panes.filter(([, , part]) => part?.truncated);
+  if (!cut.length) return '';
+  const text = cut
+    .map(([, label, part]) => `${label}: показано ${part.lines.length}, ещё ${part.truncated}`)
+    .join('; ');
+  return `<p class="muted" style="font-size:12px">Участок длинный и показан не целиком —
+    ${esc(text)}. Полные версии файла лежат в каталоге со спорными файлами.</p>`;
+}
+
+// --- Остальные разделы -------------------------------------------------------
+
+function renderApplied(result) {
+  const objects = result.merge?.applied || [];
+  const totals = result.merge?.totals || {};
+  if (!objects.length) return '';
+
+  return `
+  <p class="section__lead">
+    Здесь изменения поставщика применены без вашего участия: этих мест доработка не касалась,
+    либо правка поставщика легла рядом с вашей, не пересекаясь с ней. Это и есть смысл
+    обновления — типовая часть обновилась сама.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Объект</th><th>Что обновилось</th></tr></thead>
+      <tbody>
+        ${objects.map((object) => `
+        <tr>
+          <td>${esc(object.title)}</td>
+          <td class="muted">${esc(appliedElements(object))}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  ${renderTruncated(result, 'applied')}
+  <p class="muted wide-note" style="font-size:13px">
+    Всего файлов, взятых из новой поставки: ${formatNumber((totals.fromVendor || 0) + (totals.merged || 0))}.
+  </p>`;
+}
+
+function appliedElements(object) {
+  const names = object.elements
+    .filter((e) => e.action === 'merged' || e.action === 'from-vendor')
+    .map((e) => e.element);
+  const shown = names.slice(0, 6).join(', ');
+  const rest = names.length - 6;
+  const tail = rest > 0 ? `, и ещё ${rest}` : '';
+  const merged = object.elements.filter((e) => e.action === 'merged').length;
+  const note = merged ? ` (построчно объединено: ${merged})` : '';
+  return `${shown}${tail}${note}`;
+}
+
+const GROUP_TEXT = {
+  added: {
+    lead: 'Объектов, которых не было ни в текущей поставке, ни у вас: они пришли с новой '
+      + 'поставкой, скопированы в выгрузку и внесены в состав конфигурации.',
+    empty: '',
+  },
+  removed: {
+    lead: 'Поставщик удалил эти объекты, а вы их не меняли, поэтому они удалены и у вас — '
+      + 'так же, как это сделал бы конфигуратор.',
+    empty: '',
+  },
+  kept: {
+    lead: 'Ваши доработки, которых новая поставка не коснулась. Ничего делать не нужно — '
+      + 'раздел нужен, чтобы видеть, что они на месте.',
+    empty: '',
+  },
+};
+
+function renderGroup(result, key) {
+  const objects = result.merge?.[key] || [];
+  if (!objects.length) return '';
+  const text = GROUP_TEXT[key];
+
+  return `
+  <p class="section__lead">${esc(text.lead)}</p>
+  <ul class="object-list">
+    ${objects.map((object) => `<li>${esc(object.title)}</li>`).join('')}
+  </ul>
+  ${renderTruncated(result, key)}`;
+}
+
+function renderTruncated(result, key) {
+  const rest = result.merge?.truncated?.[key] || 0;
+  if (!rest) return '';
+  return `<p class="muted" style="font-size:13px">
+    …и ещё ${plural(rest, 'объект', 'объекта', 'объектов')}. Полный перечень — в JSON-выгрузке результата.
+  </p>`;
+}
+
+// --- Что дальше --------------------------------------------------------------
+
+function renderNext(result) {
+  const manual = manualCount(result);
+  const steps = [];
+
+  if (manual) {
+    steps.push(
+      'Разберите места из раздела «Требуют вашего решения». В файлах выгрузки сейчас стоит ваш '
+      + 'вариант; если нужна версия поставщика — впишите её в файл выгрузки '
+      + `(<span class="mono">${esc(result.mergedDir || '')}</span>) или возьмите из каталога `
+      + 'со спорными файлами.',
+    );
+  }
+  if (!result.loaded) {
+    steps.push(
+      'Загрузите объединённую выгрузку в основную конфигурацию — кнопкой «Загрузить '
+      + 'в конфигурацию» на странице обновления либо в конфигураторе: Конфигурация → '
+      + 'Загрузить конфигурацию из файлов. Базе нужен монопольный доступ.',
+    );
+  }
+  steps.push(
+    'В конфигураторе выполните «Обновить конфигурацию базы данных». Этот шаг программа '
+    + 'не делает намеренно: он меняет структуру таблиц, платформа предупреждает о возможной '
+    + 'потере данных, и решение по таким предупреждениям должно оставаться за специалистом.',
+  );
+  steps.push(
+    'Проверьте типовые обработчики обновления: после смены версии конфигурации 1С выполняет '
+    + 'их при первом запуске. Сделайте резервную копию до этого шага.',
+  );
+  steps.push(
+    'Прогоните обследование информационной базы ещё раз: оно покажет, сколько доработок '
+    + 'осталось и как изменилась обновляемость.',
+  );
+
+  return `
+  <ol class="steps">
+    ${steps.map((step) => `<li>${step}</li>`).join('')}
+  </ol>
+
+  <div class="callout callout--info">
+    <div class="callout__title">Что программа не делает</div>
+    Не обновляет конфигурацию базы данных, не запускает обработчики обновления, не снимает
+    конфигурацию с поддержки и не меняет правила поддержки. Всё, что она изменила, — файлы
+    XML-выгрузки и, если это было запрошено, основная конфигурация базы. Любой шаг можно
+    отменить, повторно загрузив конфигурацию из прежней выгрузки.
+  </div>`;
+}
+
+function manualCount(result) {
+  const totals = result.merge?.totals || {};
+  return (totals.conflicted || 0) + (totals.manual || 0);
+}
+
+/**
+ * Три колонки вместо двух и нумерованные шаги.
+ *
+ * Всё остальное берётся из общей таблицы стилей отчёта: цвета — только
+ * переменными, иначе в тёмной теме блок останется светлым.
+ */
+const UPDATE_STYLES = `
+.mg__diff {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.mg__pane--base .snippet   { background: var(--bg-soft); }
+.mg__pane--target .snippet { background: var(--diff-vendor-bg); }
+.mg__pane--ours .snippet   { background: var(--diff-client-bg); }
+@media (max-width: 1100px) {
+  .mg__diff { grid-template-columns: 1fr; }
+}
+.steps { margin: 0 0 20px; padding-left: 22px; }
+.steps li { margin-bottom: 10px; max-width: 100ch; }
+@media print {
+  .mg__diff { grid-template-columns: 1fr; }
+}
+`;

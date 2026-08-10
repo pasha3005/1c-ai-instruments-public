@@ -232,10 +232,14 @@ function myersAdded(vendor, client) {
  * в порядке следования по обоим файлам, с индексами (0-based) по каждой
  * стороне, где они применимы.
  *
+ * Экспортируется, потому что на нём же построено трёхстороннее объединение
+ * конфигураций (`update/diff3.js`): там нужны и вставки, и удаления, причём
+ * относительно общей базы — старой конфигурации поставщика.
+ *
  * @returns {{op: string, vendorIdx?: number, clientIdx?: number}[]|null}
  *   null — различий больше MAX_EDITS, путь не восстановлен.
  */
-function editScript(vendor, client) {
+export function editScript(vendor, client) {
   const n = vendor.length;
   const m = client.length;
   if (!n && !m) return [];

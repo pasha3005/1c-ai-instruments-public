@@ -84,8 +84,15 @@
         <div class="brand__sub" id="envSummary">Проверка окружения…</div>
       </div>
     </div>
+    <!--
+      Разделы главного окна. Первые два — рабочие режимы продукта, и они
+      равноправны: обследование ничего не меняет, обновление объединяет
+      конфигурацию с новой поставкой. «История» и «О программе» стоят за ними
+      как служебные.
+    -->
     <nav class="tabs" role="tablist">
-      <button class="tab is-active" data-view="new" role="tab">Новый аудит</button>
+      <button class="tab is-active" data-view="new" role="tab">Обследование информационной базы</button>
+      <button class="tab" data-view="update" role="tab">Обновление нетиповой конфигурации</button>
       <button class="tab" data-view="history" role="tab">История</button>
       <!--
         «О программе» открывает README тем же интерфейсом, что и всё остальное:
@@ -150,7 +157,7 @@
       <div class="field-row">
         <div class="field">
           <label for="platformVersion">Версия платформы 1С</label>
-          <select id="platformVersion" name="platformVersion">
+          <select id="platformVersion" name="platformVersion" data-platform-list>
             <option value="">Новейшая установленная</option>
           </select>
           <div class="hint">Список установленных на этом компьютере платформ.</div>
@@ -297,6 +304,171 @@
       <div class="run-stats" id="runStats" hidden></div>
 
       <div class="error-box" id="errorBox" hidden></div>
+    </div>
+  </section>
+
+  <!-- ================= ОБНОВЛЕНИЕ НЕТИПОВОЙ КОНФИГУРАЦИИ ================= -->
+  <section class="view" data-view="update">
+
+    <div class="hero">
+      <h1>Обновление нетиповой конфигурации</h1>
+      <p>
+        Трёхстороннее объединение, как при обновлении конфигурации на поддержке:
+        программа сравнивает <b>основную конфигурацию</b> и <b>новую поставку</b>
+        с <b>текущей конфигурацией поставщика</b>, сама переносит изменения поставщика,
+        сохраняет ваши доработки и показывает <b>дважды изменённые</b> места —
+        те, где решение может принять только человек.
+      </p>
+    </div>
+
+    <form id="updateForm" class="card form" autocomplete="off">
+
+      <div class="field">
+        <label for="uPath">Путь к информационной базе <span class="req">*</span></label>
+        <input type="text" id="uPath" name="uPath" required
+               placeholder="D:\Bases\УправлениеТорговлей   или   srv-1c:1541\UT_Prod"
+               spellcheck="false">
+        <div class="hint" id="uPathHint">
+          Файловая база — путь к каталогу. Серверная — «сервер\имя_базы» или «сервер:порт\имя_базы».
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="uUser">Пользователь 1С</label>
+          <input type="text" id="uUser" name="uUser" placeholder="Администратор" autocomplete="off">
+          <div class="hint">Нужны права «Администрирование»: конфигурация выгружается и загружается.</div>
+        </div>
+        <div class="field">
+          <label for="uPassword">Пароль</label>
+          <input type="password" id="uPassword" name="uPassword" autocomplete="new-password">
+          <div class="hint">Не сохраняется на диск, используется только в этом запуске.</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="uPlatform">Версия платформы 1С</label>
+          <select id="uPlatform" name="uPlatform" data-platform-list>
+            <option value="">Новейшая установленная</option>
+          </select>
+          <div class="hint">Список установленных на этом компьютере платформ.</div>
+        </div>
+        <div class="field"></div>
+      </div>
+
+      <div class="field">
+        <label for="uVendor">Конфигурация поставщика — текущая поставка</label>
+        <div class="picker">
+          <input type="text" id="uVendor" name="uVendor"
+                 placeholder="D:\Эталоны\ERP_2.4.13.111.cf   или   каталог XML-выгрузки"
+                 spellcheck="false">
+          <button type="button" class="btn btn--pick" data-pick="file"
+                  data-target="uVendor" data-filter="cf"
+                  data-title="Выберите файл текущей конфигурации поставщика (.cf)">Файл .cf…</button>
+          <button type="button" class="btn btn--pick" data-pick="folder"
+                  data-target="uVendor"
+                  data-title="Выберите каталог XML-выгрузки текущей конфигурации поставщика">Каталог…</button>
+        </div>
+        <div class="hint">
+          Необязательно, но <b>именно она делает объединение автоматическим</b>: это общая точка
+          отсчёта, по которой видно, кто внёс каждое отличие — вы или поставщик. Если её не указать,
+          программа возьмёт из базы перечень изменённых вами объектов: не тронутые доработкой
+          объекты обновятся целиком, а изменённые придётся переносить вручную.
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="uTarget">Целевая конфигурация — новая поставка <span class="req">*</span></label>
+        <div class="picker">
+          <input type="text" id="uTarget" name="uTarget" required
+                 placeholder="D:\Поставки\ERP_2.4.14.130.cf" spellcheck="false">
+          <button type="button" class="btn btn--pick" data-pick="file"
+                  data-target="uTarget" data-filter="cf"
+                  data-title="Выберите файл целевой конфигурации (.cf)">Файл .cf…</button>
+          <button type="button" class="btn btn--pick" data-pick="folder"
+                  data-target="uTarget"
+                  data-title="Выберите каталог XML-выгрузки целевой конфигурации">Каталог…</button>
+        </div>
+        <div class="hint">
+          То, на что обновляемся: файл поставки <span class="mono">.cf</span> либо каталог
+          её XML-выгрузки.
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="uWorkDir">Каталог для выгрузки <span class="req">*</span></label>
+        <div class="picker">
+          <input type="text" id="uWorkDir" name="uWorkDir" required
+                 placeholder="D:\Обновление" spellcheck="false">
+          <button type="button" class="btn btn--pick" data-pick="folder"
+                  data-target="uWorkDir"
+                  data-title="Выберите каталог для выгрузки конфигураций">Обзор…</button>
+        </div>
+        <div class="hint">
+          Сюда выгружаются три конфигурации, и <b>здесь же остаётся результат объединения</b> —
+          он не удаляется: спорные места правят прямо в этих файлах, из них же потом
+          загружается конфигурация. Нужно несколько гигабайт свободного места.
+        </div>
+      </div>
+
+      <div class="checks">
+        <label class="check">
+          <input type="checkbox" id="uLoadBack">
+          <span>Сразу загрузить результат в конфигурацию базы
+            <em>Единственное действие продукта, которое пишет в информационную базу.
+            Загружается только <b>основная конфигурация</b>; «Обновить конфигурацию базы
+            данных» программа не выполняет — это реструктуризация таблиц, и решение
+            по предупреждениям платформы остаётся за вами. Базе нужен монопольный доступ.
+            Обычный порядок другой: сначала разобрать дважды изменённые места, потом
+            загрузить кнопкой ниже.</em></span>
+        </label>
+      </div>
+
+      <div class="form__actions">
+        <button type="submit" class="btn btn--primary" id="uStartBtn">
+          <span>Запустить объединение</span>
+        </button>
+        <div class="form__note" id="uFormNote"></div>
+      </div>
+    </form>
+
+    <!-- ---------- Прогресс объединения ---------- -->
+    <div class="card progress-card" id="uProgressCard" hidden>
+      <div class="progress-head">
+        <div>
+          <h2 id="uProgressTitle">Выполняется объединение</h2>
+          <div class="progress-sub" id="uProgressSub">Подготовка…</div>
+        </div>
+        <div class="progress-side">
+          <div class="progress-percent" id="uProgressPercent">0%</div>
+          <div class="progress-timer" id="uProgressTimer">0 с</div>
+        </div>
+      </div>
+
+      <div class="progressbar"><i id="uProgressBar" style="width:0%"></i></div>
+
+      <ol class="stages" id="uStages"></ol>
+
+      <div class="run-actions" id="uRunActions">
+        <button class="btn btn--danger-solid" id="uCancelBtn" type="button" disabled>Прервать</button>
+      </div>
+
+      <div class="result-actions" id="uResultActions" hidden>
+        <a class="btn btn--success" id="uOpenReport" target="_blank" rel="noopener">Открыть отчёт</a>
+        <a class="btn" id="uDownloadJson" target="_blank" rel="noopener">Данные JSON</a>
+        <button class="btn btn--danger-solid" id="uLoadBtn" type="button">Загрузить в конфигурацию</button>
+      </div>
+      <div class="save-note" id="uSaveNote" hidden></div>
+
+      <div class="run-stats" id="uRunStats" hidden></div>
+
+      <div class="error-box" id="uErrorBox" hidden></div>
+    </div>
+
+    <div class="card" id="uHistoryCard">
+      <h2 style="margin:0 0 14px;font-size:18px">Прошлые объединения</h2>
+      <div id="uHistoryList" class="history"></div>
     </div>
   </section>
 

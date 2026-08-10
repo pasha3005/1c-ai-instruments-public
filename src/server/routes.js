@@ -9,9 +9,11 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { Router, sendJson, sendText, sendError, readJsonBody, openSse } from './http.js';
-import { createProgress, getProgress, runningProgresses, STAGES } from './progress.js';
+import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES } from './progress.js';
 import { runAudit } from '../pipeline/runAudit.js';
+import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
 import * as store from '../store/auditStore.js';
+import * as updateStore from '../store/updateStore.js';
 import { newAuditId } from '../util/id.js';
 import { discoverPlatforms } from '../onec/platform.js';
 import { parseConnection } from '../onec/connection.js';
@@ -196,6 +198,10 @@ export function buildRouter() {
       recommendedPlatform: platforms[0]?.version || null,
       aiConfigured: await aiAvailable(),
       stages: STAGES,
+      // Второй конвейер — обновление нетиповой конфигурации. Состав этапов
+      // приходит отсюда же: интерфейс рисует шкалу до запуска, чтобы было
+      // видно, из чего работа состоит.
+      updateStages: UPDATE_STAGES,
       isWindows: process.platform === 'win32',
       canPickPaths: dialogsAvailable(),
     });
@@ -516,6 +522,173 @@ export function buildRouter() {
 
   router.delete('/api/audits/:id', async (req, res, { params }) => {
     await store.deleteAudit(params.id);
+    sendJson(res, 200, { ok: true });
+  });
+
+  // --- Обновление нетиповой конфигурации ---
+
+  /**
+   * Запуск объединения.
+   *
+   * Отдельный маршрут, а не флаг у аудита: обследование ничего не меняет,
+   * а обновление правит файлы выгрузки и по просьбе — конфигурацию базы.
+   * Смешивать это в одном маршруте значило бы, что случайный флаг в запросе
+   * ведёт к записи в базу.
+   */
+  router.post('/api/updates', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+
+    for (const [field, message] of [
+      ['infobasePath', 'Не указан путь к информационной базе'],
+      ['targetConfigPath', 'Не указана целевая конфигурация (файл .cf новой поставки)'],
+      ['workDir', 'Не указан каталог для выгрузки'],
+    ]) {
+      if (!body[field] || !String(body[field]).trim()) {
+        sendError(res, 400, message);
+        return;
+      }
+    }
+
+    const updateId = newAuditId();
+    const input = {
+      infobasePath: String(body.infobasePath).trim(),
+      platformVersion: String(body.platformVersion || '').trim(),
+      vendorConfigPath: String(body.vendorConfigPath || '').trim(),
+      targetConfigPath: String(body.targetConfigPath).trim(),
+      workDir: String(body.workDir).trim(),
+      user: String(body.user || '').trim(),
+      password: typeof body.password === 'string' ? body.password : '',
+      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      // Загрузка в базу — единственная запись в информационную базу за весь
+      // продукт, поэтому только по явному согласию: по умолчанию выключено.
+      loadBack: body.loadBack === true,
+    };
+
+    await updateStore.createRun(updateId, input);
+    const progress = createProgress(updateId, UPDATE_STAGES);
+
+    runUpdate({ updateId, input, progress }).catch((err) => {
+      log.warn(`Обновление ${updateId} завершилось ошибкой: ${err.message}`);
+    });
+
+    sendJson(res, 202, { updateId });
+  });
+
+  router.get('/api/updates', async (req, res, { query }) => {
+    const limit = Number(query.get('limit')) || 50;
+    sendJson(res, 200, { items: await updateStore.listRuns({ limit }) });
+  });
+
+  router.get('/api/updates/:id', async (req, res, { params }) => {
+    const meta = await updateStore.getMeta(params.id);
+    if (!meta) {
+      sendError(res, 404, 'Прогон объединения не найден');
+      return;
+    }
+    sendJson(res, 200, meta);
+  });
+
+  router.get('/api/updates/:id/stream', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress) {
+      sendError(res, 404, 'Объединение не найдено или уже выгружено из памяти');
+      return;
+    }
+
+    const sse = openSse(req, res);
+    sse.send(progress.snapshot(), 'snapshot');
+
+    const onEvent = (event) => {
+      sse.send({ ...event, snapshot: progress.snapshot() }, event.type);
+      if (event.type === 'finish' || event.type === 'error' || event.type === 'cancelled') {
+        setTimeout(() => sse.close(), 250).unref?.();
+      }
+    };
+    progress.on('event', onEvent);
+    req.on('close', () => progress.off('event', onEvent));
+  });
+
+  router.post('/api/updates/:id/cancel', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress) {
+      sendError(res, 404, 'Объединение не найдено: возможно, оно уже завершено');
+      return;
+    }
+    if (progress.status !== 'running') {
+      sendError(res, 409, 'Объединение уже завершено');
+      return;
+    }
+    progress.requestCancel();
+    log.info(`Запрошено прерывание объединения ${params.id}`);
+    sendJson(res, 202, { ok: true });
+  });
+
+  router.get('/api/updates/:id/result', async (req, res, { params }) => {
+    const result = await updateStore.getResult(params.id);
+    if (!result) {
+      sendError(res, 404, 'Результат ещё не готов');
+      return;
+    }
+    sendJson(res, 200, result);
+  });
+
+  router.get('/api/updates/:id/report.html', async (req, res, { params }) => {
+    const html = await updateStore.readReport(params.id);
+    if (!html) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    sendText(res, 200, html, 'text/html; charset=utf-8');
+  });
+
+  router.post('/api/updates/:id/open', async (req, res, { params }) => {
+    if (!(await updateStore.readReport(params.id))) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    openUrl(`http://${SERVER.host}:${SERVER.port}/api/updates/${params.id}/report.html`, {
+      appWindow: false,
+      maximized: true,
+    });
+    sendJson(res, 200, { ok: true });
+  });
+
+  /**
+   * Загрузка объединённой выгрузки в основную конфигурацию базы.
+   *
+   * Отдельным действием и после явного подтверждения на форме: между
+   * объединением и загрузкой человек правит спорные места в файлах, и это
+   * основной порядок работы, а не исключение. Пароль в результате не хранится,
+   * поэтому приходит заново.
+   */
+  router.post('/api/updates/:id/load', async (req, res, { params }) => {
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      body = {};
+    }
+    try {
+      const { loadedAt } = await loadUpdateResult({
+        updateId: params.id,
+        user: String(body.user || '').trim(),
+        password: typeof body.password === 'string' ? body.password : '',
+      });
+      sendJson(res, 200, { ok: true, loadedAt });
+    } catch (err) {
+      log.warn(`Загрузка объединения ${params.id} не удалась: ${err.message}`);
+      sendError(res, 400, err.message);
+    }
+  });
+
+  router.delete('/api/updates/:id', async (req, res, { params }) => {
+    await updateStore.deleteRun(params.id);
     sendJson(res, 200, { ok: true });
   });
 

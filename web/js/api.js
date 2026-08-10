@@ -60,6 +60,28 @@ export const api = {
   audit: (id) => request(`api/audits/${id}`),
 
   deleteAudit: (id) => request(`api/audits/${id}`, { method: 'DELETE' }),
+
+  // --- Обновление нетиповой конфигурации ---
+
+  startUpdate: (input) =>
+    request('api/updates', { method: 'POST', body: JSON.stringify(input) }),
+
+  cancelUpdate: (id) => request(`api/updates/${id}/cancel`, { method: 'POST' }),
+
+  listUpdates: () => request('api/updates'),
+
+  update: (id) => request(`api/updates/${id}`),
+
+  openUpdateReport: (id) => request(`api/updates/${id}/open`, { method: 'POST' }),
+
+  /**
+   * Загрузка объединённой выгрузки в конфигурацию базы.
+   * Пароль на сервере не хранится, поэтому передаётся заново.
+   */
+  loadUpdate: (id, credentials) =>
+    request(`api/updates/${id}/load`, { method: 'POST', body: JSON.stringify(credentials) }),
+
+  deleteUpdate: (id) => request(`api/updates/${id}`, { method: 'DELETE' }),
 };
 
 /**
@@ -86,7 +108,16 @@ export function keepAlive() {
  * @returns {() => void} функция отписки
  */
 export function subscribeToAudit(auditId, handlers) {
-  const source = new EventSource(`api/audits/${auditId}/stream`);
+  return subscribeToStream(`api/audits/${auditId}/stream`, handlers);
+}
+
+/** То же для прогона объединения: поток событий устроен одинаково. */
+export function subscribeToUpdate(updateId, handlers) {
+  return subscribeToStream(`api/updates/${updateId}/stream`, handlers);
+}
+
+function subscribeToStream(url, handlers) {
+  const source = new EventSource(url);
 
   const forward = (event) => {
     try {
