@@ -19,7 +19,9 @@
 
 import { TOKEN } from '../bsl/lexer.js';
 import { findEnclosingLoop } from '../bsl/structure.js';
-import { analyzeQueryText, findNonIndexableFilters } from '../bsl/query.js';
+import {
+  analyzeQueryText, findNonIndexableFilters, queryPlace, queryPlaceOf, QUERY_PATTERNS,
+} from '../bsl/query.js';
 import { SEVERITY, CATEGORY, snippetAt } from './context.js';
 
 export const id = 'performance';
@@ -124,53 +126,63 @@ function analyzeQueries(ctx) {
     }
 
     for (const issue of findNonIndexableFilters(query.text)) {
+      // Место конкретного условия, а не начало запроса: замечание называет
+      // выражение из условия ГДЕ, и фрагмент обязан показывать именно его.
+      const place = queryPlace(query.text, issue.offset);
       ctx.report({
         ruleId: `perf.query-${issue.kind}`,
         title: 'Условие отбора не использует индекс',
         severity: SEVERITY.HIGH,
         category: CATEGORY.PERFORMANCE,
-        line: query.line,
+        line: query.line + place.lineOffset,
         detail: issue.detail,
         recommendation:
           'Перепишите условие так, чтобы отбор выполнялся по полю таблицы напрямую: ' +
           'вынесите значение в параметр запроса, добавьте нужный реквизит в индексируемое поле ' +
           'или подготовьте данные во временной таблице.',
-        snippet: firstLines(query.text, 6),
+        snippet: place.snippet,
       });
     }
 
     if (metrics.hasInHierarchy) {
+      const place = queryPlaceOf(query.text, QUERY_PATTERNS.inHierarchy);
       ctx.report({
         ruleId: 'perf.query-in-hierarchy',
         title: 'Использование «В ИЕРАРХИИ»',
         severity: SEVERITY.MEDIUM,
         category: CATEGORY.PERFORMANCE,
-        line: query.line,
+        line: query.line + place.lineOffset,
         detail:
           'Условие «В ИЕРАРХИИ» разворачивается СУБД в рекурсивный обход дерева и на глубоких ' +
           'иерархиях выполняется значительно медленнее обычного отбора.',
         recommendation:
           'Если иерархия используется часто, храните признак принадлежности группе в отдельном ' +
           'индексируемом реквизите или регистре сведений и отбирайте по нему.',
-        snippet: firstLines(query.text, 6),
+        snippet: place.snippet,
       });
     }
 
     if (metrics.hasAutoOrder) {
+      const place = queryPlaceOf(query.text, QUERY_PATTERNS.autoOrder);
       ctx.report({
         ruleId: 'perf.query-autoorder',
         title: 'Использование АВТОУПОРЯДОЧИВАНИЕ',
         severity: SEVERITY.LOW,
         category: CATEGORY.PERFORMANCE,
-        line: query.line,
+        line: query.line + place.lineOffset,
         detail: 'АВТОУПОРЯДОЧИВАНИЕ добавляет неявную сортировку по представлению ссылки, что требует соединения со справочником.',
         recommendation: 'Задайте явный порядок через УПОРЯДОЧИТЬ ПО по индексируемым полям.',
-        snippet: firstLines(query.text, 6),
+        snippet: place.snippet,
       });
     }
   }
 }
 
+/**
+ * Начало запроса — для замечаний о запросе ЦЕЛИКОМ: соединений слишком много,
+ * подзапросов слишком много, отбора нет вовсе. Здесь показать одну строку
+ * нечего, речь о всей конструкции.
+ */
 function firstLines(text, n) {
-  return text.split('\n').slice(0, n).join('\n').slice(0, 400);
+  return text.split('\n').slice(0, n).join('\n').slice(0, 600);
 }

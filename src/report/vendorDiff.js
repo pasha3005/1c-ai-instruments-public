@@ -14,7 +14,7 @@
 
 import { formatNumber } from '../analyze/dataVolume.js';
 import { esc, plural, lines, SECTION_NUM } from './ui.js';
-import { highlightBsl } from './bslHighlight.js';
+import { codeBlock } from './bslHighlight.js';
 
 /**
  * Раздела нет вовсе, когда конфигурация поставщика недоступна: сравнивать
@@ -315,8 +315,10 @@ function groupByRoutine(items) {
 
 /**
  * Один фрагмент — двумя колонками, как отчёт о сравнении конфигураций в 1С:
- * слева код поставщика на этом же месте, справа — что у клиента. Код
- * подсвечен по синтаксису языка (`bslHighlight.js`).
+ * слева конфигурация поставщика на этом же месте, справа основная
+ * конфигурация. Колонки названы так же, как их называет сам конфигуратор:
+ * «Поставщик» и «Клиент» пользователь прочитал как чужие термины.
+ * Код подсвечен по синтаксису языка (`bslHighlight.js`).
  *
  * Пустая левая колонка означает разное в зависимости от способа сравнения:
  * при построчном дифе или разборе отчёта платформы (`diff`/`compare`) это
@@ -331,31 +333,38 @@ function renderFragmentList(fragments, method) {
 function renderFragment(fragment, method) {
   const vendorLines = fragment.vendorLines || [];
   const vendorPane = vendorLines.length
-    ? `<pre class="snippet">${highlightBsl(vendorLines.join('\n'))}</pre>`
+    ? codeBlock(vendorLines.join('\n'))
     : `<div class="dt__diff-empty">${esc(emptyVendorPaneNote(method))}</div>`;
 
-  const tail = fragment.truncated ? `\n… и ещё ${formatNumber(fragment.truncated)} строк` : '';
+  // Обрезка — только на участках в сотни строк. Дописывать «…и ещё N строк»
+  // внутрь кода нельзя: пользователь читает блок как код и такую строку
+  // принимает за часть модуля. Поэтому оговорка стоит ПОД блоком.
+  const tail = fragment.truncated
+    ? `<p class="muted" style="font-size:12px">Показаны первые ${formatNumber(fragment.lines.length)} строк участка,
+        ещё ${plural(fragment.truncated, 'строка', 'строки', 'строк')} — в JSON-выгрузке результата аудита.</p>`
+    : '';
 
   return `
     <div class="dt__fragment">
       <div class="dt__fragment-head">строки ${fragment.startLine}–${fragment.endLine}</div>
       <div class="dt__diff">
         <div class="dt__diff-pane dt__diff-pane--vendor">
-          <div class="dt__diff-pane-head">Поставщик</div>
+          <div class="dt__diff-pane-head">Конфигурация поставщика</div>
           ${vendorPane}
         </div>
         <div class="dt__diff-pane dt__diff-pane--client">
-          <div class="dt__diff-pane-head">Клиент</div>
-          <pre class="snippet">${highlightBsl(fragment.lines.join('\n'))}${esc(tail)}</pre>
+          <div class="dt__diff-pane-head">Основная конфигурация</div>
+          ${codeBlock(fragment.lines.join('\n'))}
         </div>
       </div>
+      ${tail}
     </div>`;
 }
 
 function emptyVendorPaneNote(method) {
   return method === 'marks'
-    ? 'Сравнение с поставщиком не выполнялось — код поставщика здесь неизвестен'
-    : 'У поставщика здесь ничего не было — строка добавлена';
+    ? 'Сравнение с поставщиком не выполнялось — кода поставщика здесь не знаем'
+    : 'У поставщика здесь ничего не было — строки добавлены';
 }
 
 function diffMethodNote(diff) {

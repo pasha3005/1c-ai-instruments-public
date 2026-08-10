@@ -149,8 +149,58 @@ export function analyzeQueryText(text) {
   };
 }
 
+/**
+ * Комментарии внутри текста запроса не выбрасываются, а забиваются пробелами
+ * той же длины: позиции символов должны совпадать с исходным текстом, иначе
+ * найденное место («вот эта строка запроса») указывает не туда. На счётчики
+ * и проверки наличия конструкций это не влияет — там важны только слова.
+ */
 function stripQueryComments(text) {
-  return String(text || '').replace(/\/\/[^\n]*/g, '');
+  return String(text || '').replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+}
+
+/**
+ * Место конструкции внутри текста запроса — в строках от его начала, вместе
+ * с фрагментом кода вокруг.
+ *
+ * Замечание обязано указывать на ту строку, о которой говорит. Раньше все
+ * замечания к запросу показывали его первые шесть строк и номер строки его
+ * начала: в тексте замечания стояло «отбор через цепочку точек
+ * (ТаблицаИзменений.Договор.ВалютаВзаиморасчетов)», а в приведённом фрагменте
+ * этой строки не было вовсе — условие ГДЕ находится строк на пятьдесят ниже.
+ * Пользователь поймал это сразу.
+ *
+ * @param {string} text текст запроса
+ * @param {number} offset позиция символа внутри текста
+ * @param {number} [context] сколько строк показать до и после
+ */
+export function queryPlace(text, offset, context = 2) {
+  const rows = String(text || '').split('\n');
+  const at = Math.max(0, Math.min(Number(offset) || 0, String(text || '').length));
+
+  let consumed = 0;
+  let index = 0;
+  for (; index < rows.length; index += 1) {
+    const next = consumed + rows[index].length + 1;
+    if (next > at) break;
+    consumed = next;
+  }
+  index = Math.min(index, Math.max(0, rows.length - 1));
+
+  const from = Math.max(0, index - context);
+  const to = Math.min(rows.length, index + context + 1);
+  return {
+    lineOffset: index,
+    snippet: rows.slice(from, to).map((row) => row.trimEnd()).join('\n').slice(0, 600),
+  };
+}
+
+/** Место первого вхождения конструкции — для правил, привязанных к слову. */
+export function queryPlaceOf(text, pattern) {
+  const stripped = stripQueryComments(text);
+  const re = new RegExp(pattern.source, pattern.flags.replace('g', ''));
+  const found = re.exec(stripped);
+  return queryPlace(text, found ? found.index : 0);
 }
 
 /** Извлекает имена таблиц после ИЗ / СОЕДИНЕНИЕ. */
@@ -183,37 +233,48 @@ export function findNonIndexableFilters(text) {
   Q.where.lastIndex = 0;
   if (!whereMatch) return issues;
 
-  const wherePart = stripped.slice(whereMatch.index);
+  // Смещение начала ГДЕ в тексте запроса: `offset` каждого замечания считается
+  // от начала запроса, а не от начала условия, — иначе фрагмент кода в отчёте
+  // указывает не на ту строку.
+  const whereAt = whereMatch.index;
+  const wherePart = stripped.slice(whereAt);
 
   // Отбор по полю через две и более точки: Товар.Владелец.Наименование
   const dottedRe = new RegExp(`[${WORD_CHAR}]+(?:\\.[${WORD_CHAR}]+){2,}`, 'g');
-  const dotted = wherePart.match(dottedRe);
-  if (dotted?.length) {
+  const dotted = [...wherePart.matchAll(dottedRe)];
+  if (dotted.length) {
     issues.push({
       kind: 'dottedFilter',
+      offset: whereAt + dotted[0].index,
       detail:
-        `Отбор через цепочку точек (${[...new Set(dotted)].slice(0, 3).join(', ')}) — ` +
+        `Отбор через цепочку точек (${[...new Set(dotted.map((m) => m[0]))].slice(0, 3).join(', ')}) — ` +
         'платформа выполнит неявное соединение с таблицей по ссылке, и индекс использован не будет',
     });
   }
 
-  if (new RegExp(`(?<![${WORD_CHAR}])(?:ПОДОБНО|LIKE)\\s*"?%`, 'i').test(wherePart)) {
+  const wildcard = new RegExp(`(?<![${WORD_CHAR}])(?:ПОДОБНО|LIKE)\\s*"?%`, 'i').exec(wherePart);
+  if (wildcard) {
     issues.push({
       kind: 'leadingWildcard',
+      offset: whereAt + wildcard.index,
       detail: 'Условие ПОДОБНО с ведущим символом «%» не может использовать индекс — приведёт к полному сканированию таблицы',
     });
   }
 
-  if (new RegExp(`(?<![${WORD_CHAR}])(?:ВЫРАЗИТЬ|CAST)\\s*\\(`, 'i').test(wherePart)) {
+  const cast = new RegExp(`(?<![${WORD_CHAR}])(?:ВЫРАЗИТЬ|CAST)\\s*\\(`, 'i').exec(wherePart);
+  if (cast) {
     issues.push({
       kind: 'castInWhere',
+      offset: whereAt + cast.index,
       detail: 'Приведение типа (ВЫРАЗИТЬ) в условии отбора блокирует использование индекса',
     });
   }
 
-  if (new RegExp(`(?<![${WORD_CHAR}])(?:ПОДСТРОКА|SUBSTRING)\\s*\\(`, 'i').test(wherePart)) {
+  const substring = new RegExp(`(?<![${WORD_CHAR}])(?:ПОДСТРОКА|SUBSTRING)\\s*\\(`, 'i').exec(wherePart);
+  if (substring) {
     issues.push({
       kind: 'functionInWhere',
+      offset: whereAt + substring.index,
       detail: 'Вызов функции над полем в условии отбора блокирует использование индекса',
     });
   }

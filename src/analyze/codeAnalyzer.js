@@ -208,6 +208,9 @@ export async function analyzeCode(modules, configuration, options = {}) {
         // от одной трассы Майерса, поэтому границы участков совпадают.
         const aligned = diffModuleAligned(vendorSource, source);
         if (aligned.exact) attachVendorLines(diff.regions, aligned.hunks);
+        // Вставка показывается целиком, а не обрезанной по строкам, которые
+        // сравнение сочло отличающимися.
+        diff.regions = expandToAuthored(diff.regions, regions);
         partial.diffed += 1;
         partial.diffLines += diff.addedLines;
         recordModuleChange(moduleChanges, module, {
@@ -233,6 +236,7 @@ export async function analyzeCode(modules, configuration, options = {}) {
     if (!diff && partialTargets.has(module)) {
       const reported = reportedRegions(module, changeSet, source);
       if (reported) {
+        reported.regions = expandToAuthored(reported.regions, regions);
         diff = reported;
         partial.fromReport += 1;
         partial.fromReportLines += reported.addedLines;
@@ -373,8 +377,14 @@ const FRAGMENT_MODULES_LIMIT = 300;
  * на процедуру: по одному фрагменту на каждую, до этого предела процедур.
  */
 const FRAGMENTS_PER_MODULE = 20;
-const LINES_PER_FRAGMENT = 12;
-const MAX_LINE_CHARS = 200;
+/**
+ * Участок выводится ЦЕЛИКОМ — требование пользователя: «в блоке кода не надо
+ * выводить „…и ещё 40 строк“». Было 12 строк, и почти каждая вставка обрывалась
+ * на середине. Предел всё же есть: попадаются участки в четыреста строк, а весь
+ * отчёт — один HTML-файл, который открывается браузером целиком.
+ */
+const LINES_PER_FRAGMENT = 200;
+const MAX_LINE_CHARS = 400;
 
 /** Сколько участков изменений хранить по одному модулю. */
 const REGIONS_PER_MODULE = 40;
@@ -409,6 +419,49 @@ function recordModuleChange(moduleChanges, module, change, routines = []) {
     ...change,
     ...(change.regions ? { regions, regionCount: change.regions.length } : {}),
   });
+}
+
+/**
+ * Расширяет участок правки до полного блока, обрамлённого пометками
+ * разработчика (`//++ … //--`).
+ *
+ * Зачем. Подробный отчёт платформы называет далеко не все строки вставки:
+ * часть их совпадает со строками поставщика (сдвиг), и в участок попадает
+ * одна-единственная строка — как правило сама пометка «// ++ Иванов И.И.».
+ * В отчёте это выглядело так: «участок 1 строка», и в ней только комментарий,
+ * а дописанного кода не видно. Пользователь потребовал прямо: «если
+ * разработчик добавил кусок кода, то выведи весь этот кусок».
+ *
+ * Расширять безопасно: содержимое парной пометки — по определению код
+ * разработчика, а не вендора, поэтому правилам он открывается законно.
+ */
+function expandToAuthored(regions, authored) {
+  if (!regions?.length || !authored?.length) return regions;
+
+  for (const region of regions) {
+    for (const block of authored) {
+      if (block.endLine < region.startLine || block.startLine > region.endLine) continue;
+      region.startLine = Math.min(region.startLine, block.startLine);
+      region.endLine = Math.max(region.endLine, block.endLine);
+    }
+  }
+
+  // После расширения соседние участки могут наложиться друг на друга —
+  // тогда это один участок, и показывать его дважды не надо.
+  const sorted = [...regions].sort((a, b) => a.startLine - b.startLine);
+  const merged = [];
+  for (const region of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && region.startLine <= last.endLine + 1) {
+      last.endLine = Math.max(last.endLine, region.endLine);
+      if (region.vendorLines?.length) {
+        last.vendorLines = [...(last.vendorLines || []), ...region.vendorLines];
+      }
+      continue;
+    }
+    merged.push(region);
+  }
+  return merged;
 }
 
 /**

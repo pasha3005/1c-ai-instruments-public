@@ -60,3 +60,40 @@ export function highlightBsl(source) {
   out += esc(text.slice(cursor));
   return out;
 }
+
+/**
+ * Снимает общий отступ фрагмента.
+ *
+ * Код в модуле 1С лежит на третьем-четвёртом уровне вложенности, и в узкой
+ * колонке отчёта половину ширины занимали пустые табуляции. Требование
+ * пользователя: фрагмент начинается с первого символа строки. Внутренние
+ * отступы при этом сохраняются — снимается ровно та часть, которая есть
+ * у всех непустых строк сразу.
+ */
+export function dedent(text) {
+  const rows = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  let common = Infinity;
+  for (const row of rows) {
+    if (!row.trim()) continue;
+    common = Math.min(common, row.length - row.trimStart().length);
+    if (!common) break;
+  }
+  if (!Number.isFinite(common) || !common) return rows.join('\n');
+  return rows.map((row) => (row.trim() ? row.slice(common) : row.trimStart())).join('\n');
+}
+
+/**
+ * Готовый блок кода для отчёта: отступ снят, синтаксис подсвечен.
+ *
+ * Один и тот же вид кода нужен и в дереве отличий от поставщика, и в перечне
+ * замечаний — по прямой просьбе пользователя. Держать это одной функцией
+ * обязательно: два места с почти одинаковой разметкой уже расходились.
+ *
+ * Строки НЕ переносятся: перенос ломает выравнивание запроса и мешает
+ * сравнивать две колонки построчно. Длинная строка уезжает за правый край,
+ * и блок прокручивается — по ширине и по высоте (см. `pre.snippet`).
+ */
+export function codeBlock(text, extraClass = '') {
+  const cls = extraClass ? `snippet ${extraClass}` : 'snippet';
+  return `<pre class="${cls}">${highlightBsl(dedent(text))}</pre>`;
+}

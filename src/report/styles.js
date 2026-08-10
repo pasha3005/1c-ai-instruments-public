@@ -779,6 +779,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   color: var(--ink-soft);
 }
 .finding__rec b { font-weight: 620; color: var(--ink); }
+/*
+ * Блок кода. Строки НЕ переносятся (white-space: pre): перенос сбивает
+ * выравнивание запроса и не даёт сравнивать две колонки построчно. Вместо
+ * переноса — прокрутка, и по ширине, и по высоте: высота ограничена, чтобы
+ * фрагмент в полсотни строк не растягивал страницу. Требование пользователя.
+ */
 pre.snippet {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -787,10 +793,12 @@ pre.snippet {
   border: 1px solid var(--snippet-bd);
   border-radius: 6px;
   padding: 10px 12px;
-  overflow-x: auto;
   margin: 0 0 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  word-break: normal;
+  overflow: auto;
+  max-height: 420px;
+  overscroll-behavior: contain;
   color: var(--ink);
 }
 
@@ -899,6 +907,9 @@ ${LIGHT_VARS}
   .finding, .stage, .score, table { break-inside: avoid; }
   /* Двухпанельный код на книжном листе даёт две нечитаемые колонки. */
   .dt__diff { grid-template-columns: 1fr; }
+  /* Прокрутки на бумаге нет: длинную строку переносим, высоту не ограничиваем,
+     иначе на листе останется видна только первая треть фрагмента. */
+  pre.snippet { white-space: pre-wrap; word-break: break-word; max-height: none; overflow: visible; }
   thead { display: table-header-group; }
   .no-print { display: none !important; }
   a { color: inherit; text-decoration: none; }

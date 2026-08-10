@@ -36,6 +36,7 @@ import { ruName } from '../parse/metadataKinds.js';
 import {
   esc, badge, authorBadge, originBadge, collapsible, plural, stripTrailingCount, slug, shorten,
 } from './ui.js';
+import { codeBlock } from './bslHighlight.js';
 
 /**
  * Сколько случаев одного типа выводить.
@@ -263,7 +264,7 @@ function renderCase(f, index) {
           <td class="num">${f.line || '—'}</td>
           <td class="muted">
             ${esc(shorten(f.detail, 300))}
-            ${f.snippet ? `<pre class="snippet">${esc(f.snippet)}</pre>` : ''}
+            ${f.snippet ? codeBlock(f.snippet) : ''}
           </td>
         </tr>`;
 }
@@ -376,7 +377,12 @@ export const FINDINGS_STYLES = `
 .findings-table th:nth-child(3), .findings-table td:nth-child(3) { width: 120px; }
 .findings-table th:nth-child(4), .findings-table td:nth-child(4) { width: 62px; }
 .findings-table td { font-size: 13.5px; vertical-align: top; }
-.findings-table .snippet { margin-top: 6px; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/*
+ * Код в замечании оформлен ровно так же, как в дереве отличий от поставщика
+ * (функция codeBlock): подсветка, снятый отступ, прокрутка вместо переноса.
+ * Здесь остаётся только размер шрифта — в таблице он мельче.
+ */
+.findings-table .snippet { margin-top: 6px; margin-bottom: 0; font-size: 11.5px; max-height: 260px; }
 .finding-row[hidden] { display: none; }
 details.collapsible[hidden] { display: none; }
 
