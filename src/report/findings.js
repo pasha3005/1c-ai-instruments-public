@@ -54,16 +54,16 @@ const MAX_CASES_PER_RULE = 300;
 export function renderFindingsBlock(result) {
   const findings = result.findings || [];
   if (!findings.length) {
-    return '<div class="callout callout--info">Замечаний не выявлено.</div>';
+    return '<div class="callout callout--good">Замечаний не выявлено.</div>';
   }
 
   const byRule = groupByRule(findings);
   const byAuthor = groupByAuthor(findings);
   const bySeverity = groupBySeverity(findings);
 
-  // Поиск, чипы фильтров и обе сводки — это подготовка к перечню, а не сам
-  // перечень: стоит свернуть их одним заголовком, а не показывать всё сразу
-  // над списком замечаний. Свёрнуто по умолчанию — как и всё остальное здесь.
+  // Поиск, обе сводки и сам перечень — одно целое: перечень читают через
+  // фильтры и сводки, а не отдельно от них, поэтому весь блок сворачивается
+  // и раскрывается одним заголовком. Свёрнуто по умолчанию, как и всё здесь.
   return `
   ${collapsible('Сводки и поиск по замечаниям', `
   ${renderFilters(findings)}
@@ -75,8 +75,8 @@ export function renderFindingsBlock(result) {
     Уровень критичности → тип замечания → случаи. Начинать следует с критичных:
     одно исправление обычно закрывает сразу много однотипных случаев.
     У каждого случая приведён фрагмент кода, к которому относится замечание.
-  </p>`)}
-  ${bySeverity.map((level) => renderSeverityLevel(level)).join('')}`;
+  </p>
+  ${bySeverity.map((level) => renderSeverityLevel(level)).join('')}`)}`;
 }
 
 /**
@@ -339,39 +339,9 @@ export const FINDINGS_SCRIPT = `
     if (list) list.closest('details').scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 
-  // Переход по ссылке из сводки должен раскрыть всё, что над целью.
-  window.addEventListener('hashchange', openTarget);
-  document.addEventListener('click', function (event) {
-    if (event.target.closest && event.target.closest('a[href^="#"]')) setTimeout(openTarget, 0);
-  });
-
-  function openTarget() {
-    var target = document.getElementById(location.hash.slice(1));
-    while (target) {
-      if (target.tagName === 'DETAILS') target.open = true;
-      target = target.parentElement;
-    }
-  }
-
-  /*
-   * Печать в PDF: раскрываем всё перед печатью и возвращаем как было после.
-   *
-   * Одним CSS это не решается. Раньше блоки были раскрыты по умолчанию,
-   * и правила @media print хватало. Теперь всё свёрнуто, а содержимое
-   * закрытого блока браузер прячет не только через display — снаружи
-   * его уже не показать, и в PDF ушёл бы отчёт из одних заголовков.
-   */
-  var reopen = [];
-  window.addEventListener('beforeprint', function () {
-    reopen = [];
-    document.querySelectorAll('details').forEach(function (d) {
-      if (!d.open) { reopen.push(d); d.open = true; }
-    });
-  });
-  window.addEventListener('afterprint', function () {
-    reopen.forEach(function (d) { d.open = false; });
-    reopen = [];
-  });
+  // Раскрытие блока по ссылке-якорю и подготовка к печати живут в общем
+  // скрипте отчёта (layoutScript.js): они нужны всему документу, а этот
+  // скрипт выходит сразу, когда замечаний нет и поля поиска в отчёте нет.
 })();
 `;
 

@@ -61,6 +61,76 @@ export function diffModule(vendorSource, clientSource) {
 }
 
 /**
+ * Как `diffModule`, но с привязкой каждого добавленного участка к строкам
+ * поставщика, стоявшим на этом месте, — для двустороннего показа в отчёте,
+ * как в конфигураторе 1С: слева то, что было у поставщика, справа — что
+ * добавил или изменил интегратор.
+ *
+ * Использует ту же трассу Майерса, что и `diffModule` (`myersAdded` внутри
+ * идёт от того же `editScript`), поэтому границы участков совпадают —
+ * только здесь каждому даётся ещё и содержимое строк поставщика, а не только
+ * номер строки клиента.
+ *
+ * «Хунк» — цепочка подряд идущих операций insert/delete между двумя equal-
+ * прогонами. Один регион `diffModule` (после склейки близких участков через
+ * `toRegions`) может состоять из нескольких хунков — вызывающая сторона сама
+ * решает, какие хунки относятся к какому региону, по пересечению диапазонов
+ * строк клиента.
+ *
+ * @returns {{hunks: {clientStartLine: number, clientEndLine: number,
+ *             vendorStartLine: number|null, vendorEndLine: number|null,
+ *             vendorLines: string[]}[], exact: boolean}}
+ */
+export function diffModuleAligned(vendorSource, clientSource) {
+  const vendorRaw = String(vendorSource ?? '').replace(/^﻿/, '').split(/\r?\n/);
+  const clientRaw = String(clientSource ?? '').replace(/^﻿/, '').split(/\r?\n/);
+  const vendor = vendorRaw.map(stripTrailingWs);
+  const client = clientRaw.map(stripTrailingWs);
+
+  let head = 0;
+  const maxHead = Math.min(vendor.length, client.length);
+  while (head < maxHead && vendor[head] === client[head]) head += 1;
+
+  let tail = 0;
+  while (
+    tail < maxHead - head
+    && vendor[vendor.length - 1 - tail] === client[client.length - 1 - tail]
+  ) tail += 1;
+
+  const vendorMid = vendor.slice(head, vendor.length - tail);
+  const clientMid = client.slice(head, client.length - tail);
+  if (!clientMid.length) return { hunks: [], exact: true };
+
+  const script = editScript(vendorMid, clientMid);
+  if (!script) return { hunks: [], exact: false };
+
+  /** Подряд идущие insert/delete между двумя equal — один хунк. */
+  const rawHunks = [];
+  let current = null;
+  for (const op of script) {
+    if (op.op === 'equal') { current = null; continue; }
+    if (!current) { current = { vendorIdx: [], clientIdx: [] }; rawHunks.push(current); }
+    if (op.op === 'insert') current.clientIdx.push(op.clientIdx);
+    else current.vendorIdx.push(op.vendorIdx);
+  }
+
+  // Чистое удаление (vendorIdx есть, clientIdx нет) участка в клиентском
+  // модуле не даёт — ровно как и в `diffModule`: показывать нечего, строки
+  // клиента для такого хунка не существует.
+  const hunks = rawHunks
+    .filter((h) => h.clientIdx.length)
+    .map((h) => ({
+      clientStartLine: head + Math.min(...h.clientIdx) + 1,
+      clientEndLine: head + Math.max(...h.clientIdx) + 1,
+      vendorStartLine: h.vendorIdx.length ? head + Math.min(...h.vendorIdx) + 1 : null,
+      vendorEndLine: h.vendorIdx.length ? head + Math.max(...h.vendorIdx) + 1 : null,
+      vendorLines: h.vendorIdx.map((i) => vendorRaw[head + i]),
+    }));
+
+  return { hunks, exact: true };
+}
+
+/**
  * Участки изменений, расширенные на несколько строк в обе стороны.
  *
  * @param {{startLine: number, endLine: number}[]} regions
@@ -103,26 +173,74 @@ export function keepOnlyRegions(source, regions) {
   return lines.map((line, i) => (keep[i + 1] ? line : '')).join('\n');
 }
 
+/**
+ * Приписывает регионам (`diffModule`) строки поставщика из хунков
+ * (`diffModuleAligned`) по пересечению диапазонов строк клиента — оба
+ * построены одним и тем же дифом, но `toRegions` в `diffModule` склеивает
+ * близкие участки (до 3 строк разрыва), поэтому одному региону может
+ * соответствовать несколько хунков.
+ *
+ * Мутирует переданные регионы (дописывает `vendorLines`, когда они есть)
+ * и возвращает их же — вызывающая сторона передаёт свежий массив.
+ */
+export function attachVendorLines(regions, hunks) {
+  for (const region of regions) {
+    const vendorLines = [];
+    for (const hunk of hunks) {
+      if (hunk.clientEndLine < region.startLine || hunk.clientStartLine > region.endLine) continue;
+      vendorLines.push(...hunk.vendorLines);
+    }
+    if (vendorLines.length) region.vendorLines = vendorLines;
+  }
+  return regions;
+}
+
 // --- Внутреннее --------------------------------------------------------------
 
 function normalizeLines(source) {
   return String(source ?? '')
     .replace(/^﻿/, '')
     .split(/\r?\n/)
-    // Хвостовые пробелы и различия отступов не являются доработкой: выгрузка
-    // одной и той же процедуры разными версиями платформы может отличаться ими.
-    .map((line) => line.replace(/\s+$/, ''));
+    .map(stripTrailingWs);
+}
+
+// Хвостовые пробелы и различия отступов не являются доработкой: выгрузка
+// одной и той же процедуры разными версиями платформы может отличаться ими.
+function stripTrailingWs(line) {
+  return line.replace(/\s+$/, '');
 }
 
 /**
  * Жадный диф Майерса. Возвращает индексы строк, добавленных в `client`,
  * либо null, если различий больше предела.
+ *
+ * Тонкая обёртка над `editScript` — раньше сама восстанавливала путь и отдавала
+ * только добавленные строки; теперь `editScript` восстанавливает путь целиком
+ * (нужен и удалённым строкам поставщика — для двустороннего показа в отчёте,
+ * см. `diffModuleAligned`), а здесь из него просто выбираются вставки.
+ * Результат — те же индексы, что были бы у старой версии: `editScript` строит
+ * путь той же трассой Майерса, и на insert-шаге индекс совпадает с прежним `y-1`.
  */
 function myersAdded(vendor, client) {
+  const script = editScript(vendor, client);
+  if (!script) return null;
+  return script.filter((op) => op.op === 'insert').map((op) => op.clientIdx);
+}
+
+/**
+ * Полный путь дифа Майерса: список операций 'equal' | 'insert' | 'delete'
+ * в порядке следования по обоим файлам, с индексами (0-based) по каждой
+ * стороне, где они применимы.
+ *
+ * @returns {{op: string, vendorIdx?: number, clientIdx?: number}[]|null}
+ *   null — различий больше MAX_EDITS, путь не восстановлен.
+ */
+function editScript(vendor, client) {
   const n = vendor.length;
   const m = client.length;
-  const max = Math.min(MAX_EDITS, n + m);
+  if (!n && !m) return [];
 
+  const max = Math.min(MAX_EDITS, n + m);
   // v[k] — самая дальняя достигнутая позиция по vendor для диагонали k.
   const offset = max;
   const v = new Int32Array(2 * max + 1);
@@ -144,15 +262,18 @@ function myersAdded(vendor, client) {
         y += 1;
       }
       v[k + offset] = x;
-      if (x >= n && y >= m) return backtrack(trace, vendor, client, d, offset);
+      if (x >= n && y >= m) return backtrackScript(trace, vendor, client, d, offset);
     }
   }
   return null;
 }
 
-/** Восстанавливает по снимкам, какие строки client были добавлены. */
-function backtrack(trace, vendor, client, d, offset) {
-  const added = [];
+/**
+ * Восстанавливает по снимкам весь путь: не только вставки, как раньше,
+ * а все три вида шагов — нужно для двустороннего показа отличий.
+ */
+function backtrackScript(trace, vendor, client, d, offset) {
+  const ops = [];
   let x = vendor.length;
   let y = client.length;
 
@@ -167,13 +288,26 @@ function backtrack(trace, vendor, client, d, offset) {
     while (x > prevX && y > prevY) {
       x -= 1;
       y -= 1;
+      ops.push({ op: 'equal', vendorIdx: x, clientIdx: y });
     }
-    if (down) added.push(y - 1);
+    if (down) {
+      y -= 1;
+      ops.push({ op: 'insert', clientIdx: y });
+    } else {
+      x -= 1;
+      ops.push({ op: 'delete', vendorIdx: x });
+    }
     x = prevX;
     y = prevY;
   }
+  // Общий префикс перед самым первым отличием: шаги 1..d его не касаются.
+  while (x > 0 && y > 0) {
+    x -= 1;
+    y -= 1;
+    ops.push({ op: 'equal', vendorIdx: x, clientIdx: y });
+  }
 
-  return added.filter((i) => i >= 0).reverse();
+  return ops.reverse();
 }
 
 /**

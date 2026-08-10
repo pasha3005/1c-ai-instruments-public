@@ -14,6 +14,7 @@
 
 import { formatNumber } from '../analyze/dataVolume.js';
 import { esc, plural, lines, SECTION_NUM } from './ui.js';
+import { highlightBsl } from './bslHighlight.js';
 
 /**
  * Раздела нет вовсе, когда конфигурация поставщика недоступна: сравнивать
@@ -261,22 +262,43 @@ function renderDiffModuleBody(diff) {
 
   const groups = groupByRoutine(regions);
   if (groups.length <= 1 || !fragments.length) {
-    return `${note}${renderFragmentList(fragments)}${restNote}`;
+    return `${note}${renderFragmentList(fragments, diff.method)}${restNote}`;
   }
 
   const fragmentsByRoutine = groupByRoutine(fragments);
   const fragmentMap = new Map(fragmentsByRoutine.map((g) => [g.routine, g.items]));
 
   return `${note}
-    ${groups.map((g) => `
+    ${groups.map((g) => {
+    const own = fragmentMap.get(g.routine) || [];
+    return `
     <details class="dt dt--routine">
       <summary>
         <span class="dt__label">${g.routine ? `Процедура «${esc(g.routine)}»` : 'Вне процедур'}</span>
         <span class="dt__stat">${plural(g.items.length, 'участок', 'участка', 'участков')}</span>
       </summary>
-      <div class="dt__body">${renderFragmentList(fragmentMap.get(g.routine) || [])}</div>
-    </details>`).join('')}
+      <div class="dt__body">${own.length ? renderFragmentList(own, diff.method) : noFragmentsNote()}</div>
+    </details>`;
+  }).join('')}
     ${restNote}`;
+}
+
+/**
+ * Процедура изменена, но текста правки в отчёте нет.
+ *
+ * Так бывает, когда правки затронули больше процедур, чем отведено фрагментов
+ * (`FRAGMENTS_PER_MODULE` в `codeAnalyzer`): исходники внутри результата аудита
+ * весят много, и предел необходим. Раньше в этом случае группа раскрывалась
+ * ПУСТОЙ — выглядело как «процедура не раскрывается», и пользователь сообщил
+ * об этом как о поломке. Молчать нельзя: пустой блок читается как отсутствие
+ * отличий, а отличия есть — не показан их текст.
+ */
+function noFragmentsNote() {
+  return `<p class="dt__note">
+    Отличия в этой процедуре есть, но их текст в отчёт не попал: на модуль
+    отводится ограниченное число фрагментов кода, иначе файл отчёта разрастается
+    на десятки мегабайт. Полные данные — в JSON-выгрузке результата аудита.
+  </p>`;
 }
 
 /** Группирует участки/фрагменты по имени процедуры, сохраняя порядок первого появления. */
@@ -291,12 +313,49 @@ function groupByRoutine(items) {
   return order.map((routine) => ({ routine, items: map.get(routine) }));
 }
 
-function renderFragmentList(fragments) {
-  return fragments.map((fragment) => `
+/**
+ * Один фрагмент — двумя колонками, как отчёт о сравнении конфигураций в 1С:
+ * слева код поставщика на этом же месте, справа — что у клиента. Код
+ * подсвечен по синтаксису языка (`bslHighlight.js`).
+ *
+ * Пустая левая колонка означает разное в зависимости от способа сравнения:
+ * при построчном дифе или разборе отчёта платформы (`diff`/`compare`) это
+ * достоверно означает «у поставщика здесь ничего не было — чистая вставка».
+ * При разборе по пометкам разработчика (`marks`) сравнения не было вовсе,
+ * и это не то же самое: код поставщика просто неизвестен, а не отсутствует.
+ */
+function renderFragmentList(fragments, method) {
+  return fragments.map((fragment) => renderFragment(fragment, method)).join('');
+}
+
+function renderFragment(fragment, method) {
+  const vendorLines = fragment.vendorLines || [];
+  const vendorPane = vendorLines.length
+    ? `<pre class="snippet">${highlightBsl(vendorLines.join('\n'))}</pre>`
+    : `<div class="dt__diff-empty">${esc(emptyVendorPaneNote(method))}</div>`;
+
+  const tail = fragment.truncated ? `\n… и ещё ${formatNumber(fragment.truncated)} строк` : '';
+
+  return `
     <div class="dt__fragment">
       <div class="dt__fragment-head">строки ${fragment.startLine}–${fragment.endLine}</div>
-      <pre class="snippet">${esc(fragment.lines.join('\n'))}${fragment.truncated ? `\n… и ещё ${formatNumber(fragment.truncated)} строк` : ''}</pre>
-    </div>`).join('');
+      <div class="dt__diff">
+        <div class="dt__diff-pane dt__diff-pane--vendor">
+          <div class="dt__diff-pane-head">Поставщик</div>
+          ${vendorPane}
+        </div>
+        <div class="dt__diff-pane dt__diff-pane--client">
+          <div class="dt__diff-pane-head">Клиент</div>
+          <pre class="snippet">${highlightBsl(fragment.lines.join('\n'))}${esc(tail)}</pre>
+        </div>
+      </div>
+    </div>`;
+}
+
+function emptyVendorPaneNote(method) {
+  return method === 'marks'
+    ? 'Сравнение с поставщиком не выполнялось — код поставщика здесь неизвестен'
+    : 'У поставщика здесь ничего не было — строка добавлена';
 }
 
 function diffMethodNote(diff) {

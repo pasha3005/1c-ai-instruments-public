@@ -70,15 +70,21 @@ export function openAppWindow(url, { size = '1280,900' } = {}) {
  * по умолчанию.
  *
  * @param {string} url
- * @param {{appWindow?: boolean, size?: string}} [options]
+ * @param {{appWindow?: boolean, size?: string, maximized?: boolean}} [options]
  */
-export function openUrl(url, { appWindow = true, size = '1280,900' } = {}) {
+export function openUrl(url, { appWindow = true, size = '1280,900', maximized = false } = {}) {
   try {
     if (process.platform === 'win32') {
       if (appWindow && openAppWindow(url, { size })) return;
       // `start` открывает адрес через оболочку, своим состоянием показа —
       // здесь `windowsHide` безопасен и нужен: иначе мигает консоль cmd.
-      spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      // `/max` — тот же приём, что и `windowsHide` для окна приложения,
+      // только в обратную сторону: STARTUPINFO новой вкладки получает
+      // SW_SHOWMAXIMIZED, а не SW_HIDE. Если у браузера уже есть открытое
+      // окно, `start` просто добавит в него вкладку — размер существующего
+      // окна это не меняет, и не должно: пользователь выбрал его сам.
+      const args = maximized ? ['/c', 'start', '/max', '', url] : ['/c', 'start', '', url];
+      spawn('cmd', args, { detached: true, stdio: 'ignore', windowsHide: true }).unref();
     } else if (process.platform === 'darwin') {
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
     } else {

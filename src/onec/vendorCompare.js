@@ -433,15 +433,23 @@ function readModuleLines(moduleLines, key, line, state) {
   const entry = moduleLines.get(key);
   if (!state.block || !entry || entry.storedLines >= LINES_PER_MODULE) return;
 
-  // В блоке вставки строка кода идёт в кавычках; в блоке «Изменено» клиентская
-  // сторона помечена «>», версия поставщика — «<», её брать нельзя.
-  let text = null;
-  if (state.kind === 'client' && line.startsWith('"')) text = line;
-  else if (state.kind === 'changed' && line.startsWith('>')) text = line.slice(1).trim();
-  if (text === null) return;
-
-  state.block.lines.push(unquoteReportLine(text));
-  entry.storedLines += 1;
+  // В блоке вставки строка кода идёт в кавычках, версии поставщика у нею нет —
+  // это чистое добавление. В блоке «Изменено» клиентская сторона помечена «>»,
+  // версия поставщика — «<»: раньше её просто отбрасывали, а для двустороннего
+  // показа в отчёте (как в 1С — слева поставщик, справа клиент) нужна и она.
+  if (state.kind === 'client' && line.startsWith('"')) {
+    state.block.lines.push(unquoteReportLine(line));
+    entry.storedLines += 1;
+    return;
+  }
+  if (state.kind === 'changed' && line.startsWith('<')) {
+    (state.block.vendorLines ||= []).push(unquoteReportLine(line.slice(1).trim()));
+    return;
+  }
+  if (state.kind === 'changed' && line.startsWith('>')) {
+    state.block.lines.push(unquoteReportLine(line.slice(1).trim()));
+    entry.storedLines += 1;
+  }
 }
 
 /**

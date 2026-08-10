@@ -448,11 +448,17 @@ export function buildRouter() {
   });
 
   /**
-   * Открыть готовый отчёт отдельным окном.
+   * Открыть готовый отчёт.
    *
    * Делает это сервер, а не страница. `window.open` из обработчика события
    * SSE браузер считает всплывающим окном и блокирует: нажатия кнопки не было,
    * отчёт открывается сам по завершении аудита.
+   *
+   * В отличие от окна самой программы — не режимом приложения (`--app=`,
+   * без адресной строки), а обычной вкладкой браузера по умолчанию,
+   * развёрнутой на весь экран: отчёт — документ для чтения и печати,
+   * а не рабочий экран программы, и адресная строка (плюс «Печать»,
+   * «Найти на странице» из меню браузера) здесь только помогает.
    */
   router.post('/api/audits/:id/open', async (req, res, { params }) => {
     if (!(await store.readReport(params.id, 'html'))) {
@@ -460,8 +466,8 @@ export function buildRouter() {
       return;
     }
     openUrl(`http://${SERVER.host}:${SERVER.port}/api/audits/${params.id}/report.html`, {
-      appWindow: SERVER.appWindow,
-      size: '1400,960',
+      appWindow: false,
+      maximized: true,
     });
     sendJson(res, 200, { ok: true });
   });

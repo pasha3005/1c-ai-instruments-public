@@ -70,6 +70,14 @@ const LIGHT_VARS = `
   --mark-modified-ink: #8a5b00; --mark-modified-bg: #f6e7bd;
   --mark-added-ink: #14603c;    --mark-added-bg: #cbe9d8;
   --mark-removed-ink: #8d2020;  --mark-removed-bg: #f6cfcf;
+
+  /* Подсветка синтаксиса 1С — как в конфигураторе: комментарий зелёным,
+     ключевые слова синим, строки нейтральным цветом текста (ink-soft). */
+  --code-comment: #1e7a34;
+  --code-keyword: #0033cc;
+  --code-directive: #8a4b12;
+  --diff-vendor-bg: #fdeded;
+  --diff-client-bg: #e8f5ef;
 `;
 
 /**
@@ -123,6 +131,12 @@ const DARK_VARS = `
   --mark-added-ink: #7fd0a3;    --mark-added-bg: #1c3a2a;
   --mark-removed-ink: #f28a84;  --mark-removed-bg: #3c2020;
 
+  --code-comment: #6fc57e;
+  --code-keyword: #79a6ff;
+  --code-directive: #e0a868;
+  --diff-vendor-bg: #2e1a1a;
+  --diff-client-bg: #16281f;
+
   color-scheme: dark;
 `;
 
@@ -147,13 +161,37 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * --- Раскладка: меню слева, отчёт справа, во всю ширину экрана ---
+ *
+ * Отчёт занимает всё окно, а не лист фиксированной ширины: на широком мониторе
+ * колонка в 1080px оставляла по трети экрана пустыми с каждой стороны, а
+ * таблицы сравнения и двухпанельный код в неё не влезали. Читаемость длинных
+ * абзацев при этом не страдает — её держит max-width у самого текста (см.
+ * правило для p ниже), а не ширина всего документа.
+ *
+ * Меню — колонка грида, а не position: fixed: фиксированный элемент выпадает
+ * из потока, и под него приходится вручную подбирать отступ содержимому,
+ * который разъезжается при любой смене ширины. Здесь ширину держит сам грид,
+ * а «не прокручивается» делает position: sticky внутри колонки.
+ */
+.layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
+}
+
 .page {
-  max-width: 1080px;
-  margin: 0 auto;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
   padding: 0 0 80px;
   background: var(--bg);
-  box-shadow: 0 1px 3px rgba(18, 22, 31, .06);
 }
+
+/* Плавная прокрутка к разделу по щелчку в меню. */
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
 /* --- Титульный лист --- */
 .cover {
@@ -394,9 +432,55 @@ details.collapsible--group > .collapsible__body { padding: 12px 0 2px 14px; bord
 }
 .tree-legend span { display: flex; align-items: center; gap: 7px; }
 .dt__note { font-size: 13px; color: var(--ink-soft); margin: 6px 0 8px; max-width: none; }
-.dt__fragment { margin: 0 0 10px; }
+.dt__fragment { margin: 0 0 14px; }
 .dt__fragment-head { font-size: 12px; color: var(--ink-faint); margin-bottom: 3px; }
 .dt__fragment .snippet { margin: 0; }
+
+/*
+ * Двустороннее сравнение — как отчёт о сравнении конфигураций в самом 1С:
+ * слева код поставщика, справа код клиента, для одного и того же участка.
+ * На печати и на узком экране колонки складываются друг под друга: сравнивать
+ * построчно тогда уже не выйдет, но это лучше горизонтальной прокрутки.
+ */
+.dt__diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.dt__diff-pane { min-width: 0; }
+.dt__diff-pane-head {
+  font-size: 11.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+.dt__diff-pane .snippet { margin: 0; }
+.dt__diff-pane--vendor .snippet { background: var(--diff-vendor-bg); }
+.dt__diff-pane--client .snippet { background: var(--diff-client-bg); }
+/* Участок — чистая вставка: у поставщика показывать нечего, а не пустой блок. */
+.dt__diff-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 48px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  padding: 10px;
+}
+@media (max-width: 760px) {
+  .dt__diff { grid-template-columns: 1fr; }
+}
+
+/* Подсветка синтаксиса 1С внутри фрагментов кода. */
+.tok-comment { color: var(--code-comment); }
+.tok-keyword { color: var(--code-keyword); font-weight: 620; }
+.tok-string { color: var(--ink-soft); }
+.tok-directive { color: var(--code-directive); }
 
 /* Пропорция «совпадает / изменено / добавлено / удалено». */
 .diffbar {
@@ -723,6 +807,8 @@ pre.snippet {
 .callout--warn { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-ink); }
 .callout--info { background: var(--note-bg); border-color: var(--note-bd); color: var(--note-ink); }
 .callout--danger { background: var(--danger-bg); border-color: var(--danger-bd); color: var(--danger-ink); }
+/* Хорошая новость («замечаний не выявлено») — сигнальным зелёным, не акцентом. */
+.callout--good { background: var(--good-bg); border-color: var(--good-bd); color: var(--good); }
 .callout__title { font-weight: 640; margin-bottom: 5px; color: inherit; }
 /*
  * Нейтральное описание факта — не предупреждение и не важная врезка, а то же,
@@ -800,63 +886,149 @@ ${LIGHT_VARS}
   }
   body { background: #fff; font-size: 10.5pt; }
   .page { box-shadow: none; max-width: none; }
+  /* На бумаге меню бессмысленно: ссылки не нажать, а место занимает. */
+  .layout { display: block; }
+  .nav { display: none; }
   .cover { padding: 40px 0; break-after: page; }
   .section { padding: 22px 0; break-inside: auto; }
   .section > h2 { break-after: avoid; }
+  /* Прилипающий заголовок в PDF наезжал бы на текст на каждой странице. */
+  .sec > summary { position: static; break-after: avoid; }
+  .sec > summary::after { display: none; }
+  .sec__body { display: block !important; }
   .finding, .stage, .score, table { break-inside: avoid; }
+  /* Двухпанельный код на книжном листе даёт две нечитаемые колонки. */
+  .dt__diff { grid-template-columns: 1fr; }
   thead { display: table-header-group; }
   .no-print { display: none !important; }
   a { color: inherit; text-decoration: none; }
 }
 
 /*
- * Дерево содержания слева — список разделов отчёта постоянными якорями.
+ * --- Меню слева: содержание отчёта ---
  *
- * position: fixed, а не sticky: по требованию список «не прокручивается» —
- * должен оставаться на месте при скролле длинного документа, а не уезжать
- * вверх экрана, как в итоге ведёт себя sticky на длинной странице.
+ * position: sticky внутри своей колонки грида: меню стоит на месте при
+ * прокрутке отчёта («не прокручивается» по требованию пользователя), но, в
+ * отличие от position: fixed, остаётся в потоке — ширину ему задаёт грид,
+ * и содержимому не нужен подобранный вручную отступ слева.
  *
- * Смещение слева считается от центра листа (.page — 1080px, значит его край
- * в calc(50% - 540px)), а не задано константой: так дерево не наезжает
- * на лист независимо от ширины окна. Порог в media-запросе — тот момент,
- * начиная с которого слева остаётся меньше места, чем нужно самому дереву.
+ * Своя внутренняя прокрутка нужна: с подпунктами разделов список длиннее
+ * экрана, а до «Методики» в конце добраться надо.
  */
-.toc {
-  position: fixed;
-  top: 28px;
-  left: calc(50% - 780px);
-  width: 220px;
-  max-height: calc(100vh - 56px);
+.nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
   overflow-y: auto;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
-  box-shadow: 0 1px 3px rgba(18, 22, 31, .06);
-  z-index: 5;
+  padding: 22px 14px 30px 22px;
+  border-right: 1px solid var(--line);
+  background: var(--bg-soft);
+  font-size: 13.5px;
 }
-.toc__title {
+.nav__brand {
   font-size: 11px;
-  letter-spacing: .07em;
+  letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  margin-bottom: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
 }
-.toc__list { list-style: none; margin: 0; padding: 0; }
-.toc__list li {
-  margin: 0;
-  padding: 5px 0 5px 14px;
-  border-left: 2px solid var(--line);
-}
-.toc__list a {
+.nav__list, .nav__sub { list-style: none; margin: 0; padding: 0; max-width: none; }
+.nav__list > li { margin: 0 0 1px; }
+.nav__list > li > a {
+  display: block;
+  padding: 7px 10px 7px 12px;
+  border-radius: 7px;
+  border-left: 2px solid transparent;
   color: var(--ink-soft);
   text-decoration: none;
-  font-size: 13px;
   line-height: 1.35;
 }
-.toc__list a:hover { color: var(--accent); }
-@media (max-width: 1600px) {
-  .toc { display: none; }
+.nav__list > li > a:hover { background: var(--bg); color: var(--ink); }
+/*
+ * Активный раздел подсвечивается при прокрутке (scrollspy в скрипте отчёта).
+ * Акцент здесь на месте: это ровно то, «на что смотрят» — где читатель
+ * находится в документе прямо сейчас.
+ */
+.nav__list > li > a.is-current {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 620;
+}
+/* Подпункты — блоки внутри раздела; добавляются скриптом по факту разметки. */
+.nav__sub { margin: 2px 0 8px; }
+.nav__sub li { margin: 0; }
+.nav__sub a {
+  display: block;
+  padding: 4px 8px 4px 26px;
+  border-radius: 6px;
+  color: var(--ink-faint);
+  text-decoration: none;
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav__sub a:hover { background: var(--bg); color: var(--ink-soft); }
+.nav__sub a.is-current { color: var(--accent-ink); font-weight: 600; }
+
+/*
+ * --- Раздел: сворачиваемый, с прилипающим заголовком ---
+ *
+ * Заголовок раздела — элемент summary с position: sticky, поэтому при прокрутке
+ * он остаётся у верхнего края: видно, в каком разделе читатель находится,
+ * и по этому же заголовку раздел сворачивается одним щелчком (штатное
+ * поведение элемента details, без скрипта).
+ *
+ * z-index выше, чем у содержимого, но ниже меню: заголовок должен
+ * перекрывать наезжающие снизу таблицы, а меню — перекрывать заголовок.
+ */
+.sec { margin: 0; }
+.sec > summary {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0 14px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  user-select: none;
+}
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary h2 { margin: 0; }
+.sec > summary .section__num { margin: 0; flex-shrink: 0; }
+/* Указатель состояния — справа, чтобы не разрывать пару «номер + заголовок». */
+.sec > summary::after {
+  content: '▾';
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+.sec:not([open]) > summary::after { content: '▸'; }
+.sec:not([open]) > summary { margin-bottom: 0; opacity: .75; }
+.sec > summary:hover { border-color: var(--accent); }
+.sec > summary:hover h2 { color: var(--accent); }
+.sec__body { padding-top: 4px; }
+
+/*
+ * Прокрутка к якорю не должна прятать цель под прилипшим заголовком раздела:
+ * scroll-margin-top отодвигает точку остановки на его высоту.
+ */
+.section, .sec__body > details.collapsible, .sec__body > h3 { scroll-margin-top: 84px; }
+
+@media (max-width: 1100px) {
+  /* Меню в узком окне только съедало бы место под содержимое. */
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .nav { display: none; }
 }
 
 @media (max-width: 760px) {

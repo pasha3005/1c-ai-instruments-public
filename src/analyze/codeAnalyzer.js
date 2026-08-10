@@ -18,7 +18,7 @@ import * as securityRules from './rules/security.js';
 import * as standardsRules from './rules/standards.js';
 import { shouldAnalyzeModule, isAddedModule, dumpInfoKeyForModule } from './vendorConfig.js';
 import { findAuthoredRegions, authoredLineCount } from './bsl/authorship.js';
-import { diffModule, keepOnlyRegions, toRegions } from './bsl/moduleDiff.js';
+import { diffModule, diffModuleAligned, attachVendorLines, keepOnlyRegions, toRegions } from './bsl/moduleDiff.js';
 import {
   pickAuthor, soleAuthor, prefixAuthor, originOf, groupByAuthor,
   signChangedFindings, keepAuthoredFindings,
@@ -202,6 +202,12 @@ export async function analyzeCode(modules, configuration, options = {}) {
       const vendorSource = await readVendorModule(vendorDir, module);
       if (vendorSource !== null) {
         diff = diffModule(vendorSource, source);
+        // Тот же диф, но с текстом строк поставщика на месте каждого участка —
+        // для двустороннего показа отличий в отчёте (слева поставщик, справа
+        // клиент, как в конфигураторе). `diffModule` и `diffModuleAligned` идут
+        // от одной трассы Майерса, поэтому границы участков совпадают.
+        const aligned = diffModuleAligned(vendorSource, source);
+        if (aligned.exact) attachVendorLines(diff.regions, aligned.hunks);
         partial.diffed += 1;
         partial.diffLines += diff.addedLines;
         recordModuleChange(moduleChanges, module, {
@@ -358,7 +364,15 @@ export async function analyzeCode(modules, configuration, options = {}) {
  * страницы, которую никто не пролистает до конца.
  */
 const FRAGMENT_MODULES_LIMIT = 300;
-const FRAGMENTS_PER_MODULE = 3;
+/**
+ * Раньше — просто первые 3 участка модуля. При группировке дерева отличий
+ * по процедурам это давало пустые группы: у процедуры есть строка «участков:
+ * N», но раскрывать нечего — текст достался только первым трём участкам
+ * модуля, а не первому участку КАЖДОЙ задетой процедуры. Снаружи это
+ * выглядело как «процедура не раскрывается». Теперь бюджет считается
+ * на процедуру: по одному фрагменту на каждую, до этого предела процедур.
+ */
+const FRAGMENTS_PER_MODULE = 20;
 const LINES_PER_FRAGMENT = 12;
 const MAX_LINE_CHARS = 200;
 
@@ -385,6 +399,7 @@ function recordModuleChange(moduleChanges, module, change, routines = []) {
       startLine: r.startLine,
       endLine: r.endLine,
       routine: findRoutineAtLine(routines, r.startLine)?.name || null,
+      ...(r.vendorLines?.length ? { vendorLines: r.vendorLines } : {}),
     }));
 
   moduleChanges.push({
@@ -403,7 +418,22 @@ function recordModuleChange(moduleChanges, module, change, routines = []) {
 function takeFragments(source, regions, routines = []) {
   if (!regions?.length) return [];
   const lines = source.split(/\r?\n/);
-  return regions.slice(0, FRAGMENTS_PER_MODULE).map((region) => {
+
+  // По одному участку на каждую процедуру (первому встреченному), а не
+  // просто первые N участков модуля целиком — иначе у процедуры со вторым
+  // и далее номером в списке правок текста не остаётся вовсе.
+  const seen = new Set();
+  const selected = [];
+  for (const region of regions) {
+    const routine = findRoutineAtLine(routines, region.startLine)?.name || null;
+    const dedupeKey = routine || `#${region.startLine}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    selected.push({ region, routine });
+    if (selected.length >= FRAGMENTS_PER_MODULE) break;
+  }
+
+  return selected.map(({ region, routine }) => {
     const from = Math.max(1, region.startLine);
     const to = Math.min(lines.length, region.endLine);
     // Дальше конца участка не берём. Раньше фрагмент всегда тянул
@@ -417,7 +447,10 @@ function takeFragments(source, regions, routines = []) {
       truncated: Math.max(0, to - from + 1 - LINES_PER_FRAGMENT),
       lines: lines.slice(from - 1, from - 1 + count)
         .map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line)),
-      routine: findRoutineAtLine(routines, region.startLine)?.name || null,
+      routine,
+      // Код поставщика на этом же месте — для двустороннего показа отличий.
+      // Пуст для чистой вставки: у поставщика здесь ничего не было.
+      vendorLines: region.vendorLines || [],
     };
   });
 }
@@ -466,7 +499,11 @@ function reportedRegions(module, changeSet, source) {
   if (!entry) return null;
 
   const index = indexSourceLines(source);
-  const found = new Set();
+  // Номер строки клиента → строка поставщика, стоявшая на этом месте (null —
+  // строка добавлена, у поставщика её не было). Отчёт платформы для строк
+  // блока «Изменено» печатает обе версии («<» и «>»), а для чистой вставки —
+  // только клиентскую. Нужно для двустороннего показа отличий в отчёте.
+  const found = new Map();
 
   for (const block of entry.blocks || []) {
     // Опора участка: первая строка, которая в модуле встречается единожды.
@@ -481,11 +518,13 @@ function reportedRegions(module, changeSet, source) {
       }
     }
 
+    const vendorAt = (i) => block.vendorLines?.[i] ?? null;
+
     for (let i = 0; i < block.lines.length; i += 1) {
       const places = index.get(normalizeLine(block.lines[i]));
       if (!places?.length) continue;
       if (places.length === 1) {
-        found.add(places[0]);
+        found.set(places[0], vendorAt(i));
         continue;
       }
       if (shift === null) continue;
@@ -493,13 +532,22 @@ function reportedRegions(module, changeSet, source) {
       // оно там действительно рядом — иначе это другой такой же фрагмент кода.
       const expected = shift + i;
       const nearest = places.reduce((a, b) => (Math.abs(b - expected) < Math.abs(a - expected) ? b : a));
-      if (Math.abs(nearest - expected) <= NEARBY_LINES) found.add(nearest);
+      if (Math.abs(nearest - expected) <= NEARBY_LINES) found.set(nearest, vendorAt(i));
     }
   }
 
   if (!found.size) return { regions: [], addedLines: 0, removedLines: entry.removedLines, exact: true };
 
-  const regions = toRegions([...found]);
+  const regions = toRegions([...found.keys()]);
+  for (const region of regions) {
+    const vendorLines = [];
+    for (let ln = region.startLine; ln <= region.endLine; ln += 1) {
+      const v = found.get(ln);
+      if (v !== undefined && v !== null) vendorLines.push(v);
+    }
+    if (vendorLines.length) region.vendorLines = vendorLines;
+  }
+
   return {
     regions,
     addedLines: found.size,

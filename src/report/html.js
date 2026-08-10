@@ -18,6 +18,7 @@ import { classifyModule } from '../parse/modules.js';
 import { humanSize } from '../util/fsx.js';
 import { APP } from '../config.js';
 import { renderFindingsBlock, FINDINGS_SCRIPT, FINDINGS_STYLES } from './findings.js';
+import { LAYOUT_SCRIPT } from './layoutScript.js';
 import { renderVendorDiff } from './vendorDiff.js';
 import {
   esc, badge, riskBadge, collapsible, plural, signature,
@@ -51,12 +52,7 @@ export function renderHtmlReport(result, recommendations) {
     { id: 'sec-effort', title: 'Оценка трудозатрат', html: renderEffort(result) },
   ].filter((s) => s.html);
 
-  // Якорь ставится точечной заменой первого вхождения, а не регэкспом по всему
-  // документу: разметку раздела порождаем мы сами, и открывающий тег
-  // `<section class="section">` у каждого рендер-функции ровно один.
-  const sections = sectionDefs
-    .map((s) => s.html.replace('<section class="section">', `<section class="section" id="${s.id}">`))
-    .join('');
+  const sections = sectionDefs.map((s) => collapsibleSection(s.html, s.id)).join('');
 
   return collapsibleTables(numberSections(`<!doctype html>
 <html lang="ru" data-theme="${reportTheme(result)}">
@@ -67,11 +63,12 @@ export function renderHtmlReport(result, recommendations) {
 <style>${REPORT_STYLES}${FINDINGS_STYLES}</style>
 </head>
 <body>
-${renderToc(sectionDefs)}
+<div class="layout">
+${renderNav(sectionDefs)}
 <div class="page">
 ${renderCover(result)}
 ${sections}
-${renderMethodology(result)}
+${collapsibleSection(renderMethodology(result), 'sec-methodology')}
 <footer class="report-footer">
   Отчёт сформирован автоматически системой «${esc(APP.name)}» v${esc(APP.version)}
   ${esc(formatDateTime(result.generatedAt))}.
@@ -79,9 +76,50 @@ ${renderMethodology(result)}
   <div style="margin-top:10px">${signature()}</div>
 </footer>
 </div>
+</div>
+<script>${LAYOUT_SCRIPT}</script>
 <script>${FINDINGS_SCRIPT}</script>
 </body>
 </html>`));
+}
+
+/**
+ * Делает раздел сворачиваемым: номер и заголовок переезжают в `<summary>`,
+ * остальное — в тело. Заголовок при прокрутке прилипает к верху экрана
+ * (`position: sticky` в стилях), и щелчок по нему сворачивает раздел —
+ * требование пользователя: «чтобы я видел, в каком разделе нахожусь, и мог
+ * его свернуть».
+ *
+ * Преобразование делается по разметке ОДНОГО раздела, а не регуляркой по всему
+ * документу, и это принципиально: глобальный разбор `<h2>`/`<h3>` уже дважды
+ * рвал границы разделов (история в `collapsibleTables` ниже). Здесь строка
+ * заведомо содержит ровно один `<section>` и ровно один `<h2>` — его-то
+ * и ищем, а «съесть» соседний раздел физически нечего.
+ *
+ * Раздел остаётся РАСКРЫТЫМ по умолчанию: свёрнутые по умолчанию разделы
+ * превратили бы отчёт в список из десяти заголовков. Свёрнуты внутренние
+ * блоки — они и дают объём.
+ */
+function collapsibleSection(html, id) {
+  const open = html.indexOf('<section class="section"');
+  const gt = html.indexOf('>', open);
+  const close = html.lastIndexOf('</section>');
+  const h2Start = html.indexOf('<h2>', gt);
+  const h2End = html.indexOf('</h2>', h2Start);
+  // Разметка не той формы, что ожидалась, — оставляем раздел как есть:
+  // потерять сворачивание не страшно, потерять содержимое недопустимо.
+  if (open === -1 || close === -1 || h2Start === -1 || h2End === -1) return html;
+
+  const head = html.slice(gt + 1, h2End + '</h2>'.length);
+  const body = html.slice(h2End + '</h2>'.length, close);
+
+  return `
+<section class="section" id="${id}">
+  <details class="sec" open>
+    <summary>${head}</summary>
+    <div class="sec__body">${body}</div>
+  </details>
+</section>`;
 }
 
 /**
@@ -94,22 +132,22 @@ function reportTheme(result) {
 }
 
 /**
- * Дерево содержания слева — список разделов отчёта постоянными якорями.
+ * Меню-содержание слева. Верхний уровень — разделы отчёта, постоянными
+ * якорями; подпункты по блокам внутри раздела дописывает скрипт отчёта
+ * (`layoutScript.js`), потому что часть блоков появляется только при разборе
+ * готовой разметки в `collapsibleTables()`, и собрать их здесь значило бы
+ * разбирать HTML регулярками — тем самым способом, что уже ломал разделы.
  *
- * Требование пользователя буквально: «не прокручивается» — список должен
- * оставаться на месте при скролле длинного документа. Отсюда `position: fixed`
- * в стилях, а не `sticky`: `sticky` через экран-другой всё равно уезжает вверх.
- *
- * Заголовок собран без `<h3>`, чтобы точно не задеть `collapsibleTables()` —
- * та ищет ровно `<h3>` рядом с таблицей, а здесь ни того ни другого нет,
- * но лишний повод для сомнений в разметке отчёта того не стоит.
+ * Заголовок собран без `<h3>`, чтобы точно не попасть под тот же разбор:
+ * он ищет `<h3>` рядом с таблицей, а здесь ни того ни другого нет — но
+ * оставлять повод для сомнений в разметке отчёта не стоит.
  */
-function renderToc(sectionDefs) {
+function renderNav(sectionDefs) {
   const items = [...sectionDefs, { id: 'sec-methodology', title: 'Методика обследования' }];
   return `
-<nav class="toc no-print" aria-label="Содержание отчёта">
-  <div class="toc__title">Содержание</div>
-  <ol class="toc__list">
+<nav class="nav no-print" id="reportNav" aria-label="Содержание отчёта">
+  <div class="nav__brand">Содержание</div>
+  <ol class="nav__list">
     ${items.map((s) => `<li><a href="#${s.id}">${esc(s.title)}</a></li>`).join('')}
   </ol>
 </nav>`;
@@ -293,7 +331,7 @@ function scoreCard(label, value, note) {
 
 function renderDistribution(bySeverity, total) {
   if (!total) {
-    return '<div class="callout callout--info">Замечаний не выявлено.</div>';
+    return '<div class="callout callout--good">Замечаний не выявлено.</div>';
   }
   const order = ['critical', 'high', 'medium', 'low', 'info'];
   const segments = order
@@ -1080,7 +1118,7 @@ function renderUpdatability(result) {
       </tr>
     </tbody>
   </table>
-  </div>` : '<div class="callout callout--info">Факторов, снижающих обновляемость, не выявлено — конфигурация обновляется штатно.</div>'}
+  </div>` : '<div class="callout callout--good">Факторов, снижающих обновляемость, не выявлено — конфигурация обновляется штатно.</div>'}
 </section>`;
 }
 
@@ -1257,7 +1295,7 @@ function renderNameList(items) {
 function renderVolumeInsights(d) {
   if (!d.insights?.length) return '';
   return collapsible('Выводы по составу данных', d.insights.map((insight) => `
-  <div class="callout callout--info">
+  <div class="callout callout--plain">
     <div class="callout__title">${esc(insight.title)}</div>
     ${esc(insight.detail)}
   </div>`).join(''), {
@@ -1295,7 +1333,7 @@ function renderSecurity(result) {
         <div class="finding__detail">${esc(o.detail)}</div>
         <div class="finding__rec"><b>Рекомендация.</b> ${esc(o.recommendation)}</div>
       </div>`).join(''), { count: formatNumber(sec.observations.length) })
-    : '<div class="callout callout--info">Существенных замечаний по разграничению доступа не выявлено.</div>'}
+    : '<div class="callout callout--good">Существенных замечаний по разграничению доступа не выявлено.</div>'}
 
   ${/*
      * Сами замечания по безопасности здесь не повторяются: они уже перечислены
@@ -1304,7 +1342,7 @@ function renderSecurity(result) {
      * указание, чем отобрать их в общем перечне.
      */ ''}
   ${findings.length ? `
-  <div class="callout callout--info">
+  <div class="callout callout--plain">
     <div class="callout__title">Замечания по безопасности в коде: ${formatNumber(findings.length)}</div>
     Перечислены вместе с остальными в разделе «Доработки и качество кода» —
     выберите там направление <b>«${esc(CATEGORY_RU.security)}»</b>, чтобы
