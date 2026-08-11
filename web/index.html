@@ -74,32 +74,35 @@
 
 <header class="topbar">
   <div class="topbar__inner">
-    <div class="brand">
+    <!--
+      Знак приложения — он же кнопка возврата на главную. Отдельная кнопка
+      «назад» рядом с ним была бы вторым способом сделать то же самое.
+    -->
+    <button class="brand" id="homeBtn" type="button" title="На главную">
       <img class="brand__mark" src="icon.svg" alt="" width="40" height="40">
-      <div>
-        <div class="brand__title">
+      <span class="brand__text">
+        <span class="brand__title">
           AI-аудит базы 1С
           <span class="brand__engine">локальный движок</span>
-        </div>
-        <div class="brand__sub" id="envSummary">Проверка окружения…</div>
-      </div>
-    </div>
+        </span>
+        <span class="brand__sub" id="envSummary">Проверка окружения…</span>
+      </span>
+    </button>
     <!--
-      Разделы главного окна. Первые два — рабочие режимы продукта, и они
-      равноправны: обследование ничего не меняет, обновление объединяет
-      конфигурацию с новой поставкой. «История» и «О программе» стоят за ними
-      как служебные.
+      Шапка раздела. Название открытого раздела повторяется здесь намеренно:
+      выбрав режим на главной, пользователь должен видеть, где он находится,
+      а «История» рядом относится именно к этому режиму — история обследований
+      и история объединений это разные списки.
     -->
-    <nav class="tabs" role="tablist">
-      <button class="tab is-active" data-view="new" role="tab">Обследование информационной базы</button>
-      <button class="tab" data-view="update" role="tab">Обновление нетиповой конфигурации</button>
-      <button class="tab" data-view="history" role="tab">История</button>
+    <nav class="tabs" id="topNav">
+      <button class="tab tab--section" id="navSection" type="button" hidden></button>
+      <button class="tab" id="navHistory" type="button" hidden>История</button>
       <!--
         «О программе» открывает README тем же интерфейсом, что и всё остальное:
         отдельное окно с текстовым файлом выглядело бы как выпадение из
         приложения, а искать документацию в каталоге программы никто не станет.
       -->
-      <button class="tab tab--about" data-view="about" role="tab" title="Описание программы (README)">
+      <button class="tab tab--about" data-view="about" type="button" title="Описание программы (README)">
         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="9"></circle>
@@ -114,8 +117,64 @@
 
 <main class="wrap">
 
+  <!-- ================= ГЛАВНАЯ ================= -->
+  <!--
+    Два рабочих режима — двумя крупными кнопками, а не строкой вкладок.
+    Режимы делают принципиально разное: один ничего не меняет, второй пишет
+    в информационную базу, — и выбор между ними должен быть осознанным шагом,
+    а не переключением вкладки мимоходом.
+  -->
+  <section class="view is-active" data-view="home">
+    <div class="hero hero--home">
+      <h1>Что нужно сделать с базой?</h1>
+      <p>
+        Два рабочих режима. Обследование только читает базу и собирает отчёт;
+        обновление объединяет конфигурацию с новой поставкой и, если вы это
+        подтвердите, записывает результат в базу.
+      </p>
+    </div>
+
+    <div class="modes">
+      <button class="mode" type="button" data-goto="new">
+        <span class="mode__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M20 20l-4.2-4.2"></path>
+          </svg>
+        </span>
+        <span class="mode__title">Обследование информационной базы</span>
+        <span class="mode__text">
+          Разбор кода, расширений, прав и объёма данных. Оценка состояния,
+          обновляемости и трудоёмкости, замечания с привязкой к строкам
+          и отчёт для заказчика.
+        </span>
+        <span class="mode__foot mode__foot--safe">Базу не меняет: только чтение</span>
+      </button>
+
+      <button class="mode" type="button" data-goto="update">
+        <span class="mode__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7h10"></path>
+            <path d="M4 12h7"></path>
+            <path d="M4 17h10"></path>
+            <path d="M16 9l4 3-4 3"></path>
+          </svg>
+        </span>
+        <span class="mode__title">Обновление нетиповой конфигурации</span>
+        <span class="mode__text">
+          Трёхстороннее объединение с новой поставкой: правки вендора
+          применяются, доработки сохраняются, спорные места разбираются
+          автоматически, остальное — с вашим решением.
+        </span>
+        <span class="mode__foot mode__foot--write">Может писать в базу — по подтверждению</span>
+      </button>
+    </div>
+  </section>
+
   <!-- ================= НОВЫЙ АУДИТ ================= -->
-  <section class="view is-active" data-view="new">
+  <section class="view" data-view="new">
 
     <div class="hero">
       <h1>Обследование информационной базы</h1>
@@ -412,18 +471,12 @@
         </div>
       </div>
 
-      <div class="checks">
-        <label class="check">
-          <input type="checkbox" id="uLoadBack">
-          <span>Сразу загрузить результат в конфигурацию базы
-            <em>Единственное действие продукта, которое пишет в информационную базу.
-            Загружается только <b>основная конфигурация</b>; «Обновить конфигурацию базы
-            данных» программа не выполняет — это реструктуризация таблиц, и решение
-            по предупреждениям платформы остаётся за вами. Базе нужен монопольный доступ.
-            Обычный порядок другой: сначала разобрать дважды изменённые места, потом
-            загрузить кнопкой ниже.</em></span>
-        </label>
-      </div>
+      <!--
+        Флажка «сразу загрузить в базу» здесь нет намеренно: конвейер сам
+        останавливается перед записью и спрашивает разрешение уже с готовым
+        отчётом. Согласие, данное до начала работы, согласием на запись
+        в базу не является.
+      -->
 
       <div class="form__actions">
         <button type="submit" class="btn btn--primary" id="uStartBtn">
@@ -450,6 +503,27 @@
 
       <ol class="stages" id="uStages"></ol>
 
+      <!--
+        Вопрос перед записью в базу. Конвейер стоит и ждёт ответа именно здесь,
+        а не в системном окне подтверждения: решение принимается уже с итогами
+        объединения перед глазами, и «сколько мест требует решения» видно
+        в этой же карточке.
+      -->
+      <div class="ask" id="uAsk" hidden>
+        <div class="ask__title" id="uAskTitle">Загрузить результат в информационную базу?</div>
+        <div class="ask__text" id="uAskText"></div>
+        <div class="ask__warn">
+          Дальше программа загрузит объединённую выгрузку в <b>основную конфигурацию</b>,
+          выполнит <b>обновление конфигурации базы данных</b> (реструктуризацию таблиц)
+          и прогонит проверки платформы. Базе нужен <b>монопольный доступ</b>.
+          <b>Резервная копия должна быть сделана заранее.</b>
+        </div>
+        <div class="ask__actions">
+          <button class="btn btn--danger-solid" id="uAskYes" type="button">Да, записать в базу</button>
+          <button class="btn" id="uAskNo" type="button">Не сейчас — я разберу спорные места</button>
+        </div>
+      </div>
+
       <div class="run-actions" id="uRunActions">
         <button class="btn btn--danger-solid" id="uCancelBtn" type="button" disabled>Прервать</button>
       </div>
@@ -466,19 +540,27 @@
       <div class="error-box" id="uErrorBox" hidden></div>
     </div>
 
-    <div class="card" id="uHistoryCard">
-      <h2 style="margin:0 0 14px;font-size:18px">Прошлые объединения</h2>
-      <div id="uHistoryList" class="history"></div>
-    </div>
   </section>
 
-  <!-- ================= ИСТОРИЯ ================= -->
+  <!-- ================= ИСТОРИЯ ОБСЛЕДОВАНИЙ ================= -->
   <section class="view" data-view="history">
     <div class="hero">
-      <h1>История проверок</h1>
+      <h1>История обследований</h1>
       <p>Все выполненные аудиты с оценками, затраченным временем и ссылками на отчёты.</p>
     </div>
     <div id="historyList" class="history"></div>
+  </section>
+
+  <!-- ================= ИСТОРИЯ ОБЪЕДИНЕНИЙ ================= -->
+  <section class="view" data-view="update-history">
+    <div class="hero">
+      <h1>История объединений</h1>
+      <p>
+        Прошлые обновления конфигурации: сколько мест потребовало решения, куда легла
+        объединённая выгрузка и загружена ли она в базу.
+      </p>
+    </div>
+    <div id="uHistoryList" class="history"></div>
   </section>
 
   <!-- ================= О ПРОГРАММЕ ================= -->

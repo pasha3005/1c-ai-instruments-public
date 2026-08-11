@@ -409,12 +409,20 @@ function readModuleLines(moduleLines, key, line, state) {
     }
 
     if (!moduleLines.has(key)) {
-      moduleLines.set(key, { blocks: [], removedLines: 0, storedLines: 0 });
+      moduleLines.set(key, {
+        blocks: [], gaps: [], removedLines: 0, storedLines: 0,
+      });
     }
     const entry = moduleLines.get(key);
 
     if (vendor) {
-      entry.removedLines += Math.max(0, Number(vendor[2]) - Number(vendor[1]) + 1);
+      const count = Math.max(0, Number(vendor[2]) - Number(vendor[1]) + 1);
+      entry.removedLines += count;
+      // Сами строки конфигуратор здесь НЕ печатает — только диапазон. Запоминаем
+      // место и длину пропуска: при восстановлении текста старой поставки
+      // (`update/vendorSources.js`) он заполняется из новой поставки, где эти
+      // строки почти всегда сохранились слово в слово.
+      entry.gaps.push({ order: entry.blocks.length, startLine: Number(vendor[1]) || 0, count });
       state.block = null;
       return;
     }
@@ -424,8 +432,12 @@ function readModuleLines(moduleLines, key, line, state) {
       return;
     }
     const startLine = Number((client || changed)[1]);
-    state.block = { startLine: Number.isFinite(startLine) ? startLine : 0, lines: [] };
     state.kind = client ? 'client' : 'changed';
+    state.block = {
+      startLine: Number.isFinite(startLine) ? startLine : 0,
+      kind: state.kind,
+      lines: [],
+    };
     entry.blocks.push(state.block);
     return;
   }

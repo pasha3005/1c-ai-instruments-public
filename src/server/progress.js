@@ -40,15 +40,23 @@ export const UPDATE_STAGES = [
   { id: 'prepare', title: 'Подготовка', weight: 2 },
   { id: 'platform', title: 'Поиск платформы 1С', weight: 2 },
   { id: 'connect', title: 'Проверка доступа к базе', weight: 3 },
-  { id: 'export-main', title: 'Выгрузка основной конфигурации', weight: 22 },
-  { id: 'vendor-old', title: 'Конфигурация поставщика (текущая поставка)', weight: 15 },
-  { id: 'vendor-new', title: 'Целевая конфигурация (новая поставка)', weight: 20 },
-  { id: 'merge', title: 'Трёхстороннее объединение', weight: 22 },
-  { id: 'report', title: 'Отчёт об объединении', weight: 4 },
-  { id: 'load', title: 'Загрузка в конфигурацию базы', weight: 10 },
+  { id: 'export-main', title: 'Выгрузка основной конфигурации', weight: 18 },
+  { id: 'vendor-old', title: 'Конфигурация поставщика (текущая поставка)', weight: 12 },
+  { id: 'vendor-new', title: 'Целевая конфигурация (новая поставка)', weight: 16 },
+  { id: 'merge', title: 'Объединение и разбор спорных мест', weight: 20 },
+  { id: 'report', title: 'Отчёт об объединении', weight: 3 },
+  // Дальше начинается запись в базу, и конвейер здесь останавливается сам:
+  // до ответа пользователя ни один файл в базу не уходит.
+  { id: 'confirm', title: 'Подтверждение записи в базу', weight: 1 },
+  { id: 'load', title: 'Загрузка в конфигурацию базы', weight: 8 },
+  { id: 'db-update', title: 'Обновление конфигурации базы данных', weight: 8 },
+  { id: 'check', title: 'Синтаксический контроль и применимость расширений', weight: 7 },
 ];
 
 export class AuditProgress extends EventEmitter {
+  /** Ожидающий ответа вопрос: разрешается вызовом `answer()`. */
+  #answer = null;
+
   /**
    * @param {string} auditId
    * @param {{id: string, title: string, weight: number}[]} [stages]
@@ -66,6 +74,8 @@ export class AuditProgress extends EventEmitter {
     this.error = null;
     /** Прерывание аудита по кнопке «Прервать». */
     this.controller = new AbortController();
+    /** Вопрос, на который ждём ответа, — попадает и в снимок состояния. */
+    this.pending = null;
     /** @type {Map<string, {id, title, weight, status, detail, startedAt, finishedAt, note}>} */
     this.stages = new Map(
       stages.map((s) => [s.id, { ...s, status: 'pending', detail: '', note: '', startedAt: null, finishedAt: null }]),
@@ -124,6 +134,60 @@ export class AuditProgress extends EventEmitter {
     this.#push('stage', { stage: stageId, note });
   }
 
+  /**
+   * Останавливает конвейер и ждёт ответа пользователя.
+   *
+   * Нужно ровно один раз за весь продукт — перед записью в информационную базу.
+   * Флажок на форме таким согласием не считается: между заполнением формы
+   * и этим моментом проходят десятки минут, за которые человек успевает уйти,
+   * а к решению «писать в базу» он должен вернуться, уже увидев, что
+   * получилось при объединении.
+   *
+   * Ожидание снимается прерыванием: закрытое окно останавливает программу,
+   * и висеть в ожидании ответа, которого некому дать, конвейеру незачем.
+   *
+   * @param {string} stageId этап, на котором стоим
+   * @param {object} question что показать пользователю
+   * @returns {Promise<object>} ответ: `{ ok: boolean, ...}`
+   */
+  ask(stageId, question) {
+    const stage = this.stages.get(stageId);
+    if (stage) {
+      stage.status = 'waiting';
+      stage.detail = question?.title || 'Ожидается ответ';
+      stage.startedAt = stage.startedAt || Date.now();
+    }
+    this.pending = { stage: stageId, question, askedAt: Date.now() };
+    this.#push('ask', { stage: stageId, question });
+
+    return new Promise((resolve, reject) => {
+      const finish = (value) => {
+        this.pending = null;
+        this.controller.signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+      const onAbort = () => {
+        this.pending = null;
+        reject(new Error('Прервано пользователем'));
+      };
+      this.#answer = finish;
+      this.controller.signal.addEventListener('abort', onAbort, { once: true });
+      if (this.controller.signal.aborted) onAbort();
+    });
+  }
+
+  /** Ответ пользователя на заданный вопрос. */
+  answer(value) {
+    if (!this.pending || !this.#answer) return false;
+    const resolve = this.#answer;
+    this.#answer = null;
+    const stage = this.stages.get(this.pending.stage);
+    if (stage) stage.detail = '';
+    this.#push('answered', { stage: this.pending.stage });
+    resolve(value);
+    return true;
+  }
+
   /** Сообщение в текстовый журнал выполнения. */
   message(text, level = 'info') {
     this.log.push({ ts: Date.now(), level, text });
@@ -163,7 +227,7 @@ export class AuditProgress extends EventEmitter {
     this.error = message;
     this.finishedAt = Date.now();
     for (const stage of this.stages.values()) {
-      if (stage.status === 'running') {
+      if (stage.status === 'running' || stage.status === 'waiting') {
         stage.status = 'skipped';
         stage.detail = '';
         stage.note = 'прервано';
@@ -182,7 +246,7 @@ export class AuditProgress extends EventEmitter {
     this.error = error?.message || String(error);
     this.finishedAt = Date.now();
     for (const stage of this.stages.values()) {
-      if (stage.status === 'running') {
+      if (stage.status === 'running' || stage.status === 'waiting') {
         stage.status = 'failed';
         stage.note = this.error;
       }
@@ -196,7 +260,7 @@ export class AuditProgress extends EventEmitter {
     for (const stage of this.stages.values()) {
       if (stage.status === 'done' || stage.status === 'skipped' || stage.status === 'warning') {
         acc += stage.weight;
-      } else if (stage.status === 'running') {
+      } else if (stage.status === 'running' || stage.status === 'waiting') {
         acc += stage.weight * 0.4;
       }
     }
@@ -213,6 +277,9 @@ export class AuditProgress extends EventEmitter {
       finishedAt: this.finishedAt,
       durationMs: this.durationMs(),
       cancelRequested: this.cancelRequested,
+      // Переподключившийся клиент должен снова увидеть вопрос, иначе конвейер
+      // будет молча стоять в ожидании ответа, которого никто не даёт.
+      pending: this.pending,
       stages: [...this.stages.values()],
       log: this.log.slice(-200),
     };

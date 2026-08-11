@@ -565,9 +565,6 @@ export function buildRouter() {
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
-      // Загрузка в базу — единственная запись в информационную базу за весь
-      // продукт, поэтому только по явному согласию: по умолчанию выключено.
-      loadBack: body.loadBack === true,
     };
 
     await updateStore.createRun(updateId, input);
@@ -629,6 +626,34 @@ export function buildRouter() {
     sendJson(res, 202, { ok: true });
   });
 
+  /**
+   * Ответ на вопрос, заданный конвейером.
+   *
+   * Конвейер обновления доходит до записи в базу и останавливается сам,
+   * дожидаясь решения человека. Ответ приходит сюда и разрешает ожидание;
+   * пароль передаётся не здесь — он остался в памяти прогона с момента запуска.
+   */
+  router.post('/api/updates/:id/answer', async (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress || !progress.pending) {
+      sendError(res, 404, 'Прогон ничего не спрашивает: возможно, он уже завершён');
+      return;
+    }
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      body = {};
+    }
+    const accepted = progress.answer({ ok: body.ok === true });
+    if (!accepted) {
+      sendError(res, 409, 'Ответ уже принят');
+      return;
+    }
+    log.info(`Обновление ${params.id}: ответ пользователя — ${body.ok === true ? 'записывать' : 'не записывать'}`);
+    sendJson(res, 200, { ok: true });
+  });
+
   router.get('/api/updates/:id/result', async (req, res, { params }) => {
     const result = await updateStore.getResult(params.id);
     if (!result) {
@@ -675,12 +700,16 @@ export function buildRouter() {
       body = {};
     }
     try {
-      const { loadedAt } = await loadUpdateResult({
+      const loaded = await loadUpdateResult({
         updateId: params.id,
         user: String(body.user || '').trim(),
         password: typeof body.password === 'string' ? body.password : '',
+        // Обновление конфигурации базы данных идёт следом за загрузкой:
+        // без него конфигурация базы остаётся прежней, и обновление выглядит
+        // выполненным, не будучи им.
+        updateDb: body.updateDb !== false,
       });
-      sendJson(res, 200, { ok: true, loadedAt });
+      sendJson(res, 200, { ok: true, ...loaded });
     } catch (err) {
       log.warn(`Загрузка объединения ${params.id} не удалась: ${err.message}`);
       sendError(res, 400, err.message);

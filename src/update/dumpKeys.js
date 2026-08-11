@@ -158,6 +158,71 @@ function suffixFor(tail) {
 }
 
 /**
+ * Ключ файла выгрузки в терминах ConfigDumpInfo и отчёта сравнения.
+ *
+ * Отчёт `/CompareCfg` перечисляет отличия ключами вида `Catalog.Номенклатура`,
+ * `Catalog.Номенклатура.ObjectModule`, `Catalog.X.Form.ФормаЭлемента.Form`.
+ * Чтобы понять, отличается ли КОНКРЕТНЫЙ файл выгрузки от конфигурации
+ * поставщика, нужен обратный перевод: путь файла → тот же ключ.
+ *
+ * На этом стоит восстановление старой поставки из базы: файл, которого нет
+ * в перечне отличий, у поставщика ровно такой же, как у нас, — значит его
+ * содержимое известно точно.
+ *
+ * @returns {string|null} null — файл не сопоставляется ни с одним ключом
+ *   (корневые модули, служебные файлы): о таких судить нельзя.
+ */
+export function dumpInfoKey(rel) {
+  const parts = String(rel).replace(/\\/g, '/').split('/');
+  if (parts.length < 2) return null;
+  if (parts[0] === 'Ext') return null;
+
+  const kind = kindByDir(parts[0]);
+  if (!kind) return null;
+
+  // Catalogs/Номенклатура.xml — сам объект.
+  if (parts.length === 2) return `${kind.tag}.${parts[1].replace(/\.xml$/i, '')}`;
+
+  const key = [kind.tag, parts[1]];
+  const tail = parts.slice(2);
+
+  if (tail[0] === 'Forms' && tail[1]) {
+    // И описание формы, и её модуль — один ключ: конфигуратор считает форму
+    // единым элементом и отдельного хеша для модуля формы не хранит.
+    return [...key, 'Form', tail[1].replace(/\.xml$/i, ''), 'Form'].join('.');
+  }
+  if (tail[0] === 'Commands' && tail[1]) {
+    const name = tail[1].replace(/\.xml$/i, '');
+    const isModule = tail.some((p) => /^CommandModule\.bsl$/i.test(p));
+    return [...key, 'Command', name, ...(isModule ? ['CommandModule'] : [])].join('.');
+  }
+  if (tail[0] === 'Templates' && tail[1]) {
+    return [...key, 'Template', tail[1].replace(/\.xml$/i, '')].join('.');
+  }
+  if (tail[0] === 'Recalculations' && tail[1]) {
+    return [...key, 'Recalculation', tail[1].replace(/\.xml$/i, '')].join('.');
+  }
+
+  if (tail[0] === 'Ext') {
+    const name = tail.slice(1).join('/');
+    const suffix = {
+      'Module.bsl': kind.tag === 'CommonModule' ? '' : 'Module',
+      'ObjectModule.bsl': 'ObjectModule',
+      'ManagerModule.bsl': 'ManagerModule',
+      'RecordSetModule.bsl': 'RecordSetModule',
+      'ValueManagerModule.bsl': 'ValueManagerModule',
+      'CommandModule.bsl': 'CommandModule',
+    }[name];
+    if (suffix === '') return key.join('.');
+    if (suffix) return [...key, suffix].join('.');
+    // Права роли, предопределённые, картинки: своего ключа нет, судим по объекту.
+    return key.join('.');
+  }
+
+  return key.join('.');
+}
+
+/**
  * Ключи объектов, которые интегратор изменил или добавил относительно
  * поставщика.
  *

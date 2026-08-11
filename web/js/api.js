@@ -68,6 +68,10 @@ export const api = {
 
   cancelUpdate: (id) => request(`api/updates/${id}/cancel`, { method: 'POST' }),
 
+  /** Ответ на вопрос конвейера: писать в базу или нет. */
+  answerUpdate: (id, ok) =>
+    request(`api/updates/${id}/answer`, { method: 'POST', body: JSON.stringify({ ok }) }),
+
   listUpdates: () => request('api/updates'),
 
   update: (id) => request(`api/updates/${id}`),
@@ -130,6 +134,16 @@ function subscribeToStream(url, handlers) {
   for (const name of ['snapshot', 'stage', 'log']) {
     source.addEventListener(name, forward);
   }
+
+  // Конвейер обновления может остановиться и спросить разрешение на запись
+  // в базу. Событие отдельное: у него нет снимка состояния, зато есть вопрос,
+  // и пока на него не ответят, прогон стоит.
+  source.addEventListener('ask', (event) => {
+    try {
+      handlers.onAsk?.(JSON.parse(event.data));
+    } catch { /* некорректный пакет — игнорируем */ }
+  });
+  source.addEventListener('answered', () => handlers.onAnswered?.());
 
   source.addEventListener('finish', (event) => {
     forward(event);

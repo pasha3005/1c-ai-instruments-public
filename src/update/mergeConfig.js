@@ -15,10 +15,20 @@
  * это ещё несколько гигабайт, и главное: загружать в базу надо ровно то,
  * что человек мог перед этим поправить руками.
  *
- * **Конфликт не ломает файл.** При дважды изменённом участке в файл идёт наша
- * версия, а участок целиком уходит в отчёт и в каталог «Конфликты» тремя
- * версиями. Маркеры вида «<<<<<<<» сделали бы файл незагружаемым, а загрузка —
+ * **Дважды изменённое место сначала пробуется разобрать самостоятельно**
+ * (`autoResolve.js`) и только потом объявляется конфликтом. Каждое такое
+ * решение попадает в отчёт отдельным разделом — с тремя исходными версиями
+ * и получившимся результатом, чтобы его можно было проверить.
+ *
+ * **Конфликт не ломает файл.** При нерешённом участке в файл идёт наша версия,
+ * а участок целиком уходит в отчёт и в каталог «Конфликты» тремя версиями.
+ * Маркеры вида «<<<<<<<» сделали бы файл незагружаемым, а загрузка —
  * обязательный следующий шаг.
+ *
+ * **Стороны — не обязательно каталоги.** Старая поставка чаще всего приходит
+ * не файлом `.cf`, а восстановленной из самой базы (`vendorSources.js`),
+ * и материализовать её на диск незачем. Поэтому все три стороны здесь —
+ * «деревья»: перечень файлов и чтение по требованию.
  *
  * **Чужие файлы, оставшиеся без ссылки, безвредны.** Если объект новой поставки
  * скопирован, но не попал в состав конфигурации, платформа его при загрузке
@@ -31,6 +41,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { merge3, splitLines, joinLines, twoWayHunks } from './diff3.js';
+import { autoResolve } from './autoResolve.js';
 import { describeDumpPath, objectTitle, childObjectLine, ROOT_KEY } from './dumpKeys.js';
 import { buildXmlOutline, describeXmlRange } from './xmlOutline.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
@@ -51,6 +62,8 @@ const DUMP_INFO = 'ConfigDumpInfo.xml';
 const CONFLICT_FILES_LIMIT = 300;
 /** Сколько участков конфликта показывать по одному файлу. */
 const CONFLICTS_PER_FILE = 20;
+/** Сколько автоматических решений показывать по одному файлу. */
+const RESOLVED_PER_FILE = 20;
 /** Сколько строк показывать в одной колонке участка. */
 const FRAGMENT_LINES = 200;
 /**
@@ -66,38 +79,49 @@ const OBJECTS_PER_GROUP = 500;
 export const CONFLICT_DIR = 'Конфликты';
 
 /**
+ * Дерево-каталог: перечень файлов и чтение с диска.
+ * @param {string} dir
+ */
+export async function dirTree(dir) {
+  const files = await listFiles(dir);
+  return {
+    dir,
+    source: 'dump',
+    files,
+    read: (rel) => fs.readFile(path.join(dir, rel)),
+  };
+}
+
+/**
  * @param {object} params
  * @param {string} params.mainDir выгрузка основной конфигурации (в неё же и пишем)
- * @param {string|null} params.baseDir выгрузка СТАРОЙ конфигурации поставщика
- * @param {string} params.targetDir выгрузка НОВОЙ конфигурации поставщика
+ * @param {object|null} params.baseTree СТАРАЯ поставка: `{files, read, unknown?}`
+ * @param {object} params.targetTree НОВАЯ поставка
  * @param {Set<string>|null} [params.touchedObjects] ключи объектов, изменённых
- *   интегратором — нужны только в режиме без старой поставки
+ *   интегратором — нужны только когда старой поставки нет вовсе
  * @param {string} params.conflictRoot куда складывать три версии конфликтных файлов
  * @param {(done: number, total: number, rel: string) => void} [params.onProgress]
  */
 export async function mergeConfigurations({
-  mainDir, baseDir, targetDir, touchedObjects = null, conflictRoot, onProgress,
+  mainDir, baseTree, targetTree, touchedObjects = null, conflictRoot, onProgress,
 }) {
-  const mode = baseDir ? 'three-way' : 'keys';
-  const [main, base, target] = await Promise.all([
-    listFiles(mainDir),
-    baseDir ? listFiles(baseDir) : Promise.resolve(new Map()),
-    listFiles(targetDir),
-  ]);
+  const main = await dirTree(mainDir);
+  const base = baseTree || { files: new Map(), read: async () => Buffer.alloc(0), unknown: new Set() };
+  const mode = baseTree ? (baseTree.source === 'restored' ? 'restored' : 'three-way') : 'keys';
 
-  const rels = [...new Set([...main.keys(), ...base.keys(), ...target.keys()])]
+  const rels = [...new Set([...main.files.keys(), ...base.files.keys(), ...targetTree.files.keys()])]
     .filter((rel) => rel !== DUMP_INFO)
     .sort();
 
   const state = {
     mode,
     mainDir,
-    baseDir,
-    targetDir,
     conflictRoot,
     main,
     base,
-    target,
+    target: targetTree,
+    /** Файлы, содержимое которых у поставщика неизвестно (восстановление из базы). */
+    unknown: base.unknown || new Set(),
     touchedObjects,
     objects: new Map(),
     totals: {
@@ -106,6 +130,7 @@ export async function mergeConfigurations({
       fromVendor: 0,
       keptOurs: 0,
       merged: 0,
+      autoResolved: 0,
       conflicted: 0,
       addedByVendor: 0,
       removedByVendor: 0,
@@ -148,12 +173,18 @@ export async function mergeConfigurations({
 // --- Один файл ---------------------------------------------------------------
 
 async function mergeOne(state, rel) {
-  const inMain = state.main.has(rel);
-  const inBase = state.base.has(rel);
-  const inTarget = state.target.has(rel);
+  const inMain = state.main.files.has(rel);
+  const inBase = state.base.files.has(rel) && !state.unknown.has(rel);
+  const inTarget = state.target.files.has(rel);
 
   if (state.mode === 'keys') {
     await mergeByObject(state, rel, { inMain, inTarget });
+    return;
+  }
+
+  // Восстановление из базы: про этот файл поставщика ничего не известно.
+  if (state.unknown.has(rel)) {
+    await mergeUnknown(state, rel, { inMain, inTarget });
     return;
   }
 
@@ -257,18 +288,53 @@ async function mergeOne(state, rel) {
 }
 
 /**
- * Режим без старой поставки: решение принимается по ОБЪЕКТУ целиком.
+ * Файл, содержимое которого у поставщика неизвестно.
  *
- * Старой поставки на диске нет, значит построчно объединять нечего: различие
- * между основной конфигурацией и новой поставкой видно, но кто его внёс —
- * неизвестно. Зато известно другое: сравнение прямо в базе (`/CompareCfg`)
- * даёт перечень объектов, изменённых интегратором. Этого достаточно для
- * главного правила обновления — «объект, которого вы не трогали, берём
- * из новой поставки», — а всё, что тронуто, честно уходит в ручной разбор.
+ * Восстановление старой поставки из базы даёт тексты изменённых модулей,
+ * но не прежние значения свойств в XML: отчёт сравнения называет изменённое
+ * свойство, а не то, чем оно было. Таких файлов немного (на реальной ERP —
+ * десятки из десятков тысяч), и решение по ним принимается по-честному:
+ * наша версия остаётся, отличия от новой поставки показываются.
+ */
+async function mergeUnknown(state, rel, { inMain, inTarget }) {
+  if (!inMain) {
+    if (inTarget) {
+      state.totals.manual += 1;
+      record(state, rel, {
+        action: 'manual-deleted-by-us',
+        note: 'Элемент удалён в вашей конфигурации и присутствует в новой поставке.',
+      });
+    }
+    return;
+  }
+  if (!inTarget) {
+    state.totals.ourOwn += 1;
+    return;
+  }
+  if (await same(state, 'main', 'target', rel)) {
+    state.totals.unchanged += 1;
+    return;
+  }
+
+  state.totals.keptOurs += 1;
+  state.totals.manual += 1;
+  const element = record(state, rel, {
+    action: 'manual-two-way',
+    note: 'Это свойство вы изменили относительно поставщика, и в новой поставке оно тоже '
+      + 'другое. Прежнее значение поставщика отчёт сравнения не печатает, поэтому объединить '
+      + 'автоматически нельзя — ниже отличия от новой поставки.',
+  });
+  await attachTwoWay(state, rel, element);
+  await saveConflictVersions(state, rel);
+}
+
+/**
+ * Режим без старой поставки вовсе: решение принимается по ОБЪЕКТУ целиком.
  *
- * Гранулярность именно объектная, а не файловая: если взять из поставки часть
- * файлов объекта, а часть оставить свою, получится объект, собранный из двух
- * несогласованных половин (форма ссылается на реквизит, которого нет).
+ * Остаётся запасным путём на случай, когда и файла `.cf` нет, и сравнение
+ * в базе не удалось (конфигурация снята с поддержки). Гранулярность именно
+ * объектная: если взять из поставки часть файлов объекта, а часть оставить
+ * свою, получится объект, собранный из двух несогласованных половин.
  */
 async function mergeByObject(state, rel, { inMain, inTarget }) {
   const entry = describeDumpPath(rel);
@@ -298,37 +364,7 @@ async function mergeByObject(state, rel, { inMain, inTarget }) {
     return;
   }
 
-  // Объект тронут интегратором — оставляем своё и показываем отличия.
-  if (!inMain) {
-    if (inTarget) {
-      state.totals.manual += 1;
-      record(state, rel, {
-        action: 'manual-deleted-by-us',
-        note: 'Элемент удалён в вашей конфигурации и присутствует в новой поставке.',
-      });
-    }
-    return;
-  }
-
-  state.totals.keptOurs += 1;
-  if (!inTarget) {
-    record(state, rel, { action: 'ours-own' });
-    state.totals.ourOwn += 1;
-    return;
-  }
-  if (await same(state, 'main', 'target', rel)) {
-    state.totals.unchanged += 1;
-    return;
-  }
-
-  state.totals.manual += 1;
-  const element = record(state, rel, {
-    action: 'manual-two-way',
-    note: 'Объект изменён вами, и в новой поставке он тоже другой. Старой поставки на диске '
-      + 'нет, поэтому автоматически объединить нельзя — ниже отличия от новой поставки.',
-  });
-  await attachTwoWay(state, rel, element);
-  await saveConflictVersions(state, rel);
+  await mergeUnknown(state, rel, { inMain, inTarget });
 }
 
 /** Построчное объединение содержимого файла. */
@@ -358,40 +394,58 @@ async function mergeContents(state, rel) {
   const theirsText = theirsBuf.toString('utf8');
   const baseText = baseBuf.toString('utf8');
 
-  const result = merge3(baseText, oursText, theirsText);
-  if (!result.ok) {
+  const merge = merge3(baseText, oursText, theirsText);
+  if (!merge.ok) {
     state.totals.conflicted += 1;
     state.totals.keptOurs += 1;
     record(state, rel, {
       action: 'conflict-too-big',
-      note: `Объединить построчно не удалось: ${result.reason}. Оставлен ваш вариант.`,
+      note: `Объединить построчно не удалось: ${merge.reason}. Оставлен ваш вариант.`,
     });
     await saveConflictVersions(state, rel);
     return;
   }
 
+  // Дважды изменённые места сначала разбираются самостоятельно.
+  const result = merge.conflicts.length
+    ? autoResolve({ rel, baseText, oursText, theirsText, merge })
+    : { lines: merge.lines, conflicts: [], resolved: [], changed: false };
+
   const shape = splitLines(oursText);
-  if (result.changed) {
+  if (merge.changed || result.changed) {
     await writeFile(state, rel, Buffer.from(joinLines(result.lines, shape), 'utf8'));
   }
 
   if (result.conflicts.length) {
     state.totals.conflicted += 1;
+    state.totals.autoResolved += result.resolved.length;
     const element = record(state, rel, {
       action: 'conflict',
-      autoFromVendor: result.fromVendor,
+      autoFromVendor: merge.fromVendor,
     });
     await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
     await saveConflictVersions(state, rel);
     return;
   }
 
-  if (result.fromVendor) {
+  if (result.resolved.length) {
+    state.totals.autoResolved += result.resolved.length;
+    state.totals.merged += 1;
+    const element = record(state, rel, {
+      action: 'auto-resolved',
+      autoFromVendor: merge.fromVendor,
+      autoKeptOurs: merge.keptOurs,
+    });
+    await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
+    return;
+  }
+
+  if (merge.fromVendor) {
     state.totals.merged += 1;
     record(state, rel, {
       action: 'merged',
-      autoFromVendor: result.fromVendor,
-      autoKeptOurs: result.keptOurs,
+      autoFromVendor: merge.fromVendor,
+      autoKeptOurs: merge.keptOurs,
     });
   } else {
     state.totals.keptOurs += 1;
@@ -402,17 +456,24 @@ async function mergeContents(state, rel) {
 // --- Подробности конфликтов --------------------------------------------------
 
 /**
- * Дописывает участки конфликта в запись элемента.
+ * Дописывает участки в запись элемента: и нерешённые, и решённые сами.
  *
  * «Где именно» определяется по-разному в зависимости от вида файла: в XML это
  * путь до свойства («Свойства → Синоним», «Состав → Реквизит «Договор» → Тип»),
  * в модуле — имя процедуры. Номер строки в файле выгрузки сам по себе
  * пользователю не говорит ничего, а требование было увидеть, в каких свойствах
  * изменения.
+ *
+ * Решённые участки показываются с тем же составом колонок плюс результат:
+ * пользователь просил видеть каждое автоматическое объединение и иметь
+ * возможность его проверить.
  */
 async function attachConflicts(state, rel, element, result, texts) {
   element.conflicts = [];
+  element.resolved = [];
   element.conflictCount = result.conflicts.length;
+  element.resolvedCount = result.resolved.length;
+
   if (state.conflictFiles >= CONFLICT_FILES_LIMIT) {
     state.conflictsSkipped += result.conflicts.length;
     return;
@@ -422,19 +483,35 @@ async function attachConflicts(state, rel, element, result, texts) {
   const where = placeFinder(rel, texts.oursText, texts.baseText);
 
   for (const conflict of result.conflicts.slice(0, CONFLICTS_PER_FILE)) {
-    element.conflicts.push({
-      where: where(conflict.oursStartLine, conflict.baseStartLine, conflict.baseEndLine),
-      baseStartLine: conflict.baseStartLine,
-      oursStartLine: conflict.oursStartLine,
-      theirsStartLine: conflict.theirsStartLine,
-      base: cut(conflict.base),
-      ours: cut(conflict.ours),
-      theirs: cut(conflict.theirs),
-    });
+    element.conflicts.push(fragment(conflict, where));
   }
   if (result.conflicts.length > CONFLICTS_PER_FILE) {
     element.conflictsTruncated = result.conflicts.length - CONFLICTS_PER_FILE;
   }
+
+  for (const item of result.resolved.slice(0, RESOLVED_PER_FILE)) {
+    element.resolved.push({
+      ...fragment(item, where),
+      how: item.how,
+      why: item.why,
+      result: cut(item.result || []),
+    });
+  }
+  if (result.resolved.length > RESOLVED_PER_FILE) {
+    element.resolvedTruncated = result.resolved.length - RESOLVED_PER_FILE;
+  }
+}
+
+function fragment(conflict, where) {
+  return {
+    where: where(conflict.oursStartLine, conflict.baseStartLine, conflict.baseEndLine),
+    baseStartLine: conflict.baseStartLine,
+    oursStartLine: conflict.oursStartLine,
+    theirsStartLine: conflict.theirsStartLine,
+    base: cut(conflict.base),
+    ours: cut(conflict.ours),
+    theirs: cut(conflict.theirs),
+  };
 }
 
 /**
@@ -470,7 +547,7 @@ function placeFinder(rel, oursText, baseText = '') {
   return () => '';
 }
 
-/** Отличия от новой поставки, когда объединять нечем (режим без старой поставки). */
+/** Отличия от новой поставки, когда объединять нечем. */
 async function attachTwoWay(state, rel, element) {
   if (state.conflictFiles >= CONFLICT_FILES_LIMIT) {
     state.conflictsSkipped += 1;
@@ -528,7 +605,8 @@ async function saveConflictVersions(state, rel) {
       ['target', 'новая-поставка'],
       ['main', 'основная-конфигурация'],
     ]) {
-      if (!state[tree].has(rel)) continue;
+      if (!treeOf(state, tree).files.has(rel)) continue;
+      if (tree === 'base' && state.unknown.has(rel)) continue;
       const buf = await read(state, tree, rel);
       await fs.writeFile(path.join(dir, `${name}${ext}`), buf);
     }
@@ -570,7 +648,9 @@ function noteChildAdd(state, rel) {
  * не увидит; объект, удалённый из каталога, но оставшийся в составе, — это
  * ошибка загрузки. В полном трёхстороннем режиме состав чаще всего сходится
  * сам (Configuration.xml объединяется построчно), но проверить дешевле,
- * чем разбираться потом с отказом загрузки.
+ * чем разбираться потом с отказом загрузки. При восстановлении поставки
+ * из базы Configuration.xml остаётся нашим целиком, и правка состава здесь —
+ * единственный способ увидеть новые объекты поставки.
  */
 async function patchConfigurationComposition(state) {
   if (!state.childAdd.size && !state.childRemove.size) return;
@@ -695,23 +775,23 @@ async function listFiles(dir) {
   return map;
 }
 
-function dirOf(state, tree) {
-  return { main: state.mainDir, base: state.baseDir, target: state.targetDir }[tree];
+function treeOf(state, tree) {
+  return state[tree];
 }
 
 async function read(state, tree, rel) {
-  return fs.readFile(path.join(dirOf(state, tree), rel));
+  return treeOf(state, tree).read(rel);
 }
 
 /**
- * Одинаковы ли файлы в двух выгрузках.
+ * Одинаковы ли файлы в двух деревьях.
  *
  * Сначала сравниваются размеры: на типовой конфигурации совпадает почти всё,
  * и читать по три гигабайта, чтобы это подтвердить, незачем.
  */
 async function same(state, treeA, treeB, rel) {
-  const sizeA = state[treeA].get(rel);
-  const sizeB = state[treeB].get(rel);
+  const sizeA = treeOf(state, treeA).files.get(rel);
+  const sizeB = treeOf(state, treeB).files.get(rel);
   if (sizeA === undefined || sizeB === undefined) return false;
   if (sizeA !== sizeB) return false;
   const [a, b] = await Promise.all([read(state, treeA, rel), read(state, treeB, rel)]);
@@ -721,21 +801,26 @@ async function same(state, treeA, treeB, rel) {
 async function copyFrom(state, tree, rel) {
   const target = path.join(state.mainDir, rel);
   await ensureDir(path.dirname(target));
-  await fs.copyFile(path.join(dirOf(state, tree), rel), target);
-  state.main.set(rel, state[tree].get(rel));
+  const source = treeOf(state, tree);
+  if (source.dir) {
+    await fs.copyFile(path.join(source.dir, rel), target);
+  } else {
+    await fs.writeFile(target, await source.read(rel));
+  }
+  state.main.files.set(rel, source.files.get(rel));
 }
 
 async function writeFile(state, rel, buffer) {
   const target = path.join(state.mainDir, rel);
   await ensureDir(path.dirname(target));
   await fs.writeFile(target, buffer);
-  state.main.set(rel, buffer.length);
+  state.main.files.set(rel, buffer.length);
 }
 
 async function removeFile(state, rel) {
-  if (!state.main.has(rel)) return;
+  if (!state.main.files.has(rel)) return;
   await fs.rm(path.join(state.mainDir, rel), { force: true }).catch(() => {});
-  state.main.delete(rel);
+  state.main.files.delete(rel);
   state.totals.removedByVendor += 1;
   record(state, rel, { action: 'removed-by-vendor' });
 
@@ -773,11 +858,14 @@ function record(state, rel, data) {
     isModule: entry.isModule,
     conflicts: [],
     conflictCount: 0,
+    resolved: [],
+    resolvedCount: 0,
     ...data,
   };
   // Перечень файлов по объекту ограничен, а вот участки, требующие решения,
   // не теряются никогда: они и есть смысл всей операции.
-  if (object.elements.length >= ELEMENTS_PER_OBJECT && !CONFLICT_ACTIONS.has(element.action)) {
+  if (object.elements.length >= ELEMENTS_PER_OBJECT
+    && !CONFLICT_ACTIONS.has(element.action) && element.action !== 'auto-resolved') {
     object.elementsTruncated += 1;
     return element;
   }
@@ -800,13 +888,14 @@ function buildResult(state) {
 
   const groups = {};
   const truncated = {};
-  for (const status of ['manual', 'applied', 'added', 'removed', 'kept']) {
+  for (const status of ['manual', 'auto', 'applied', 'added', 'removed', 'kept']) {
     const all = objects
       .filter((o) => o.status === status)
       .sort((a, b) => a.title.localeCompare(b.title, 'ru'));
-    // Перечень «что решить руками» не обрезается: обрезать его — значит
-    // умолчать о работе, которую всё равно придётся сделать.
-    const limit = status === 'manual' ? all.length : OBJECTS_PER_GROUP;
+    // Перечень «что решить руками» и «что решено само» не обрезается: первое —
+    // работа, которую всё равно придётся сделать, второе — решения, которые
+    // пользователь просил показывать все до одного.
+    const limit = status === 'manual' || status === 'auto' ? all.length : OBJECTS_PER_GROUP;
     groups[status] = all.slice(0, limit);
     truncated[status] = Math.max(0, all.length - limit);
     groups[`${status}Count`] = all.length;
@@ -818,6 +907,9 @@ function buildResult(state) {
     /** Главное: что предстоит решить руками. */
     manual: groups.manual,
     manualCount: groups.manualCount,
+    /** Что программа решила сама — с показом до и после. */
+    auto: groups.auto,
+    autoCount: groups.autoCount,
     applied: groups.applied,
     appliedCount: groups.appliedCount,
     added: groups.added,
@@ -836,6 +928,7 @@ function buildResult(state) {
 
 function objectStatus(object) {
   if (object.elements.some((e) => CONFLICT_ACTIONS.has(e.action))) return 'manual';
+  if (object.elements.some((e) => e.action === 'auto-resolved')) return 'auto';
   if (object.elements.some((e) => e.action === 'merged' || e.action === 'from-vendor')) return 'applied';
   if (object.elements.every((e) => e.action === 'added-by-vendor')) return 'added';
   if (object.elements.every((e) => e.action === 'removed-by-vendor')) return 'removed';

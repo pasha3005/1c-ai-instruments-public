@@ -5,36 +5,40 @@
  * делает конфигуратор, — но без ручного разбора тысячи строк в окне сравнения:
  *
  *   1. выгружаем основную конфигурацию базы в XML;
- *   2. разворачиваем ТЕКУЩУЮ конфигурацию поставщика (общая точка отсчёта);
+ *   2. получаем ТЕКУЩУЮ конфигурацию поставщика — из файла .cf либо
+ *      восстановлением прямо из базы (`update/vendorSources.js`);
  *   3. разворачиваем НОВУЮ поставку (то, на что обновляемся);
  *   4. объединяем три версии: правку вендора берём, свою сохраняем,
- *      дважды изменённое отдаём человеку;
- *   5. пишем результат в файлы выгрузки и, если попросили, загружаем их
- *      в основную конфигурацию базы.
+ *      дважды изменённое сначала пробуем разобрать сами;
+ *   5. пишем результат в файлы выгрузки и показываем отчёт;
+ *   6. спрашиваем разрешение и, получив его, загружаем результат в базу,
+ *      обновляем конфигурацию базы данных и прогоняем проверки — включая
+ *      применимость расширений, которую чиним и проверяем заново.
  *
  * Почему обследование и обновление — разные конвейеры, хотя первые три этапа
  * похожи. Обследование ничего не меняет и живёт результатом-отчётом; обновление
- * меняет файлы выгрузки, а по просьбе — и конфигурацию базы, и его результат —
+ * меняет файлы выгрузки, а по подтверждению — и саму базу, и его результат —
  * сама выгрузка. Общий конвейер с флагом «а теперь ещё и обнови» означал бы,
  * что случайно поставленная галочка ведёт к записи в базу.
  *
  * Выгрузка после обновления НЕ удаляется: в ней лежит результат, её правят
- * руками в конфликтных местах и из неё загружают конфигурацию — иногда не
- * в тот же день.
+ * руками в местах, где решение за человеком, и из неё же потом загружают
+ * конфигурацию — иногда не в тот же день.
  */
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { resolvePlatform } from '../onec/platform.js';
 import { parseConnection, validateConnection } from '../onec/connection.js';
-import { exportConfiguration } from '../onec/collector.js';
+import { exportConfiguration, exportExtensions } from '../onec/collector.js';
 import { loadConfigFromFiles } from '../onec/designer.js';
-import { readConfigDumpInfo } from '../analyze/baselines.js';
+import { checkConfig, checkExtensionsApplicable, updateDbConfig } from '../onec/checkConfig.js';
 import {
   prepareVendorConfig, exportCfToXml, readConfigurationProperties,
 } from '../analyze/vendorConfig.js';
-import { mergeConfigurations, CONFLICT_DIR } from '../update/mergeConfig.js';
-import { touchedObjectKeys } from '../update/dumpKeys.js';
+import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
+import { restoreVendorTree } from '../update/vendorSources.js';
+import { fixExtensionAnnotations } from '../update/fixExtensions.js';
 import { renderUpdateReport } from '../report/updateReport.js';
 import * as store from '../store/updateStore.js';
 import { ensureDir, pathExists, rmrf, dirSize, humanSize } from '../util/fsx.js';
@@ -42,6 +46,9 @@ import { createLogger } from '../util/logger.js';
 import { runCancellable, throwIfCancelled, isCancelled, CANCEL_MESSAGE } from '../util/cancel.js';
 
 const log = createLogger('update');
+
+/** Сколько раз чинить расширения и повторять проверку применимости. */
+const FIX_ROUNDS = 3;
 
 /**
  * @param {object} params
@@ -108,13 +115,24 @@ async function runPipeline({ updateId, input, progress }) {
     progress.done('export-main',
       `${humanSize(await dirSize(exported.dir))}, ${mainProps.name || 'конфигурация'} ${mainProps.version || ''}`.trim());
 
-    // ---------- 5. Текущая конфигурация поставщика ----------
+    // ---------- 5. Новая поставка ----------
+    // Раньше она готовилась после старой. Теперь наоборот: восстановление
+    // старой поставки из базы заглядывает в новую, чтобы заполнить строки,
+    // которые интегратор удалил, — их текста отчёт сравнения не печатает.
+    startStage('vendor-new', 'Подготовка целевой конфигурации');
+    const target = await prepareTarget({ input, platform, workRoot, progress });
+    const targetTree = await dirTree(target.dir);
+    const targetProps = await readConfigurationProperties(path.join(target.dir, 'Configuration.xml'));
+    progress.done('vendor-new',
+      `${targetProps.name || ''} ${targetProps.version || ''}`.trim() || target.dir);
+
+    // ---------- 6. Текущая конфигурация поставщика ----------
     startStage('vendor-old', 'Подготовка текущей конфигурации поставщика');
     const vendor = await prepareVendorConfig({
       vendorPath: input.vendorConfigPath,
       platform, conn, workDir: workRoot, user: input.user, password: input.password,
       configName: mainProps.name,
-      totalEntries: await countDumpEntries(exported.dir, input.vendorConfigPath),
+      totalEntries: 0,
       onProgress: (text) => progress.update('vendor-old', text),
     });
 
@@ -122,49 +140,14 @@ async function runPipeline({ updateId, input, progress }) {
       throw new Error(
         `Не удалось получить текущую конфигурацию поставщика: ${vendor.reason} `
         + 'Без неё обновление невозможно: непонятно, какие изменения ваши, а какие пришли '
-        + 'от поставщика, и объединять нечего.',
+        + 'от поставщика, и объединять нечего. Проверьте, что конфигурация стоит на поддержке, '
+        + 'либо укажите файл .cf текущей поставки.',
       );
     }
 
-    const baseDir = vendor.dir || null;
-    const baseProps = baseDir
-      ? await readConfigurationProperties(path.join(baseDir, 'Configuration.xml'))
-      : { name: mainProps.name, version: '', vendor: '' };
-
-    /**
-     * Режим без исходников старой поставки.
-     *
-     * Сравнение прямо в базе даёт перечень объектов, изменённых интегратором,
-     * но не тексты поставщика. Построчно объединять нечем, зато главное правило
-     * обновления выполнимо: объект, которого доработка не касалась, берётся
-     * из новой поставки целиком.
-     */
-    const touched = baseDir ? null : touchedObjectKeys(vendor.changeSet);
-    if (!baseDir) {
-      progress.message(
-        'Файл .cf текущей поставки не указан. Сравнение выполнено прямо в базе: известно, '
-        + `какие объекты вы изменили (${touched.size}), но не тексты поставщика. Объекты без `
-        + 'доработок будут взяты из новой поставки целиком, изменённые — оставлены вашими '
-        + 'и перечислены для ручного разбора.',
-        'warn',
-      );
-      warnings.push(
-        'Текущая конфигурация поставщика указана не была, поэтому построчного объединения '
-        + 'не выполнялось. Чтобы объединять код автоматически, сохраните конфигурацию '
-        + 'поставщика в файл .cf (Конфигуратор → Конфигурация → Поддержка) и повторите.',
-      );
-      progress.warn('vendor-old', `сравнение в базе, изменённых объектов: ${touched.size}`);
-    } else {
-      progress.done('vendor-old',
-        `${baseProps.name || ''} ${baseProps.version || ''}`.trim() || vendor.source);
-    }
-
-    // ---------- 6. Новая поставка ----------
-    startStage('vendor-new', 'Подготовка целевой конфигурации');
-    const target = await prepareTarget({ input, platform, workRoot, progress });
-    const targetProps = await readConfigurationProperties(path.join(target.dir, 'Configuration.xml'));
-    progress.done('vendor-new',
-      `${targetProps.name || ''} ${targetProps.version || ''}`.trim() || target.dir);
+    const { baseTree, baseProps, restoreStats } = await prepareBase({
+      vendor, exported, targetTree, mainProps, progress, warnings,
+    });
 
     checkTarget({ mainProps, baseProps, targetProps, warnings, progress });
 
@@ -172,9 +155,8 @@ async function runPipeline({ updateId, input, progress }) {
     startStage('merge', 'Трёхстороннее сравнение и объединение');
     const merge = await mergeConfigurations({
       mainDir: exported.dir,
-      baseDir,
-      targetDir: target.dir,
-      touchedObjects: touched,
+      baseTree,
+      targetTree,
       conflictRoot,
       onProgress: (done, total, rel) => {
         progress.update('merge', `${done} из ${total}: ${rel}`);
@@ -183,7 +165,8 @@ async function runPipeline({ updateId, input, progress }) {
     const manualCount = (merge.totals.conflicted || 0) + (merge.totals.manual || 0);
     progress.done('merge',
       `взято от поставщика ${merge.totals.fromVendor + merge.totals.merged}, `
-      + `новых объектов ${merge.totals.addedByVendor}, требует решения ${manualCount}`);
+      + `разобрано автоматически ${merge.totals.autoResolved}, `
+      + `требует решения ${manualCount}`);
 
     // ---------- 8. Отчёт ----------
     startStage('report', 'Сборка отчёта об объединении');
@@ -196,10 +179,11 @@ async function runPipeline({ updateId, input, progress }) {
       driver: exported.driver,
       configs: {
         main: mainProps,
-        base: baseDir ? baseProps : null,
+        base: baseProps,
         target: targetProps,
       },
       vendorSource: vendor.source,
+      restore: restoreStats,
       mergedDir: exported.dir,
       conflictDir: merge.conflictIndex.length ? conflictRoot : '',
       merge,
@@ -208,40 +192,21 @@ async function runPipeline({ updateId, input, progress }) {
       durationMs: Date.now() - startedAt,
     };
 
-    await store.saveResult(updateId, result);
-    await store.saveReport(updateId, renderUpdateReport(result));
+    await save(updateId, result);
     progress.done('report', 'отчёт готов');
 
-    // ---------- 9. Загрузка в конфигурацию ----------
-    if (input.loadBack === true) {
-      startStage('load', 'Загрузка объединённых файлов в основную конфигурацию');
-      if (warnings.some(isBlockingWarning)) {
-        progress.warn('load', 'загрузка отменена: конфигурации не совпадают');
-        progress.message(
-          'Автоматическая загрузка отменена: имя целевой конфигурации не совпадает с именем '
-          + 'основной. Проверьте, тот ли файл .cf указан, и при необходимости загрузите '
-          + 'выгрузку вручную из конфигуратора.',
-          'warn',
-        );
-      } else {
-        await loadIntoBase({ platform, conn, input, dir: exported.dir, progress, result, updateId });
-      }
-    } else {
-      progress.skip('load', 'по умолчанию не выполняется');
-      progress.message(
-        'Результат объединения записан в файлы выгрузки. Загрузить его в конфигурацию можно '
-        + 'кнопкой «Загрузить в конфигурацию» — после того как вы разберёте места, '
-        + 'требующие решения.',
-      );
-    }
+    // ---------- 9. Запись в базу — по подтверждению ----------
+    await applyToBase({
+      updateId, input, platform, conn, workRoot, progress, result, manualCount,
+    });
 
     result.durationMs = Date.now() - startedAt;
-    await store.saveResult(updateId, result);
-    await store.saveReport(updateId, renderUpdateReport(result));
+    await save(updateId, result);
 
     progress.finish({
       updateId,
       manual: manualCount,
+      autoResolved: merge.totals.autoResolved,
       fromVendor: merge.totals.fromVendor + merge.totals.merged,
       durationMs: result.durationMs,
     });
@@ -265,16 +230,248 @@ async function runPipeline({ updateId, input, progress }) {
 }
 
 /**
+ * Старая поставка: файл .cf либо восстановление прямо из базы.
+ *
+ * Второй путь — обычный, а не запасной. Раз конфигурацию можно СРАВНИТЬ
+ * с конфигурацией поставщика прямо в базе, значит поставщик виден: всё, чего
+ * нет в перечне отличий, у него ровно такое же, а для изменённых модулей
+ * подробный отчёт печатает обе стороны каждого участка. На это указал
+ * пользователь, и это снимает с него обязанность заранее выгружать .cf.
+ */
+async function prepareBase({ vendor, exported, targetTree, mainProps, progress, warnings }) {
+  if (vendor.dir) {
+    const baseProps = await readConfigurationProperties(path.join(vendor.dir, 'Configuration.xml'));
+    progress.done('vendor-old',
+      `${baseProps.name || ''} ${baseProps.version || ''}`.trim() || vendor.source);
+    return { baseTree: await dirTree(vendor.dir), baseProps, restoreStats: null };
+  }
+
+  progress.update('vendor-old', 'Восстановление текстов поставщика по сравнению с базой');
+  const main = await dirTree(exported.dir);
+  const baseTree = await restoreVendorTree({
+    mainDir: exported.dir,
+    mainFiles: main.files,
+    compare: { sets: vendor.changeSet, moduleLines: vendor.changeSet?.moduleLines },
+    targetTree,
+    onProgress: (text) => progress.update('vendor-old', text),
+  });
+
+  const stats = baseTree.stats;
+  progress.done('vendor-old',
+    `восстановлено из базы: совпадает ${stats.sameAsOurs}, модулей собрано ${stats.restoredModules}, `
+    + `неизвестно ${stats.unknown}`);
+  progress.message(
+    'Текущая конфигурация поставщика восстановлена из самой базы: файл .cf не понадобился. '
+    + `Совпадает с основной конфигурацией ${stats.sameAsOurs} файлов, тексты ${stats.restoredModules} `
+    + `изменённых модулей собраны из подробного сравнения, ${stats.unknown} файлов остались `
+    + 'неизвестными — по ним решение за вами.',
+  );
+  if (stats.unknown) {
+    warnings.push(
+      `По ${stats.unknown} файлам прежнее значение поставщика восстановить нельзя: отчёт сравнения `
+      + 'называет изменённое свойство, но не печатает его прежнее значение. Такие места оставлены '
+      + 'вашими и показаны в отчёте отличиями от новой поставки.',
+    );
+  }
+
+  return {
+    baseTree,
+    baseProps: { name: mainProps.name, version: '', vendor: '' },
+    restoreStats: stats,
+  };
+}
+
+/**
+ * Запись в информационную базу: загрузка, обновление конфигурации БД, проверки.
+ *
+ * Всё это выполняется только после явного ответа пользователя прямо в ходе
+ * прогона. Флажок на форме убран намеренно: между заполнением формы и этим
+ * моментом проходит время объединения, и решение принимается уже с отчётом
+ * в руках.
+ */
+async function applyToBase({
+  updateId, input, platform, conn, workRoot, progress, result, manualCount,
+}) {
+  progress.start('confirm', 'Ожидается решение о записи в базу');
+
+  const answer = await progress.ask('confirm', {
+    title: 'Загрузить результат в информационную базу?',
+    manual: manualCount,
+    infobase: conn.display,
+    text: manualCount
+      ? `Объединение выполнено, но ${manualCount} мест требуют вашего решения. Их можно `
+        + 'разобрать в файлах выгрузки и загрузить позже кнопкой «Загрузить в конфигурацию».'
+      : 'Объединение выполнено полностью, мест, требующих решения, не осталось.',
+  });
+
+  if (!answer?.ok) {
+    progress.skip('confirm', 'загрузка отложена');
+    for (const id of ['load', 'db-update', 'check']) progress.skip(id, 'не выполнялось');
+    progress.message(
+      'Результат объединения записан в файлы выгрузки. Загрузить его в конфигурацию можно '
+      + 'кнопкой «Загрузить в конфигурацию» — после того как вы разберёте места, '
+      + 'требующие решения.',
+    );
+    return;
+  }
+
+  progress.done('confirm', 'разрешено пользователем');
+
+  if ((result.warnings || []).some(isBlockingWarning)) {
+    progress.warn('load', 'загрузка отменена: конфигурации не совпадают');
+    for (const id of ['db-update', 'check']) progress.skip(id, 'не выполнялось');
+    progress.message(
+      'Загрузка отменена: имя целевой конфигурации не совпадает с именем основной. '
+      + 'Проверьте, тот ли файл .cf указан.',
+      'warn',
+    );
+    return;
+  }
+
+  // --- Загрузка ---
+  startWrite(progress, 'load', 'Конфигуратор загружает файлы (нужен монопольный доступ к базе)');
+  try {
+    await loadConfigFromFiles({
+      platform, conn, srcDir: result.mergedDir, user: input.user, password: input.password,
+      logFile: path.join(workRoot, 'designer-load.log'),
+    });
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    result.loaded = false;
+    result.loadError = err.message;
+    await store.updateMeta(updateId, { loadError: err.message });
+    progress.warn('load', `не удалось: ${err.message}`);
+    for (const id of ['db-update', 'check']) progress.skip(id, 'загрузка не выполнена');
+    progress.message(`Загрузка в конфигурацию не выполнена: ${err.message}`, 'warn');
+    return;
+  }
+
+  result.loaded = true;
+  result.loadedAt = new Date().toISOString();
+  await store.updateMeta(updateId, { loadedAt: result.loadedAt, loadError: null });
+  progress.done('load', 'загружено в основную конфигурацию');
+
+  // --- Обновление конфигурации базы данных ---
+  startWrite(progress, 'db-update', 'Реструктуризация таблиц (может занять долго)');
+  try {
+    await updateDbConfig({
+      platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    });
+    result.dbUpdated = true;
+    progress.done('db-update', 'конфигурация базы данных обновлена');
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    result.dbUpdated = false;
+    result.dbUpdateError = err.message;
+    progress.warn('db-update', 'не выполнено');
+    progress.message(`Обновление конфигурации базы данных не выполнено: ${err.message}`, 'warn');
+  }
+
+  // --- Проверки ---
+  startWrite(progress, 'check', 'Синтаксический контроль конфигурации');
+  result.checks = await runChecks({
+    platform, conn, input, workRoot, mergedDir: result.mergedDir, progress,
+  });
+
+  const problems = (result.checks.config?.errors?.length || 0)
+    + (result.checks.extensions?.errors?.length || 0);
+  if (problems) {
+    progress.warn('check', `замечаний платформы: ${problems}`);
+  } else {
+    progress.done('check', 'ошибок не найдено');
+  }
+}
+
+function startWrite(progress, id, detail) {
+  throwIfCancelled();
+  progress.start(id, detail);
+}
+
+/**
+ * Синтаксический контроль и применимость расширений — с починкой и повтором.
+ *
+ * Требование пользователя: «если ты видишь, что проверки применимости
+ * не прошли, ты их устраняешь, и снова загружаешь XML файлы в базу, и снова
+ * выполняешь проверку до тех пор, пока всё не будет красиво». Чинится то,
+ * что чинится однозначно, — потерявшие цель аннотации расширений
+ * (`update/fixExtensions.js`); всё остальное честно уходит в отчёт.
+ */
+async function runChecks({ platform, conn, input, workRoot, mergedDir, progress }) {
+  const checks = { rounds: [], fixed: [], manual: [] };
+
+  const config = await checkConfig({
+    platform, conn, user: input.user, password: input.password, workDir: workRoot,
+  });
+  checks.config = config;
+  progress.update('check', `синтаксический контроль: замечаний ${config.errors.length}`);
+
+  for (let round = 1; round <= FIX_ROUNDS; round += 1) {
+    throwIfCancelled();
+    progress.update('check', `проверка применимости расширений, попытка ${round}`);
+    const applicable = await checkExtensionsApplicable({
+      platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    });
+    checks.extensions = applicable;
+    checks.rounds.push({
+      round, ok: applicable.ok, errors: applicable.errors?.length || 0, note: applicable.note || '',
+    });
+
+    if (applicable.ok || !applicable.available) break;
+    if (round === FIX_ROUNDS) break;
+
+    progress.update('check', 'расширения не применяются — разбираем причины');
+    const dumped = await exportExtensions({
+      platform, conn, workDir: path.join(workRoot, `ext-fix-${round}`),
+      user: input.user, password: input.password,
+    });
+    if (!dumped.extensions.length) break;
+
+    const fix = await fixExtensionAnnotations({
+      extensions: dumped.extensions, mainDir: mergedDir,
+    });
+    checks.fixed.push(...fix.fixed);
+    checks.manual.push(...fix.manual);
+    if (!fix.changedExtensions.length) break;
+
+    for (const name of fix.changedExtensions) {
+      const dir = dumped.extensions.find((e) => e.name === name)?.dir;
+      if (!dir) continue;
+      progress.update('check', `загрузка исправленного расширения «${name}»`);
+      try {
+        await loadConfigFromFiles({
+          platform, conn, srcDir: dir, extension: name,
+          user: input.user, password: input.password,
+          logFile: path.join(workRoot, `designer-ext-load-${round}.log`),
+        });
+      } catch (err) {
+        if (isCancelled(err)) throw err;
+        checks.manual.push({
+          extension: name,
+          reason: `Исправленное расширение не загрузилось: ${err.message}`,
+        });
+      }
+    }
+  }
+
+  return checks;
+}
+
+async function save(updateId, result) {
+  await store.saveResult(updateId, result);
+  await store.saveReport(updateId, renderUpdateReport(result));
+}
+
+/**
  * Загрузка ранее объединённой выгрузки в конфигурацию — отдельным действием.
  *
- * Главный сценарий именно такой: объединение прошло, человек разобрал дважды
- * изменённые места прямо в файлах выгрузки (иногда на другой день) и только
- * потом загружает результат. Поэтому загрузка не привязана к прогону и берёт
- * каталог из его результата.
+ * Нужна, когда на вопрос в ходе прогона ответили «не сейчас»: человек разобрал
+ * дважды изменённые места прямо в файлах выгрузки (иногда на другой день)
+ * и только потом загружает результат. Поэтому загрузка не привязана к прогону
+ * и берёт каталог из его результата.
  *
  * Пароль в результате не хранится (`sanitize`), поэтому он передаётся заново.
  */
-export async function loadUpdateResult({ updateId, user, password }) {
+export async function loadUpdateResult({ updateId, user, password, updateDb = true }) {
   const meta = await store.getMeta(updateId);
   const result = await store.getResult(updateId);
   if (!meta || !result) throw new Error('Прогон объединения не найден');
@@ -293,6 +490,7 @@ export async function loadUpdateResult({ updateId, user, password }) {
 
   const { platform } = await resolvePlatform(meta.input?.platformVersion || result.platformVersion);
   const conn = parseConnection(meta.input?.infobasePath || result.infobase?.display);
+  const workRoot = path.dirname(result.mergedDir);
 
   await loadConfigFromFiles({
     platform,
@@ -300,17 +498,30 @@ export async function loadUpdateResult({ updateId, user, password }) {
     srcDir: result.mergedDir,
     user: user || meta.input?.user || '',
     password: password || '',
-    logFile: path.join(path.dirname(result.mergedDir), 'designer-load.log'),
+    logFile: path.join(workRoot, 'designer-load.log'),
   });
 
   const loadedAt = new Date().toISOString();
   result.loaded = true;
   result.loadedAt = loadedAt;
-  await store.saveResult(updateId, result);
-  await store.saveReport(updateId, renderUpdateReport(result));
+
+  if (updateDb) {
+    try {
+      await updateDbConfig({
+        platform, conn, user: user || meta.input?.user || '', password: password || '',
+        workDir: workRoot,
+      });
+      result.dbUpdated = true;
+    } catch (err) {
+      result.dbUpdated = false;
+      result.dbUpdateError = err.message;
+    }
+  }
+
+  await save(updateId, result);
   await store.updateMeta(updateId, { loadedAt, loadError: null });
   log.info(`Объединение ${updateId} загружено в конфигурацию базы`);
-  return { loadedAt };
+  return { loadedAt, dbUpdated: result.dbUpdated === true, dbUpdateError: result.dbUpdateError || '' };
 }
 
 /**
@@ -358,8 +569,8 @@ async function prepareTarget({ input, platform, workRoot, progress }) {
  *
  * Указать не тот .cf — самая вероятная ошибка на этой форме, и цена её высока:
  * объединение двух неродственных конфигураций даёт тысячи конфликтов и мусор
- * в выгрузке. Поэтому расхождение имён — громкое предупреждение, а
- * автоматическую загрузку в базу оно запрещает совсем (см. isBlockingWarning).
+ * в выгрузке. Поэтому расхождение имён — громкое предупреждение, а запись
+ * в базу оно запрещает совсем (см. isBlockingWarning).
  */
 function checkTarget({ mainProps, baseProps, targetProps, warnings, progress }) {
   if (targetProps.name && mainProps.name && targetProps.name !== mainProps.name) {
@@ -380,42 +591,6 @@ function checkTarget({ mainProps, baseProps, targetProps, warnings, progress }) 
 
 function isBlockingWarning(text) {
   return /не совпадает с именем/.test(text);
-}
-
-/** Загрузка результата в основную конфигурацию базы. */
-async function loadIntoBase({ platform, conn, input, dir, progress, result, updateId }) {
-  try {
-    progress.update('load', 'Конфигуратор загружает файлы (нужен монопольный доступ к базе)');
-    await loadConfigFromFiles({
-      platform, conn, srcDir: dir, user: input.user, password: input.password,
-      logFile: path.join(path.dirname(dir), 'designer-load.log'),
-    });
-    result.loaded = true;
-    result.loadedAt = new Date().toISOString();
-    await store.updateMeta(updateId, { loadedAt: result.loadedAt, loadError: null });
-    progress.done('load', 'загружено в основную конфигурацию');
-    progress.message(
-      'Файлы загружены в ОСНОВНУЮ конфигурацию. Конфигурация базы данных не обновлена — '
-      + 'откройте конфигуратор и выполните «Обновить конфигурацию базы данных»: платформа '
-      + 'покажет предупреждения о реструктуризации, и решение по ним за вами.',
-    );
-  } catch (err) {
-    if (isCancelled(err)) throw err;
-    result.loaded = false;
-    result.loadError = err.message;
-    await store.updateMeta(updateId, { loadError: err.message });
-    // Не проваливаем прогон: объединение выполнено и лежит в файлах, а загрузку
-    // можно повторить кнопкой, устранив причину отказа.
-    progress.warn('load', `не удалось: ${err.message}`);
-    progress.message(`Загрузка в конфигурацию не выполнена: ${err.message}`, 'warn');
-  }
-}
-
-/** Сколько элементов в карте версий основной конфигурации — только для режима без .cf. */
-async function countDumpEntries(dumpDir, vendorPath) {
-  if (String(vendorPath || '').trim()) return 0;
-  const hashes = await readConfigDumpInfo(path.join(dumpDir, 'ConfigDumpInfo.xml'));
-  return Object.keys(hashes || {}).length;
 }
 
 function sanitize(input) {

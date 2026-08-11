@@ -96,14 +96,12 @@ export async function dumpConfigToFiles({
 /**
  * Загружает конфигурацию ИЗ XML-файлов в основную конфигурацию базы.
  *
- * Единственная операция продукта, которая пишет в базу, и потому устроена
- * отдельно от всего остального:
+ * Операция, которая пишет в базу, и потому устроена отдельно от всего
+ * остального:
  *
- * • загружается только **основная конфигурация**. Конфигурация базы данных
- *   не обновляется намеренно: «Обновить конфигурацию базы данных» — это
- *   реструктуризация таблиц, её выполняет человек в конфигураторе, увидев
- *   предупреждения платформы о потере данных. Инструмент останавливается
- *   ровно на границе, где начинается необратимое;
+ * • загружается **основная конфигурация** либо, если указано имя, одно
+ *   расширение. Конфигурация базы данных этой командой не обновляется —
+ *   это отдельный шаг (`checkConfig.js`, `/UpdateDBCfg`) и отдельное решение;
  * • нужен монопольный доступ: при работающих сеансах конфигуратор откажет,
  *   и его отказ передаётся пользователю дословно — гадать ему не о чем;
  * • ibcmd здесь не используется, хотя для файловых баз он быстрее:
@@ -112,7 +110,7 @@ export async function dumpConfigToFiles({
  *   в самой опасной операции.
  */
 export async function loadConfigFromFiles({
-  platform, conn, srcDir, user, password, logFile,
+  platform, conn, srcDir, user, password, logFile, extension = '',
 }) {
   if (!(await pathExists(path.join(srcDir, 'Configuration.xml')))) {
     throw new Error(`В каталоге ${srcDir} нет Configuration.xml — загружать нечего`);
@@ -124,11 +122,12 @@ export async function loadConfigFromFiles({
     ...toClientArgs(conn),
     ...authArgs({ user, password }),
     '/LoadConfigFromFiles', srcDir,
+    ...(extension ? ['-Extension', extension] : []),
     ...COMMON_FLAGS,
     '/Out', logPath,
   ];
 
-  log.info(`Загрузка конфигурации из ${srcDir}`);
+  log.info(`Загрузка конфигурации из ${srcDir}`, { extension });
   let procResult;
   try {
     procResult = await run(platform.client, args, {

@@ -100,7 +100,28 @@ body {
   gap: 20px;
   flex-wrap: wrap;
 }
-.brand { display: flex; align-items: center; gap: 12px; }
+/*
+ * Знак приложения — кнопка возврата на главную. Оформлена как обычный текст:
+ * это ориентир, а не действие, которое надо предлагать нажать.
+ */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 4px 8px;
+  margin-left: -8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.brand:hover { background: var(--surface-2); border-color: var(--line); }
+.brand__text { display: block; }
 /* Знак приложения — тот же файл, что и favicon: web/icon.svg. */
 .brand__mark {
   width: 38px; height: 38px;
@@ -130,7 +151,7 @@ body {
   padding: 2px 8px;
   white-space: nowrap;
 }
-.brand__sub { font-size: 12.5px; color: var(--ink-faint); }
+.brand__sub { display: block; font-size: 12.5px; color: var(--ink-faint); }
 
 .tabs { display: flex; gap: 4px; align-items: center; }
 .tab {
@@ -151,6 +172,8 @@ body {
 }
 .tab:hover { background: var(--surface-2); color: var(--ink); }
 .tab.is-active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+/* Название открытого раздела — не переключатель, а место, где ты находишься. */
+.tab--section { font-weight: 620; color: var(--ink); }
 /* «О программе» стоит поодаль: это не рабочий режим, а справка. */
 .tab--about { margin-left: 10px; color: var(--ink-faint); }
 
@@ -163,6 +186,72 @@ body {
 .hero { margin-bottom: 24px; }
 .hero h1 { font-size: 27px; font-weight: 660; margin: 0 0 8px; letter-spacing: -.02em; }
 .hero p { margin: 0; color: var(--ink-soft); max-width: 90ch; font-size: 15px; }
+
+/* ---------- Главная: выбор режима ---------- */
+/*
+ * Два режима — двумя крупными кнопками во всю ширину карточки. Строкой вкладок
+ * они были равны служебным пунктам вроде «Истории», хотя выбор между «только
+ * читаю базу» и «пишу в базу» — самое важное решение в программе.
+ */
+.hero--home { margin-top: 26px; margin-bottom: 30px; }
+
+.modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+}
+
+.mode {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 26px 24px;
+  cursor: pointer;
+  transition: border-color .15s, transform .12s, background .15s;
+}
+.mode:hover {
+  border-color: var(--accent-line);
+  background: var(--surface-2);
+  transform: translateY(-2px);
+}
+.mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.mode__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.mode__title { font-size: 19px; font-weight: 640; letter-spacing: -.01em; }
+.mode__text { color: var(--ink-soft); font-size: 14px; line-height: 1.55; }
+
+/*
+ * Подпись внизу кнопки говорит главное: трогает ли режим базу. Сигнальные
+ * цвета, не акцентные, — это состояние, а не украшение.
+ */
+.mode__foot {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+.mode__foot--safe { color: var(--good); }
+.mode__foot--write { color: var(--warn); }
 
 .card {
   background: var(--surface);
@@ -426,6 +515,27 @@ body {
 .is-failed .stage-note { color: var(--danger); }
 
 /* Управление прогоном: во время выполнения здесь только «Прервать». */
+/*
+ * Вопрос конвейера перед записью в базу.
+ *
+ * Прямо в карточке прогресса, а не системным окном подтверждения: рядом видно,
+ * что получилось при объединении, и решение принимается со всеми числами
+ * перед глазами. Жёлтая рамка — сигнальный цвет «внимание», не акцентный:
+ * акцентом в этом интерфейсе помечается то, куда смотреть, а здесь нужно
+ * именно предупредить.
+ */
+.ask {
+  margin-top: 18px;
+  padding: 20px 22px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+.ask__title { font-size: 17px; font-weight: 640; margin-bottom: 8px; }
+.ask__text { color: var(--ink-mid); margin-bottom: 10px; }
+.ask__warn { color: var(--ink-soft); font-size: 13.5px; line-height: 1.6; margin-bottom: 16px; }
+.ask__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
 .run-actions {
   display: flex;
   gap: 10px;

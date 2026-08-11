@@ -6,7 +6,7 @@
  */
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
-import { initUpdate, showUpdateStages } from './update.js';
+import { initUpdate, showUpdateStages, reloadUpdateHistory } from './update.js';
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
   formatDuration, formatNumber, formatDateTime, attachPathHint,
@@ -31,19 +31,61 @@ const RESULT_LINKS = [
 
 // ---------------------------------------------------------------- Навигация
 
+/**
+ * Разделы главного окна.
+ *
+ * Раздел — это рабочий режим, а не вкладка: у каждого своя главная страница
+ * и своя история (список аудитов и список объединений — разные вещи).
+ * Шапка внутри раздела повторяет его название и держит рядом только то,
+ * что к нему относится.
+ */
+const SECTIONS = {
+  audit: {
+    title: 'Обследование информационной базы',
+    main: 'new',
+    history: 'history',
+  },
+  update: {
+    title: 'Обновление нетиповой конфигурации',
+    main: 'update',
+    history: 'update-history',
+  },
+};
+
+/** Какому разделу принадлежит страница. `about` наследует текущий раздел. */
+const VIEW_SECTION = {
+  new: 'audit',
+  history: 'audit',
+  update: 'update',
+  'update-history': 'update',
+};
+
+/** Раздел, в котором мы находимся: нужен, чтобы «О программе» не сбрасывала шапку. */
+let currentSection = null;
+
 function initTabs() {
+  $('#homeBtn').addEventListener('click', () => switchView('home'));
+  $$('.mode[data-goto]').forEach((btn) => {
+    btn.addEventListener('click', () => switchView(btn.dataset.goto));
+  });
+  $('#navSection').addEventListener('click', () => {
+    if (currentSection) switchView(SECTIONS[currentSection].main);
+  });
+  $('#navHistory').addEventListener('click', () => {
+    if (currentSection) switchView(SECTIONS[currentSection].history);
+  });
   $$('.tab[data-view]').forEach((tab) => {
     tab.addEventListener('click', () => switchView(tab.dataset.view));
   });
 }
 
 /**
- * Прокрутка каждой вкладки — своя и запоминается.
+ * Прокрутка каждой страницы — своя и запоминается.
  *
- * Вкладки переключаются подменой класса, страница при этом одна, и её
+ * Страницы переключаются подменой класса, документ при этом один, и его
  * прокрутка общая: уходя в «Историю» и возвращаясь, пользователь оказывался
  * в начале формы, потеряв место, где заполнял. Храним позицию на уходе
- * и возвращаем на входе — по вкладке, а не одним значением на всех.
+ * и возвращаем на входе — по странице, а не одним значением на всех.
  */
 const scrollByView = new Map();
 
@@ -56,16 +98,37 @@ function switchView(name) {
   if (previous === name) return;
   if (previous) scrollByView.set(previous, window.scrollY);
 
-  $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === name));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === name));
   if (name === 'history') loadHistory();
+  if (name === 'update-history') reloadUpdateHistory();
   if (name === 'about') loadAbout();
+
+  renderTopNav(name);
 
   // Без rAF: window.scrollTo сам вынуждает браузер пересчитать раскладку,
   // чтобы понять, куда можно прокрутить, — того же эффекта, что дал бы кадр
   // ожидания, но без риска не сработать, если вкладка окна в этот момент
   // в фоне: там requestAnimationFrame браузер приостанавливает вовсе.
   window.scrollTo(0, scrollByView.get(name) ?? 0);
+}
+
+/** Шапка раздела: название открытого режима, его история и «О программе». */
+function renderTopNav(view) {
+  if (view === 'home') currentSection = null;
+  else if (VIEW_SECTION[view]) currentSection = VIEW_SECTION[view];
+
+  const section = currentSection ? SECTIONS[currentSection] : null;
+  const sectionBtn = $('#navSection');
+  const historyBtn = $('#navHistory');
+
+  sectionBtn.hidden = !section;
+  historyBtn.hidden = !section;
+  if (!section) return;
+
+  sectionBtn.textContent = section.title;
+  sectionBtn.classList.toggle('is-active', view === section.main);
+  historyBtn.classList.toggle('is-active', view === section.history);
+  $$('.tab--about').forEach((t) => t.classList.toggle('is-active', view === 'about'));
 }
 
 // ------------------------------------------------------------- О программе
@@ -723,6 +786,7 @@ $('#appCopyright').textContent = `© ${new Date().getFullYear()}`;
 
 requireLicense().then(() => {
   initTabs();
+  renderTopNav('home');
   initForm();
   attachPathHint($('#infobasePath'), $('#pathHint'), api.parsePath);
   initPickers();

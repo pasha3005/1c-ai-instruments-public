@@ -145,11 +145,15 @@ function buildSummary(result) {
     baseVersion: result?.configs?.base?.version || '',
     files: totals.files ?? null,
     fromVendor: (totals.fromVendor ?? 0) + (totals.merged ?? 0),
+    autoResolved: totals.autoResolved ?? 0,
     manualObjects: merge.manualCount ?? 0,
     conflicted: (totals.conflicted ?? 0) + (totals.manual ?? 0),
     addedByVendor: totals.addedByVendor ?? 0,
     removedByVendor: totals.removedByVendor ?? 0,
     mergedDir: result?.mergedDir || '',
     loaded: Boolean(result?.loaded),
+    dbUpdated: Boolean(result?.dbUpdated),
+    checkErrors: (result?.checks?.config?.errors?.length ?? 0)
+      + (result?.checks?.extensions?.errors?.length ?? 0),
   };
 }

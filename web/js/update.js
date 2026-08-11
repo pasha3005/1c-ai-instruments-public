@@ -36,7 +36,14 @@ export function initUpdate() {
 
   $('#uCancelBtn').addEventListener('click', () => cancel());
   $('#uLoadBtn').addEventListener('click', () => loadIntoBase());
+  $('#uAskYes').addEventListener('click', () => answer(true));
+  $('#uAskNo').addEventListener('click', () => answer(false));
 
+  loadHistory();
+}
+
+/** Перечитать список прошлых объединений — раздел «История» этого режима. */
+export function reloadUpdateHistory() {
   loadHistory();
 }
 
@@ -56,7 +63,6 @@ function collectInput() {
     vendorConfigPath: $('#uVendor').value.trim(),
     targetConfigPath: $('#uTarget').value.trim(),
     workDir: $('#uWorkDir').value.trim(),
-    loadBack: $('#uLoadBack').checked,
   };
 }
 
@@ -75,16 +81,6 @@ async function start() {
       return;
     }
   }
-
-  // Запись в базу — только по осознанному согласию, и галочка на форме
-  // достаточным согласием не считается: спрашиваем прямо перед запуском.
-  if (input.loadBack && !confirm(
-    'Результат объединения будет сразу загружен в ОСНОВНУЮ конфигурацию базы\n'
-    + `${input.infobasePath}\n\n`
-    + 'Базе понадобится монопольный доступ. Конфигурация базы данных при этом НЕ обновляется —\n'
-    + 'это делается вручную в конфигураторе.\n\n'
-    + 'Сделайте резервную копию, если её ещё нет. Продолжить?',
-  )) return;
 
   setNote('#uFormNote', '');
   setBusy(true);
@@ -148,6 +144,7 @@ function showProgressCard(updateId) {
   $('#uRunStats').hidden = true;
   $('#uResultActions').hidden = true;
   $('#uSaveNote').hidden = true;
+  $('#uAsk').hidden = true;
   $('#uProgressTitle').textContent = 'Выполняется объединение';
   $('#uProgressSub').textContent = `Идентификатор: ${updateId}`;
   $('#uProgressPercent').textContent = '0%';
@@ -168,6 +165,8 @@ function attachStream(updateId) {
       const snapshot = payload.snapshot || payload;
       if (snapshot.stages) applySnapshot(snapshot);
     },
+    onAsk: (payload) => showAsk(payload.question),
+    onAnswered: () => hideAsk(),
     onFinish: () => onFinished(updateId),
     onCancelled: (message, durationMs) => onCancelled(message, durationMs),
     onError: (message) => onFailed(message),
@@ -180,11 +179,60 @@ function applySnapshot(snapshot) {
   $('#uProgressBar').style.width = `${percent}%`;
   if (snapshot.stages?.length) renderStages($('#uStages'), snapshot.stages);
 
+  // Снимок состояния приходит и при переподключении: если конвейер стоит
+  // с вопросом, вопрос надо показать заново — иначе он будет ждать вечно.
+  if (snapshot.pending?.question) showAsk(snapshot.pending.question);
+
   const running = snapshot.stages?.find((s) => s.status === 'running');
   if (running && !state.cancelling) {
     $('#uProgressSub').textContent = running.detail
       ? `${running.title}: ${running.detail}`
       : running.title;
+  }
+}
+
+// ------------------------------------------- Вопрос перед записью в базу
+
+/**
+ * Конвейер дошёл до записи в базу и ждёт решения.
+ *
+ * Спрашивается здесь, а не флажком на форме: между запуском и этим моментом
+ * проходит всё объединение, и решение принимается уже зная, сколько мест
+ * потребовало вмешательства.
+ */
+function showAsk(question) {
+  $('#uAskTitle').textContent = question?.title || 'Загрузить результат в информационную базу?';
+  $('#uAskText').textContent = [question?.text, question?.infobase ? `База: ${question.infobase}` : '']
+    .filter(Boolean).join(' ');
+  $('#uAsk').hidden = false;
+  $('#uAskYes').disabled = false;
+  $('#uAskNo').disabled = false;
+  $('#uAsk').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function hideAsk() {
+  $('#uAsk').hidden = true;
+}
+
+async function answer(ok) {
+  if (!state.currentId) return;
+  if (ok && !confirm(
+    'Записать результат объединения в информационную базу?\n\n'
+    + 'Будет загружена ОСНОВНАЯ конфигурация и выполнено обновление конфигурации базы данных —\n'
+    + 'это реструктуризация таблиц, платформа может предупредить о потере данных.\n'
+    + 'Базе нужен монопольный доступ: закройте все сеансы 1С.\n\n'
+    + 'Резервная копия базы должна быть сделана заранее. Продолжить?',
+  )) return;
+
+  $('#uAskYes').disabled = true;
+  $('#uAskNo').disabled = true;
+  try {
+    await api.answerUpdate(state.currentId, ok);
+    hideAsk();
+  } catch (err) {
+    setSaveNote(`Не удалось передать ответ: ${err.message}`, true);
+    $('#uAskYes').disabled = false;
+    $('#uAskNo').disabled = false;
   }
 }
 
@@ -227,12 +275,16 @@ async function showStats(updateId) {
     if (durationMs != null) parts.push(`<b>Время:</b> ${formatDuration(durationMs)}`);
     if (s.files != null) parts.push(`файлов сверено: ${formatNumber(s.files)}`);
     if (s.fromVendor != null) parts.push(`взято из новой поставки: ${formatNumber(s.fromVendor)}`);
+    if (s.autoResolved) parts.push(`спорных мест разобрано само: ${formatNumber(s.autoResolved)}`);
     if (s.addedByVendor) parts.push(`новых объектов: ${formatNumber(s.addedByVendor)}`);
     if (s.removedByVendor) parts.push(`удалено: ${formatNumber(s.removedByVendor)}`);
     parts.push(s.conflicted
       ? `<b style="color:var(--warn)">требует решения: ${formatNumber(s.conflicted)}</b>`
       : '<b style="color:var(--good)">ручной работы не осталось</b>');
+    if (s.mode === 'restored') parts.push('поставка восстановлена из базы');
     if (s.mode === 'keys') parts.push('сокращённый режим: без текущей поставки');
+    if (s.dbUpdated) parts.push('<b style="color:var(--good)">конфигурация базы данных обновлена</b>');
+    if (s.checkErrors) parts.push(`<b style="color:var(--warn)">замечаний платформы: ${formatNumber(s.checkErrors)}</b>`);
 
     box.innerHTML = parts.join(' · ');
     box.hidden = false;
@@ -296,9 +348,9 @@ async function loadIntoBase() {
   if (!state.currentId) return;
   if (!confirm(
     'Загрузить объединённую выгрузку в ОСНОВНУЮ конфигурацию базы?\n\n'
-    + 'Базе понадобится монопольный доступ: закройте все сеансы 1С.\n'
-    + 'Конфигурация базы данных не обновляется — это делается вручную в конфигураторе,\n'
-    + 'чтобы вы увидели предупреждения платформы о реструктуризации.\n\n'
+    + 'Следом будет выполнено обновление конфигурации базы данных — это реструктуризация\n'
+    + 'таблиц, платформа может предупредить о потере данных.\n'
+    + 'Базе понадобится монопольный доступ: закройте все сеансы 1С.\n\n'
     + 'Резервная копия базы должна быть сделана заранее. Продолжить?',
   )) return;
 
@@ -314,7 +366,10 @@ async function loadIntoBase() {
     });
     setSaveNote(
       `Загружено в основную конфигурацию ${formatDateTime(result.loadedAt)}. `
-      + 'Осталось открыть конфигуратор и выполнить «Обновить конфигурацию базы данных».',
+      + (result.dbUpdated
+        ? 'Конфигурация базы данных обновлена.'
+        : `Конфигурация базы данных НЕ обновлена${result.dbUpdateError ? `: ${result.dbUpdateError}` : ''}.`),
+      !result.dbUpdated,
     );
     loadHistory();
   } catch (err) {
@@ -378,7 +433,9 @@ function renderHistoryItem(meta) {
         ${meta.durationMs ? ` · время: ${formatDuration(meta.durationMs)}` : ''}
         ${s.files != null ? ` · файлов: ${formatNumber(s.files)}` : ''}
         ${s.conflicted != null ? ` · требует решения: ${formatNumber(s.conflicted)}` : ''}
+        ${s.mode === 'restored' ? ' · поставка восстановлена из базы' : ''}
         ${s.mode === 'keys' ? ' · сокращённый режим' : ''}
+        ${s.dbUpdated ? ' · <b>база данных обновлена</b>' : ''}
         ${meta.loadedAt ? ' · <b>загружено в конфигурацию</b>' : ''}
       </div>
       ${meta.error ? `<div class="hist-meta" style="color:var(--danger)">${escapeHtml(meta.error)}</div>` : ''}

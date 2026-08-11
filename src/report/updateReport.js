@@ -35,10 +35,12 @@ export function renderUpdateReport(result) {
   const sectionDefs = [
     { id: 'upd-summary', title: 'Итоги объединения', html: renderSummary(result) },
     { id: 'upd-manual', title: 'Требуют вашего решения', html: renderManual(result) },
+    { id: 'upd-auto', title: 'Спорные места, разобранные автоматически', html: renderAuto(result) },
     { id: 'upd-applied', title: 'Изменения поставщика, применённые автоматически', html: renderApplied(result) },
     { id: 'upd-added', title: 'Новые объекты новой поставки', html: renderGroup(result, 'added') },
     { id: 'upd-removed', title: 'Объекты, удалённые поставщиком', html: renderGroup(result, 'removed') },
     { id: 'upd-kept', title: 'Ваши доработки, оставленные как есть', html: renderGroup(result, 'kept') },
+    { id: 'upd-checks', title: 'Проверки после загрузки в базу', html: renderChecks(result) },
     { id: 'upd-next', title: 'Что делать дальше', html: renderNext(result) },
   ].filter((s) => s.html);
 
@@ -115,7 +117,7 @@ function renderCover(result) {
   <p class="cover__subtitle">${esc(coverSubtitle(result))}</p>
   <dl class="cover__meta">
     <div><dt>Основная конфигурация</dt><dd>${esc(cfg.version || 'версия не указана')}</dd></div>
-    <div><dt>Текущая поставка</dt><dd>${esc(base?.version || (base ? 'версия не указана' : 'исходники не предоставлены'))}</dd></div>
+    <div><dt>Текущая поставка</dt><dd>${esc(baseLabel(result, base))}</dd></div>
     <div><dt>Новая поставка</dt><dd>${esc(target.version || 'версия не указана')}</dd></div>
     <div><dt>Поставщик</dt><dd>${esc(target.vendor || cfg.vendor || 'не указан')}</dd></div>
     <div><dt>Информационная база</dt><dd>${esc(result.infobase?.display || '—')}</dd></div>
@@ -130,6 +132,20 @@ function renderCover(result) {
     Ваши доработки сохранены${manual ? `, кроме ${plural(manual, 'места', 'мест', 'мест')}, где правку сделали и вы, и поставщик` : ''}.
   </p>
 </header>`;
+}
+
+/**
+ * Откуда взялась текущая поставка.
+ *
+ * Различать обязательно: «версия не указана» и «восстановлена из базы» —
+ * это разная степень доверия к объединению, и читатель отчёта должен видеть,
+ * с чем именно сравнивали.
+ */
+function baseLabel(result, base) {
+  if (base?.version) return base.version;
+  if (result.merge?.mode === 'restored') return 'восстановлена из самой базы';
+  if (base) return 'версия не указана';
+  return 'исходники не предоставлены';
 }
 
 function coverSubtitle(result) {
@@ -149,6 +165,7 @@ function renderSummary(result) {
     ['Совпадает во всех версиях', totals.unchanged, 'типовой код, которого никто не касался'],
     ['Взято из новой поставки', totals.fromVendor, 'вы этих мест не меняли'],
     ['Объединено построчно', totals.merged, 'правка поставщика легла рядом с вашей'],
+    ['Спорных мест разобрано самой программой', totals.autoResolved, 'показаны с исходными версиями и результатом'],
     ['Оставлено ваше', totals.keptOurs, 'поставщик этих мест не менял'],
     ['Новых объектов поставщика', totals.addedByVendor, 'скопированы и внесены в состав'],
     ['Удалено вслед за поставщиком', totals.removedByVendor, 'вы их не меняли'],
@@ -181,7 +198,8 @@ function renderSummary(result) {
     в каталоге <span class="mono">${esc(result.conflictDir)}</span>, соответствие номеров и путей — в файле
     <span class="mono">список.txt</span>.` : ''}
     ${result.loaded
-    ? 'Результат <b>загружен в основную конфигурацию базы</b>. Конфигурация базы данных не обновлялась.'
+    ? `Результат <b>загружен в основную конфигурацию базы</b>. Конфигурация базы данных
+      ${result.dbUpdated ? '<b>обновлена</b>' : '<b>не обновлена</b>'}.`
     : 'В конфигурацию базы результат <b>ещё не загружен</b>.'}
   </div>
 
@@ -209,6 +227,25 @@ function renderModeNote(result) {
     как это делает конфигуратор при обновлении конфигурации на поддержке.
   </div>`;
   }
+
+  if (result.merge?.mode === 'restored') {
+    const stats = result.restore || {};
+    return `
+  <div class="callout callout--good">
+    <div class="callout__title">Полное трёхстороннее объединение, поставка восстановлена из базы</div>
+    Файл .cf текущей поставки не понадобился: конфигурация поставщика хранится в самой базе,
+    и платформа умеет с ней сравнивать. Всё, чего нет в перечне отличий, у поставщика ровно
+    такое же, как у вас (${formatNumber(stats.sameAsOurs || 0)} файлов), а тексты изменённых
+    модулей собраны из подробного отчёта сравнения
+    (${formatNumber(stats.restoredModules || 0)} модулей). Дальше объединение шло как обычное
+    трёхстороннее — построчно, с разбором дважды изменённых мест.
+    ${stats.unknown ? `<br>Прежнее значение ${plural(stats.unknown, 'файла', 'файлов', 'файлов')}
+    восстановить нельзя: отчёт сравнения называет изменённое свойство, но не печатает
+    прежнее значение. Такие места оставлены вашими и показаны в разделе «Требуют вашего
+    решения» отличиями от новой поставки.` : ''}
+  </div>`;
+  }
+
   return `
   <div class="callout callout--warn">
     <div class="callout__title">Сокращённый режим: текущая поставка не предоставлена</div>
@@ -415,6 +452,198 @@ function tailNote(panes) {
     ${esc(text)}. Полные версии файла лежат в каталоге со спорными файлами.</p>`;
 }
 
+// --- Разобрано автоматически -------------------------------------------------
+
+/**
+ * Дважды изменённые места, которые программа разобрала сама.
+ *
+ * Показывается каждое до одного: пользователь просил видеть все автоматические
+ * объединения и иметь возможность открыть то же окно с тремя версиями, что
+ * и у нерешённых мест, — плюс результат, который в файл записан. Иначе
+ * «разобрано автоматически» пришлось бы принимать на веру.
+ */
+function renderAuto(result) {
+  const objects = result.merge?.auto || [];
+  if (!objects.length) return '';
+
+  return `
+  <p class="section__lead">
+    Здесь правку внесли и вы, и поставщик, но решение было однозначным, и программа приняла его
+    сама. Каждое место показано полностью: три исходные версии и то, что записано в файл.
+    Если решение не годится — впишите нужный вариант прямо в файл выгрузки и загрузите
+    конфигурацию заново.
+  </p>
+
+  <div class="tree-legend">
+    <span><i class="tree-mark tree-mark--removed">1</i>Текущая поставка</span>
+    <span><i class="tree-mark tree-mark--added">2</i>Новая поставка</span>
+    <span><i class="tree-mark tree-mark--modified">3</i>Основная конфигурация</span>
+    <span><i class="tree-mark tree-mark--result">=</i>Результат — он и записан в файл</span>
+  </div>
+
+  <div class="difftree">
+    ${objects.map(renderAutoObject).join('')}
+  </div>`;
+}
+
+function renderAutoObject(object) {
+  const elements = object.elements.filter((e) => (e.resolved || []).length);
+  const count = elements.reduce((sum, e) => sum + (e.resolvedCount || 0), 0);
+
+  return `
+  <details class="dt dt--object">
+    <summary>
+      <span class="tree-mark tree-mark--result">=</span>
+      <span class="dt__label">${esc(object.title)}</span>
+      <span class="dt__stat">${plural(count, 'участок', 'участка', 'участков')}</span>
+    </summary>
+    <div class="dt__body">
+      ${elements.map(renderAutoElement).join('')}
+    </div>
+  </details>`;
+}
+
+function renderAutoElement(element) {
+  return `
+  <details class="dt dt--module">
+    <summary>
+      <span class="dt__label">${esc(element.element)}</span>
+      <span class="dt__status dt__status--added">разобрано автоматически</span>
+      <span class="dt__stat">${plural(element.resolvedCount || 0, 'участок', 'участка', 'участков')}</span>
+    </summary>
+    <div class="dt__body">
+      <p class="dt__note"><span class="mono">${esc(element.rel)}</span></p>
+      ${(element.resolved || []).map((item) => renderResolved(item, element)).join('')}
+      ${element.resolvedTruncated ? `
+      <p class="muted" style="font-size:12.5px">…и ещё
+        ${plural(element.resolvedTruncated, 'участок', 'участка', 'участков')} в этом файле.</p>` : ''}
+    </div>
+  </details>`;
+}
+
+function renderResolved(item, element) {
+  const panes = [
+    ['base', 'Текущая поставка', item.base, item.baseStartLine],
+    ['target', 'Новая поставка', item.theirs, item.theirsStartLine],
+    ['ours', 'Основная конфигурация', item.ours, item.oursStartLine],
+  ];
+
+  return `
+    <div class="dt__fragment">
+      <div class="dt__fragment-head">
+        ${item.where ? `${esc(item.where)} · ` : ''}строка ${formatNumber(item.oursStartLine || 0)}
+        <span class="mg__how">${esc(item.how || 'разобрано')}</span>
+      </div>
+      <p class="dt__note">${esc(item.why || '')}</p>
+      <div class="mg__diff">
+        ${panes.map(([key, label, part, line]) => `
+        <div class="dt__diff-pane mg__pane--${key}">
+          <div class="dt__diff-pane-head">${label}${line ? ` · строка ${formatNumber(line)}` : ''}</div>
+          ${renderPane(part, element)}
+        </div>`).join('')}
+      </div>
+      <div class="mg__result">
+        <div class="dt__diff-pane-head">Записано в файл</div>
+        ${renderPane(item.result, element)}
+      </div>
+    </div>`;
+}
+
+// --- Проверки платформы ------------------------------------------------------
+
+/**
+ * Что сказала платформа после загрузки.
+ *
+ * Раздела нет вовсе, пока в базу ничего не писали: показывать пустые проверки
+ * значило бы намекать, что они провалились.
+ */
+function renderChecks(result) {
+  const checks = result.checks;
+  if (!checks) return '';
+
+  const config = checks.config || {};
+  const extensions = checks.extensions || {};
+
+  return `
+  <p class="section__lead">
+    После загрузки объединённой выгрузки в базу выполнены проверки самой платформы: обновление
+    конфигурации базы данных, синтаксический контроль и проверка возможности применения
+    расширений. Замечания ниже — это слова конфигуратора, а не наши.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Проверка</th><th>Итог</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Обновление конфигурации базы данных</td>
+          <td>${result.dbUpdated
+    ? '<b class="ok">выполнено</b>'
+    : `<b class="bad">не выполнено</b>${result.dbUpdateError ? ` — ${esc(result.dbUpdateError)}` : ''}`}</td>
+        </tr>
+        <tr>
+          <td>Синтаксический контроль конфигурации</td>
+          <td>${(config.errors || []).length
+    ? `<b class="bad">замечаний: ${formatNumber(config.errors.length)}</b>`
+    : '<b class="ok">ошибок не найдено</b>'}</td>
+        </tr>
+        <tr>
+          <td>Применимость расширений</td>
+          <td>${extensionsVerdict(extensions)}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  ${(checks.fixed || []).length ? `
+  <div class="callout callout--good">
+    <div class="callout__title">Что программа починила в расширениях сама</div>
+    ${checks.fixed.map((item) => `<div>${esc(fixLine(item))}</div>`).join('')}
+  </div>` : ''}
+
+  ${(checks.manual || []).length ? `
+  <div class="callout callout--warn">
+    <div class="callout__title">Что в расширениях придётся поправить руками</div>
+    ${checks.manual.map((item) => `<div>${esc(fixLine(item))}</div>`).join('')}
+  </div>` : ''}
+
+  ${renderCheckErrors('Синтаксический контроль', config.errors)}
+  ${renderCheckErrors('Применимость расширений', extensions.errors)}`;
+}
+
+function extensionsVerdict(extensions) {
+  if (!extensions.available) {
+    return `<b class="warn">не выполнялась</b>${extensions.note ? ` — ${esc(extensions.note)}` : ''}`;
+  }
+  return (extensions.errors || []).length
+    ? `<b class="bad">замечаний: ${formatNumber(extensions.errors.length)}</b>`
+    : '<b class="ok">все расширения применяются</b>';
+}
+
+function fixLine(item) {
+  const where = [item.extension, item.rel].filter(Boolean).join(' · ');
+  const what = item.newMethod
+    ? `&${item.annotation}("${item.method}") → &${item.annotation}("${item.newMethod}")`
+    : item.method
+      ? `&${item.annotation}("${item.method}")`
+      : '';
+  return [where, what, item.reason].filter(Boolean).join(' — ');
+}
+
+function renderCheckErrors(title, errors) {
+  if (!errors?.length) return '';
+  return `
+  <details class="dt dt--module">
+    <summary>
+      <span class="dt__label">${esc(title)}: сообщения конфигуратора</span>
+      <span class="dt__stat">${plural(errors.length, 'сообщение', 'сообщения', 'сообщений')}</span>
+    </summary>
+    <div class="dt__body">
+      <pre class="snippet">${esc(errors.map((e) => e.text).join('\n'))}</pre>
+    </div>
+  </details>`;
+}
+
 // --- Остальные разделы -------------------------------------------------------
 
 function renderApplied(result) {
@@ -518,11 +747,20 @@ function renderNext(result) {
       + 'Загрузить конфигурацию из файлов. Базе нужен монопольный доступ.',
     );
   }
-  steps.push(
-    'В конфигураторе выполните «Обновить конфигурацию базы данных». Этот шаг программа '
-    + 'не делает намеренно: он меняет структуру таблиц, платформа предупреждает о возможной '
-    + 'потере данных, и решение по таким предупреждениям должно оставаться за специалистом.',
-  );
+  if (result.loaded && !result.dbUpdated) {
+    steps.push(
+      'Выполните «Обновить конфигурацию базы данных» в конфигураторе: программа этот шаг '
+      + 'запускала, но он не прошёл — платформа объяснила причину в разделе «Проверки '
+      + 'после загрузки в базу».',
+    );
+  }
+  if ((result.checks?.manual || []).length) {
+    steps.push(
+      'Поправьте расширения, перечисленные в разделе «Проверки после загрузки в базу»: '
+      + 'пока хотя бы одна аннотация указывает на несуществующий метод, расширение '
+      + 'не применяется целиком.',
+    );
+  }
   steps.push(
     'Проверьте типовые обработчики обновления: после смены версии конфигурации 1С выполняет '
     + 'их при первом запуске. Сделайте резервную копию до этого шага.',
@@ -539,10 +777,10 @@ function renderNext(result) {
 
   <div class="callout callout--info">
     <div class="callout__title">Что программа не делает</div>
-    Не обновляет конфигурацию базы данных, не запускает обработчики обновления, не снимает
-    конфигурацию с поддержки и не меняет правила поддержки. Всё, что она изменила, — файлы
-    XML-выгрузки и, если это было запрошено, основная конфигурация базы. Любой шаг можно
-    отменить, повторно загрузив конфигурацию из прежней выгрузки.
+    Не запускает обработчики обновления, не снимает конфигурацию с поддержки и не меняет
+    правила поддержки. Всё, что она изменила, — файлы XML-выгрузки и, если это было
+    подтверждено в ходе прогона, основная конфигурация базы вместе с конфигурацией базы
+    данных. Откат — из резервной копии базы, сделанной до загрузки.
   </div>`;
 }
 
@@ -572,6 +810,26 @@ const UPDATE_STYLES = `
 }
 .steps { margin: 0 0 20px; padding-left: 22px; }
 .steps li { margin-bottom: 10px; max-width: 100ch; }
+
+/* Как именно разобрано спорное место — подпись рядом с адресом участка. */
+.mg__how {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--good);
+  background: var(--surface-2);
+}
+/* Результат, записанный в файл, — под тремя колонками, во всю ширину. */
+.mg__result { margin-top: 10px; }
+.mg__result .snippet { background: var(--surface-2); }
+.tree-mark--result { background: var(--good); color: var(--bg); }
+
+.ok { color: var(--good); }
+.bad { color: var(--danger); }
+.warn { color: var(--warn); }
+
 @media print {
   .mg__diff { grid-template-columns: 1fr; }
 }
