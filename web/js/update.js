@@ -273,6 +273,24 @@ async function showStats(updateId) {
     const durationMs = state.timer.finish(meta.durationMs);
     const parts = [];
     if (durationMs != null) parts.push(`<b>Время:</b> ${formatDuration(durationMs)}`);
+
+    // Типовое обновление: числа объединения к нему не относятся, показывать
+    // «файлов сверено: 0» и «ручной работы не осталось» было бы бессмыслицей.
+    if (s.updateMode === 'typical') {
+      parts.push('<b>доработок нет</b> — обновление выполнила платформа');
+      if (s.twiceChanged) {
+        parts.push(`<b style="color:var(--warn)">дважды изменённых свойств: ${formatNumber(s.twiceChanged)}</b>`);
+      }
+      if (s.dbUpdated) parts.push('<b style="color:var(--good)">конфигурация базы данных обновлена</b>');
+      if (s.checkErrors) parts.push(`<b style="color:var(--warn)">замечаний платформы: ${formatNumber(s.checkErrors)}</b>`);
+      box.innerHTML = parts.join(' · ');
+      box.hidden = false;
+      $('#uLoadBtn').hidden = true;
+      setSaveNote('Обновление выполнено штатной командой платформы: объединять было нечего.');
+      return;
+    }
+    $('#uLoadBtn').hidden = false;
+
     if (s.files != null) parts.push(`файлов сверено: ${formatNumber(s.files)}`);
     if (s.fromVendor != null) parts.push(`взято из новой поставки: ${formatNumber(s.fromVendor)}`);
     if (s.autoResolved) parts.push(`спорных мест разобрано само: ${formatNumber(s.autoResolved)}`);
@@ -431,8 +449,9 @@ function renderHistoryItem(meta) {
         <span class="status-pill is-${meta.status}">${statusRu}</span>
         · ${formatDateTime(meta.createdAt)}
         ${meta.durationMs ? ` · время: ${formatDuration(meta.durationMs)}` : ''}
-        ${s.files != null ? ` · файлов: ${formatNumber(s.files)}` : ''}
-        ${s.conflicted != null ? ` · требует решения: ${formatNumber(s.conflicted)}` : ''}
+        ${s.updateMode === 'typical' ? ' · типовое обновление платформой' : ''}
+        ${s.updateMode !== 'typical' && s.files != null ? ` · файлов: ${formatNumber(s.files)}` : ''}
+        ${s.updateMode !== 'typical' && s.conflicted != null ? ` · требует решения: ${formatNumber(s.conflicted)}` : ''}
         ${s.mode === 'restored' ? ' · поставка восстановлена из базы' : ''}
         ${s.mode === 'keys' ? ' · сокращённый режим' : ''}
         ${s.dbUpdated ? ' · <b>база данных обновлена</b>' : ''}
@@ -443,7 +462,7 @@ function renderHistoryItem(meta) {
       ${s.mergedDir ? `<div class="hist-meta"><span class="mono">${escapeHtml(s.mergedDir)}</span></div>` : ''}
     </div>
 
-    ${meta.status === 'done' ? `
+    ${meta.status === 'done' && s.updateMode !== 'typical' ? `
     <div class="hist-scores">
       <div class="hist-score">
         <div class="hist-score__val ${s.conflicted ? 'grade-warn' : 'grade-good'}">${formatNumber(s.conflicted || 0)}</div>

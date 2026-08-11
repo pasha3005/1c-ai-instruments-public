@@ -1,13 +1,25 @@
 /**
- * Конвейер обновления нетиповой конфигурации.
+ * Конвейер обновления конфигурации, находящейся на поддержке.
  *
- * Повторяет обновление конфигурации, находящейся на поддержке, так, как его
- * делает конфигуратор, — но без ручного разбора тысячи строк в окне сравнения:
+ * **Путей два, и выбирается он за пять секунд, до всякой тяжёлой работы**
+ * (`vendorConfigPresence`). Требование пользователя дословно (11.08.2026):
+ * «если ты видишь, что конфигурация "на замке", то есть, на поддержке, значит,
+ * используй типовой метод обновления, и сравнение тебе не нужно вообще. Но если
+ * включена возможность изменения, и ты видишь доработки — тут уже подключай
+ * свой инструмент по автоматическому обновлению».
+ *
+ * **Доработок нет** (конфигурации поставщика в базе для сравнения не оказалось):
+ * обновление выполняет сама платформа — `/UpdateCfg` новой поставкой, затем
+ * `/UpdateDBCfg` и проверки. Ни выгрузки в XML, ни разворачивания поставки,
+ * ни объединения: решений, которые стоило бы принимать, здесь нет. На демо-базе
+ * УНФ это 56 секунд против примерно четверти часа своим путём.
+ *
+ * **Доработки есть** — прежний, длинный путь:
  *
  *   1. выгружаем основную конфигурацию базы в XML;
- *   2. получаем ТЕКУЩУЮ конфигурацию поставщика — из файла .cf либо
+ *   2. разворачиваем НОВУЮ поставку (то, на что обновляемся);
+ *   3. получаем ТЕКУЩУЮ конфигурацию поставщика — из файла .cf либо
  *      восстановлением прямо из базы (`update/vendorSources.js`);
- *   3. разворачиваем НОВУЮ поставку (то, на что обновляемся);
  *   4. объединяем три версии: правку вендора берём, свою сохраняем,
  *      дважды изменённое сначала пробуем разобрать сами;
  *   5. пишем результат в файлы выгрузки и показываем отчёт;
@@ -37,6 +49,8 @@ import {
   prepareVendorConfig, exportCfToXml, readConfigurationProperties,
 } from '../analyze/vendorConfig.js';
 import { findVendorRelease } from '../onec/templates.js';
+import { vendorConfigPresence } from '../onec/vendorCompare.js';
+import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
@@ -103,7 +117,29 @@ async function runPipeline({ updateId, input, progress }) {
       platform, conn, workDir: workRoot, user: input.user, password: input.password,
     };
 
-    // ---------- 4. Основная конфигурация ----------
+    // ---------- 4. Есть ли в базе доработки ----------
+    // Пять секунд до всего дорогого. Если конфигурации поставщика в базе нет,
+    // значит возможность изменения не включали и доработок нет: обновлять такую
+    // конфигурацию должна сама платформа, а сравнивать и объединять нечего.
+    startStage('detect', 'Проверка, есть ли в базе конфигурация поставщика');
+    const vendorGiven = Boolean(String(input.vendorConfigPath || '').trim());
+    const presence = vendorGiven
+      ? { present: true, log: '' }
+      : await vendorConfigPresence({ ...collectCtx });
+
+    if (presence.present === false) {
+      progress.done('detect', 'доработок нет — обновление типовое');
+      return await runTypical({
+        updateId, input, platform, conn, workRoot, progress, startedAt, warnings, collectCtx,
+      });
+    }
+    progress.done('detect', vendorGiven
+      ? 'указана текущая поставка — объединяем'
+      : (presence.present ? 'конфигурация поставщика в базе есть' : 'определить не удалось, объединяем'));
+    // Дальше идёт длинный путь; типовое обновление в нём не участвует.
+    progress.skip('update-cfg', 'не подходит: в конфигурации есть доработки');
+
+    // ---------- 5. Основная конфигурация ----------
     startStage('export-main', 'Выгрузка основной конфигурации в XML (может занять несколько минут)');
     const exported = await exportConfiguration({
       ...collectCtx,
@@ -116,7 +152,7 @@ async function runPipeline({ updateId, input, progress }) {
     progress.done('export-main',
       `${humanSize(await dirSize(exported.dir))}, ${mainProps.name || 'конфигурация'} ${mainProps.version || ''}`.trim());
 
-    // ---------- 5. Новая поставка ----------
+    // ---------- 6. Новая поставка ----------
     // Она готовится ПЕРЕД старой: восстановление старой поставки из базы
     // заглядывает в новую, чтобы заполнить строки, которые интегратор удалил, —
     // их текста отчёт сравнения не печатает. Порядок в `UPDATE_STAGES` держать
@@ -129,7 +165,7 @@ async function runPipeline({ updateId, input, progress }) {
     progress.done('vendor-new',
       `${targetProps.name || ''} ${targetProps.version || ''}`.trim() || target.dir);
 
-    // ---------- 6. Текущая конфигурация поставщика ----------
+    // ---------- 7. Текущая конфигурация поставщика ----------
     startStage('vendor-old', 'Подготовка текущей конфигурации поставщика');
     const vendorCtx = {
       platform, conn, workDir: workRoot, user: input.user, password: input.password,
@@ -160,7 +196,7 @@ async function runPipeline({ updateId, input, progress }) {
 
     checkTarget({ mainProps, baseProps, targetProps, warnings, progress });
 
-    // ---------- 7. Объединение ----------
+    // ---------- 8. Объединение ----------
     startStage('merge', 'Трёхстороннее сравнение и объединение');
     const merge = await mergeConfigurations({
       mainDir: exported.dir,
@@ -177,7 +213,7 @@ async function runPipeline({ updateId, input, progress }) {
       + `разобрано автоматически ${merge.totals.autoResolved}, `
       + `требует решения ${manualCount}`);
 
-    // ---------- 8. Отчёт ----------
+    // ---------- 9. Отчёт ----------
     startStage('report', 'Сборка отчёта об объединении');
     const result = {
       updateId,
@@ -204,7 +240,7 @@ async function runPipeline({ updateId, input, progress }) {
     await save(updateId, result);
     progress.done('report', 'отчёт готов');
 
-    // ---------- 9. Запись в базу — по подтверждению ----------
+    // ---------- 10. Запись в базу — по подтверждению ----------
     await applyToBase({
       updateId, input, platform, conn, workRoot, progress, result, manualCount,
     });
@@ -236,6 +272,190 @@ async function runPipeline({ updateId, input, progress }) {
     await store.markFailed(updateId, err, durationMs);
     throw err;
   }
+}
+
+/**
+ * Типовое обновление: конфигурация без доработок, всё делает платформа.
+ *
+ * Здесь нет ни выгрузки, ни объединения — и это не упрощение, а правильный
+ * ответ: у конфигурации, где возможность изменения не включали, нет ни одного
+ * места, о котором надо принимать решение. Ровно так обновляет конфигуратор,
+ * своей конфигурацией поставщика и своими правилами поддержки.
+ *
+ * Что всё-таки делается сверх команды платформы:
+ *  * запись в базу — только по подтверждению, как и во втором пути;
+ *  * у платформы запрашивается список дважды изменённых свойств. Если он
+ *    непустой, значит доработки всё-таки есть, и это громкое предупреждение:
+ *    такую базу надо вести объединением;
+ *  * после обновления — `/UpdateDBCfg`, синтаксический контроль и проверка
+ *    применимости расширений с починкой аннотаций.
+ */
+async function runTypical({
+  updateId, input, platform, conn, workRoot, progress, startedAt, warnings, collectCtx,
+}) {
+  for (const id of ['export-main', 'vendor-new', 'vendor-old', 'merge']) {
+    progress.skip(id, 'не требуется: доработок нет');
+  }
+
+  progress.message(
+    'Конфигурация поставщика в базе для сравнения недоступна. Так отвечает база, где '
+    + 'возможность изменения конфигурации не включали, — то есть доработок нет, объединять '
+    + 'нечего. Обновление выполнит сама платформа, как это делает конфигуратор командой '
+    + '«Обновить конфигурацию».',
+  );
+
+  const source = await typicalSource(input);
+
+  progress.start('report', 'Подготовка сведений об обновлении');
+  const result = {
+    updateId,
+    mode: 'typical',
+    generatedAt: new Date().toISOString(),
+    input: sanitize(input),
+    infobase: { kind: conn.kind, display: conn.display },
+    platformVersion: platform.version,
+    // Свойства конфигураций читаются из XML-выгрузки, а её здесь нет намеренно:
+    // ради двух строк в отчёте выгружать гигабайты незачем. Что известно точно —
+    // файл поставки, которым обновляемся.
+    configs: { main: {}, target: {} },
+    typicalSource: source,
+    warnings,
+    loaded: false,
+    durationMs: Date.now() - startedAt,
+  };
+  await save(updateId, result);
+  progress.done('report', 'сведения готовы');
+
+  const answer = await progress.ask('confirm', {
+    title: 'Обновить конфигурацию базы средствами платформы?',
+    manual: 0,
+    infobase: conn.display,
+    text: 'Доработок в конфигурации нет, поэтому обновление типовое: платформа применит '
+      + `поставку ${path.basename(source)} к основной конфигурации, затем будет выполнено `
+      + 'обновление конфигурации базы данных и проверки. Базе нужен монопольный доступ.',
+  });
+
+  if (!answer?.ok) {
+    progress.skip('confirm', 'обновление отложено');
+    for (const id of ['update-cfg', 'load', 'db-update', 'check']) progress.skip(id, 'не выполнялось');
+    progress.message('Обновление не выполнялось: вы отложили запись в базу.');
+  } else {
+    progress.done('confirm', 'разрешено пользователем');
+    progress.skip('load', 'не требуется: обновление выполняет платформа');
+    await applyTypical({ updateId, input, platform, conn, workRoot, progress, result, source, collectCtx });
+  }
+
+  result.durationMs = Date.now() - startedAt;
+  await save(updateId, result);
+  progress.finish({
+    updateId,
+    mode: 'typical',
+    manual: 0,
+    autoResolved: 0,
+    fromVendor: 0,
+    durationMs: result.durationMs,
+  });
+  log.info(`Обновление ${updateId} завершено типовым путём`);
+  return result;
+}
+
+/**
+ * Файл поставки для типового обновления.
+ *
+ * `/UpdateCfg` принимает файл — `.cf` или `.cfu`. Каталог XML-выгрузки для этого
+ * пути не годится, и подсунуть его платформе нечем: превращать выгрузку в `.cf`
+ * пришлось бы через временную базу, то есть возвращаться к тем самым минутам,
+ * которые типовой путь и экономит. Поэтому — честный отказ с объяснением.
+ */
+async function typicalSource(input) {
+  const raw = String(input.targetConfigPath || '').trim();
+  if (!raw) throw new Error('Не указана целевая конфигурация (файл .cf новой поставки)');
+  const target = path.resolve(raw);
+
+  if (!(await pathExists(target))) {
+    throw new Error(`Целевая конфигурация не найдена: ${target}`);
+  }
+  if ((await fs.stat(target)).isDirectory()) {
+    throw new Error(
+      'Доработок в конфигурации нет, поэтому обновление выполняется штатной командой платформы, '
+      + `а ей нужен файл поставки .cf или .cfu — указан каталог: ${target}. Укажите файл поставки.`,
+    );
+  }
+  if (!/\.(cf|cfu)$/i.test(target)) {
+    throw new Error(`Ожидается файл поставки .cf или .cfu, указано: ${path.basename(target)}`);
+  }
+  return target;
+}
+
+/** Запись в базу типовым путём: /UpdateCfg → /UpdateDBCfg → проверки. */
+async function applyTypical({
+  updateId, input, platform, conn, workRoot, progress, result, source, collectCtx,
+}) {
+  startWrite(progress, 'update-cfg', 'Платформа применяет поставку (нужен монопольный доступ)');
+  const upd = await updateCfgFromFile({
+    ...collectCtx,
+    cfFile: source,
+    onProgress: (text) => progress.update('update-cfg', text),
+  });
+
+  result.typical = {
+    ok: upd.ok,
+    log: upd.log,
+    twiceChanged: upd.twiceChanged,
+    reason: upd.reason || '',
+  };
+
+  if (!upd.ok) {
+    result.loadError = upd.reason;
+    await store.updateMeta(updateId, { loadError: upd.reason });
+    progress.warn('update-cfg', 'не выполнено');
+    for (const id of ['db-update', 'check']) progress.skip(id, 'обновление не выполнено');
+    progress.message(
+      `Платформа обновление не выполнила: ${upd.reason}. База не изменена.`
+      + ' Если конфигурация снята с поддержки, типовое обновление невозможно —'
+      + ' укажите текущую поставку файлом, и объединение будет выполнено разбором.',
+      'warn',
+    );
+    return;
+  }
+
+  result.loaded = true;
+  result.loadedAt = new Date().toISOString();
+  await store.updateMeta(updateId, { loadedAt: result.loadedAt, loadError: null });
+  progress.done('update-cfg', 'конфигурация обновлена платформой');
+
+  if (upd.twiceChanged.length) {
+    const text = `Платформа сообщила о дважды изменённых свойствах: ${upd.twiceChanged.length}. `
+      + 'Значит доработки в конфигурации всё-таки есть, и решения по этим местам платформа '
+      + 'приняла по правилам поддержки, а не разбором. Проверьте их и, если правки важны, '
+      + 'ведите обновление объединением: укажите текущую поставку файлом.';
+    result.warnings.push(text);
+    progress.message(text, 'warn');
+  }
+
+  startWrite(progress, 'db-update', 'Реструктуризация таблиц (может занять долго)');
+  try {
+    await updateDbConfig({
+      platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    });
+    result.dbUpdated = true;
+    progress.done('db-update', 'конфигурация базы данных обновлена');
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    result.dbUpdated = false;
+    result.dbUpdateError = err.message;
+    progress.warn('db-update', 'не выполнено');
+    progress.message(`Обновление конфигурации базы данных не выполнено: ${err.message}`, 'warn');
+  }
+
+  startWrite(progress, 'check', 'Синтаксический контроль конфигурации');
+  result.checks = await runChecks({
+    platform, conn, input, workRoot, mergedDir: '', progress,
+  });
+  const problems = (result.checks.config?.errors?.length || 0)
+    + (result.checks.extensions?.errors?.length || 0);
+  if (problems) progress.warn('check', `замечаний платформы: ${problems}`);
+  else progress.done('check', 'ошибок не найдено');
 }
 
 /**
@@ -499,6 +719,19 @@ async function runChecks({ platform, conn, input, workRoot, mergedDir, progress 
 
     if (applicable.ok || !applicable.available) break;
     if (round === FIX_ROUNDS) break;
+
+    // Починка аннотаций сверяет расширение с текстами основной конфигурации,
+    // а их даёт только XML-выгрузка. При типовом обновлении её нет намеренно,
+    // поэтому здесь честный отказ, а не тихое «ничего не нашлось».
+    if (!mergedDir) {
+      checks.manual.push({
+        reason: 'Расширения не применяются. Проверить, какие аннотации потеряли цель, '
+          + 'программа здесь не может: для этого нужна XML-выгрузка конфигурации, а типовое '
+          + 'обновление обходится без неё. Откройте расширения в конфигураторе либо запустите '
+          + 'обновление объединением, указав текущую поставку файлом.',
+      });
+      break;
+    }
 
     progress.update('check', 'расширения не применяются — разбираем причины');
     const dumped = await exportExtensions({

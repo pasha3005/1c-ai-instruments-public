@@ -234,6 +234,15 @@ export function classifyFailure(designerLog) {
     };
   }
 
+  // Платформа дошла до операнда и просит его уточнить — значит конфигурация
+  // поставщика в базе ЕСТЬ. Ответ ценен сам по себе, см. vendorConfigPresence.
+  if (/не указано имя конфигурации поставщика/i.test(text)) {
+    return {
+      nameRequired: true,
+      reason: 'не передано имя конфигурации поставщика',
+    };
+  }
+
   if (/требуется более новая версия платформы/i.test(text)) {
     return {
       needsNewerPlatform: true,
@@ -244,6 +253,74 @@ export function classifyFailure(designerLog) {
 
   if (!text) return { reason: 'конфигуратор не сформировал отчёт сравнения с конфигурацией поставщика' };
   return { reason: `конфигуратор не сформировал отчёт сравнения: ${text.slice(0, 300)}` };
+}
+
+/**
+ * Есть ли в базе конфигурация поставщика, с которой можно сравнивать.
+ *
+ * Пятисекундная проверка, и она решает, каким путём вести обновление:
+ *
+ *   есть  → конфигурация изменялась, нужен наш трёхсторонний разбор;
+ *   нет   → база «на замке» либо снята с поддержки — обновление типовое,
+ *           силами платформы (`onec/updateCfg.js`), и выгрузка XML не нужна.
+ *
+ * Устроено на разнице ответов, которую видно только если **нарочно не передать**
+ * имя конфигурации поставщика (опыты 11.08.2026):
+ *
+ *   ERP с доработками → «Не указано имя конфигурации поставщика» (код 1, 5 с)
+ *   демо-база на замке → «Конфигурация 'Конфигурация поставщика' недоступна»
+ *
+ * То есть в первом случае платформа дошла до операнда и просит его уточнить,
+ * во втором операнда нет вовсе. Проверка тем и хороша, что не требует имени
+ * конфигурации: узнать имя можно только из выгрузки XML, а она идёт минуты,
+ * и ради выбора пути платить ими незачем.
+ *
+ * Незнакомый ответ — `present: null`: гадать нельзя, дальше решает вызывающий
+ * (конвейер в таком случае идёт прежним путём, через объединение).
+ *
+ * @returns {Promise<{present: boolean|null, log: string}>}
+ */
+export async function vendorConfigPresence({ platform, conn, workDir, user, password }) {
+  if (!platform.client) return { present: null, log: '' };
+
+  const dir = await ensureDir(path.join(workDir, 'vendor-compare'));
+  const reportFile = path.join(dir, 'presence.txt');
+  const logFile = path.join(dir, 'presence.log');
+  await rmrf(reportFile).catch(() => {});
+  await rmrf(logFile).catch(() => {});
+
+  try {
+    await run(platform.client, [
+      'DESIGNER',
+      ...toClientArgs(conn),
+      ...(user ? [`/N${user}`] : []),
+      ...(password ? [`/P${password}`] : []),
+      '/CompareCfg',
+      '-FirstConfigurationType', 'MainConfiguration',
+      '-SecondConfigurationType', 'VendorConfiguration',
+      '-ReportType', 'Brief',
+      '-ReportFormat', 'txt',
+      '-ReportFile', reportFile,
+      '/DisableStartupDialogs',
+      '/DisableStartupMessages',
+      '/Out', logFile,
+    ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    return { present: null, log: err.message };
+  }
+
+  // Отчёт всё-таки построился — значит имя не понадобилось и поставщик есть.
+  if (await pathExists(reportFile)) {
+    await rmrf(reportFile).catch(() => {});
+    return { present: true, log: '' };
+  }
+
+  const text = (await readLogSafe(logFile)).trim();
+  const verdict = classifyFailure(text);
+  if (verdict.nameRequired) return { present: true, log: text };
+  if (verdict.vendorUnavailable) return { present: false, log: text };
+  return { present: null, log: text };
 }
 
 /** Русское слово отчёта → внутреннее обозначение вида отличия. */

@@ -138,7 +138,10 @@ function buildSummary(result) {
   const merge = result?.merge || {};
   const totals = merge.totals || {};
   return {
+    // Каким путём шло обновление: типовым (платформа) или объединением.
+    updateMode: result?.mode === 'typical' ? 'typical' : 'merge',
     mode: merge.mode || null,
+    twiceChanged: result?.typical?.twiceChanged?.length ?? null,
     mainConfig: result?.configs?.main?.name || '',
     mainVersion: result?.configs?.main?.version || '',
     targetVersion: result?.configs?.target?.version || '',

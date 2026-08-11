@@ -1,6 +1,6 @@
 {
   "name": "onec-audit",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "description": "AI-аудит базы 1С — автоматическое обследование информационных баз 1С:Предприятие 8.x",
   "type": "module",
   "private": true,

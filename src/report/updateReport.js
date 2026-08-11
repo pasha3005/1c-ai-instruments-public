@@ -32,7 +32,11 @@ export function renderUpdateReport(result) {
   const cfg = result.configs?.main || {};
   const title = `Обновление конфигурации — ${cfg.synonym || cfg.name || 'база 1С'}`;
 
-  const sectionDefs = [
+  const sectionDefs = (result.mode === 'typical' ? [
+    { id: 'upd-typical', title: 'Типовое обновление силами платформы', html: renderTypical(result) },
+    { id: 'upd-checks', title: 'Проверки после обновления', html: renderChecks(result) },
+    { id: 'upd-next', title: 'Что делать дальше', html: renderNext(result) },
+  ] : [
     { id: 'upd-summary', title: 'Итоги объединения', html: renderSummary(result) },
     { id: 'upd-manual', title: 'Требуют вашего решения', html: renderManual(result) },
     { id: 'upd-auto', title: 'Спорные места, разобранные автоматически', html: renderAuto(result) },
@@ -42,7 +46,7 @@ export function renderUpdateReport(result) {
     { id: 'upd-kept', title: 'Ваши доработки, оставленные как есть', html: renderGroup(result, 'kept') },
     { id: 'upd-checks', title: 'Проверки после загрузки в базу', html: renderChecks(result) },
     { id: 'upd-next', title: 'Что делать дальше', html: renderNext(result) },
-  ].filter((s) => s.html);
+  ]).filter((s) => s.html);
 
   return `<!doctype html>
 <html lang="ru" data-theme="${result.input?.reportTheme === 'light' ? 'light' : 'dark'}">
@@ -103,7 +107,98 @@ function renderNav(sectionDefs) {
 
 // --- Титульный лист ----------------------------------------------------------
 
+/**
+ * Титульный лист типового обновления.
+ *
+ * Числа объединения здесь были бы ложью: объединения не было и не требовалось.
+ * Свойства конфигураций тоже не показываем — они читаются из XML-выгрузки,
+ * а типовой путь нарочно обходится без неё (это и есть его смысл).
+ */
+function renderTypicalCover(result) {
+  const done = result.typical?.ok;
+  return `
+<header class="cover">
+  <p class="cover__eyebrow">Обновление конфигурации на поддержке</p>
+  <h1 class="cover__title">Типовое обновление</h1>
+  <p class="cover__subtitle">Доработок в конфигурации нет — обновление выполнила платформа</p>
+  <dl class="cover__meta">
+    <div><dt>Файл поставки</dt><dd>${esc(fileName(result.typicalSource))}</dd></div>
+    <div><dt>Информационная база</dt><dd>${esc(result.infobase?.display || '—')}</dd></div>
+    <div><dt>Платформа</dt><dd>${esc(result.platformVersion || '—')}</dd></div>
+    <div><dt>Обновление конфигурации</dt><dd>${done ? 'выполнено' : 'не выполнялось'}</dd></div>
+    <div><dt>Конфигурация базы данных</dt><dd>${result.dbUpdated ? 'обновлена' : 'не обновлялась'}</dd></div>
+    <div><dt>Дата</dt><dd>${esc(formatDate(result.generatedAt))}</dd></div>
+  </dl>
+  <p class="cover__scope">
+    Сравнение с конфигурацией поставщика и объединение не выполнялись: в базе нет доработок,
+    поэтому решений, которые следовало бы принимать, тоже нет. Обновление сделано штатной
+    командой платформы — так же, как это делает конфигуратор.
+  </p>
+</header>`;
+}
+
+function fileName(p) {
+  const text = String(p || '');
+  const at = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+  return at === -1 ? (text || '—') : text.slice(at + 1);
+}
+
+/** Раздел типового обновления: что именно сделала платформа и что сказала. */
+function renderTypical(result) {
+  const t = result.typical;
+  const twice = t?.twiceChanged || [];
+
+  return `
+  <p class="section__lead">
+    Конфигурация стоит на поддержке, и конфигурации поставщика для сравнения в базе нет —
+    так отвечает база, в которой возможность изменения не включали. Значит своих правок в ней
+    нет: всё содержимое нового релиза применяется целиком, выбирать не из чего. Выгрузка в XML,
+    восстановление старой поставки и трёхстороннее объединение в этом случае не нужны вовсе.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Шаг</th><th>Итог</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Применение поставки к основной конфигурации<br>
+              <span class="mono">${esc(result.typicalSource || '')}</span></td>
+          <td>${t?.ok
+    ? '<b class="ok">выполнено платформой</b>'
+    : `<b class="bad">не выполнено</b>${t?.reason ? ` — ${esc(t.reason)}` : ''}`}</td>
+        </tr>
+        <tr>
+          <td>Дважды изменённые свойства по данным платформы</td>
+          <td>${twice.length
+    ? `<b class="warn">${formatNumber(twice.length)}</b>`
+    : '<b class="ok">нет</b>'}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  ${twice.length ? `
+  <div class="callout callout--warn">
+    <div class="callout__title">Платформа сообщила о дважды изменённых свойствах</div>
+    Значит доработки в конфигурации всё-таки есть, и решения по этим местам приняты
+    по правилам поддержки, а не разбором. Если эти правки важны, укажите текущую поставку
+    файлом и выполните обновление объединением — тогда каждое спорное место будет показано
+    тремя версиями.
+    <div class="mono" style="margin-top:8px">
+      ${twice.slice(0, 100).map((line) => esc(line)).join('<br>')}
+      ${twice.length > 100 ? `<br>…и ещё ${formatNumber(twice.length - 100)}` : ''}
+    </div>
+  </div>` : ''}
+
+  ${t?.log ? `
+  <div class="callout callout--info">
+    <div class="callout__title">Что ответила платформа</div>
+    <div class="mono">${esc(t.log.slice(0, 2000))}</div>
+  </div>` : ''}`;
+}
+
 function renderCover(result) {
+  if (result.mode === 'typical') return renderTypicalCover(result);
   const cfg = result.configs?.main || {};
   const base = result.configs?.base;
   const target = result.configs?.target || {};
@@ -566,9 +661,13 @@ function renderChecks(result) {
 
   return `
   <p class="section__lead">
-    После загрузки объединённой выгрузки в базу выполнены проверки самой платформы: обновление
-    конфигурации базы данных, синтаксический контроль и проверка возможности применения
-    расширений. Замечания ниже — это слова конфигуратора, а не наши.
+    ${result.mode === 'typical'
+    ? 'После обновления конфигурации выполнены проверки самой платформы: обновление '
+      + 'конфигурации базы данных, синтаксический контроль и проверка возможности применения '
+      + 'расширений. Замечания ниже — это слова конфигуратора, а не наши.'
+    : 'После загрузки объединённой выгрузки в базу выполнены проверки самой платформы: обновление '
+      + 'конфигурации базы данных, синтаксический контроль и проверка возможности применения '
+      + 'расширений. Замечания ниже — это слова конфигуратора, а не наши.'}
   </p>
 
   <div class="table-wrap">
@@ -740,7 +839,13 @@ function renderNext(result) {
       + 'со спорными файлами.',
     );
   }
-  if (!result.loaded) {
+  if (!result.loaded && result.mode === 'typical') {
+    steps.push(
+      'Обновление не выполнялось: запись в базу не подтверждена. Запустите обновление заново '
+      + 'и подтвердите шаг записи, либо обновите конфигурацию в конфигураторе: Конфигурация → '
+      + 'Поддержка → Обновить конфигурацию. Базе нужен монопольный доступ.',
+    );
+  } else if (!result.loaded) {
     steps.push(
       'Загрузите объединённую выгрузку в основную конфигурацию — кнопкой «Загрузить '
       + 'в конфигурацию» на странице обновления либо в конфигураторе: Конфигурация → '
