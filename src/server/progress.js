@@ -68,6 +68,24 @@ export const UPDATE_STAGES = [
   { id: 'check', title: 'Синтаксический контроль и применимость расширений', weight: 7 },
 ];
 
+/**
+ * Этапы проверки качества кода.
+ *
+ * Короче обследования намеренно: здесь нужен один ответ — замечания к коду.
+ * Ни живых данных, ни ролей, ни оценок трудозатрат. Этап «Источник» один для
+ * обоих режимов: это либо проверка пути к базе, либо поиск хранилищ.
+ */
+export const QUALITY_STAGES = [
+  { id: 'prepare', title: 'Подготовка', weight: 2 },
+  { id: 'platform', title: 'Поиск платформы 1С', weight: 2 },
+  { id: 'source', title: 'Источник кода', weight: 4 },
+  { id: 'export', title: 'Получение исходников', weight: 34 },
+  { id: 'parse', title: 'Разбор метаданных и модулей', weight: 14 },
+  { id: 'vendor', title: 'Сравнение с конфигурацией поставщика', weight: 10 },
+  { id: 'analyze', title: 'Проверка качества кода', weight: 26 },
+  { id: 'report', title: 'Формирование отчёта', weight: 4 },
+];
+
 export class AuditProgress extends EventEmitter {
   /** Ожидающий ответа вопрос: разрешается вызовом `answer()`. */
   #answer = null;

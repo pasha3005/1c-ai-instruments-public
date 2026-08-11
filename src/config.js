@@ -112,7 +112,7 @@ export const LIMITS = {
 };
 
 export const APP = {
-  name: 'AI-аудит базы 1С',
+  name: '1С: AI инструменты',
   version: readVersion(),
   vendor: 'Павел Плаксин, Первый БИТ (офис м. Павелецкая)',
   engine: 'локальный движок',

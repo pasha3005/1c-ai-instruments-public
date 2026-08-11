@@ -9,11 +9,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { Router, sendJson, sendText, sendError, readJsonBody, openSse } from './http.js';
-import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES } from './progress.js';
+import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES, QUALITY_STAGES } from './progress.js';
 import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
+import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
 import * as updateStore from '../store/updateStore.js';
+import * as qualityStore from '../store/qualityStore.js';
 import { newAuditId } from '../util/id.js';
 import { discoverPlatforms } from '../onec/platform.js';
 import { parseConnection } from '../onec/connection.js';
@@ -202,6 +204,7 @@ export function buildRouter() {
       // приходит отсюда же: интерфейс рисует шкалу до запуска, чтобы было
       // видно, из чего работа состоит.
       updateStages: UPDATE_STAGES,
+      qualityStages: QUALITY_STAGES,
       isWindows: process.platform === 'win32',
       canPickPaths: dialogsAvailable(),
     });
@@ -525,7 +528,7 @@ export function buildRouter() {
     sendJson(res, 200, { ok: true });
   });
 
-  // --- Обновление нетиповой конфигурации ---
+  // --- Обновление конфигурации ---
 
   /**
    * Запуск объединения.
@@ -718,6 +721,129 @@ export function buildRouter() {
 
   router.delete('/api/updates/:id', async (req, res, { params }) => {
     await updateStore.deleteRun(params.id);
+    sendJson(res, 200, { ok: true });
+  });
+
+  // --- Проверка качества кода ---
+
+  /**
+   * Запуск проверки качества.
+   *
+   * Источник — база или хранилище конфигурации, и обязательные поля у них
+   * разные: базе нужен путь к базе, хранилищу — каталог хранилищ. Проверяем
+   * ровно то, что нужно выбранному источнику, иначе форма требовала бы
+   * заполнить лишнее.
+   */
+  router.post('/api/quality', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+
+    const source = body.source === 'repository' ? 'repository' : 'infobase';
+    const required = source === 'repository'
+      ? [['repositoryPath', 'Не указан каталог с хранилищами конфигурации']]
+      : [['infobasePath', 'Не указан путь к информационной базе']];
+    required.push(['workDir', 'Не указан рабочий каталог']);
+
+    for (const [field, message] of required) {
+      if (!body[field] || !String(body[field]).trim()) {
+        sendError(res, 400, message);
+        return;
+      }
+    }
+
+    const qualityId = newAuditId();
+    const input = {
+      source,
+      infobasePath: String(body.infobasePath || '').trim(),
+      repositoryPath: String(body.repositoryPath || '').trim(),
+      repositoryUser: String(body.repositoryUser || '').trim(),
+      repositoryPassword: typeof body.repositoryPassword === 'string' ? body.repositoryPassword : '',
+      periodFrom: String(body.periodFrom || '').trim(),
+      periodTo: String(body.periodTo || '').trim(),
+      platformVersion: String(body.platformVersion || '').trim(),
+      vendorConfigPath: String(body.vendorConfigPath || '').trim(),
+      workDir: String(body.workDir).trim(),
+      user: String(body.user || '').trim(),
+      password: typeof body.password === 'string' ? body.password : '',
+      analyzeVendorCode: body.analyzeVendorCode === true,
+      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+    };
+
+    await qualityStore.createRun(qualityId, input);
+    const progress = createProgress(qualityId, QUALITY_STAGES);
+
+    runQuality({ qualityId, input, progress }).catch((err) => {
+      log.warn(`Проверка качества ${qualityId} завершилась ошибкой: ${err.message}`);
+    });
+
+    sendJson(res, 202, { qualityId });
+  });
+
+  router.get('/api/quality', async (req, res, { query }) => {
+    const limit = Number(query.get('limit')) || 50;
+    sendJson(res, 200, { items: await qualityStore.listRuns({ limit }) });
+  });
+
+  router.get('/api/quality/:id', async (req, res, { params }) => {
+    const meta = await qualityStore.getMeta(params.id);
+    if (!meta) {
+      sendError(res, 404, 'Прогон проверки не найден');
+      return;
+    }
+    sendJson(res, 200, meta);
+  });
+
+  router.get('/api/quality/:id/stream', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress) {
+      sendError(res, 404, 'Проверка не найдена или уже выгружена из памяти');
+      return;
+    }
+    const sse = openSse(req, res);
+    sse.send(progress.snapshot(), 'snapshot');
+    const onEvent = (event) => {
+      sse.send({ ...event, snapshot: progress.snapshot() }, event.type);
+      if (event.type === 'finish' || event.type === 'error' || event.type === 'cancelled') {
+        setTimeout(() => sse.close(), 250).unref?.();
+      }
+    };
+    progress.on('event', onEvent);
+    req.on('close', () => progress.off('event', onEvent));
+  });
+
+  router.post('/api/quality/:id/cancel', (req, res, { params }) => {
+    const progress = getProgress(params.id);
+    if (!progress || progress.status !== 'running') {
+      sendError(res, 404, 'Проверка не найдена: возможно, она уже завершена');
+      return;
+    }
+    progress.requestCancel();
+    sendJson(res, 202, { ok: true });
+  });
+
+  router.get('/api/quality/:id/report.html', async (req, res, { params }) => {
+    const html = await qualityStore.readReport(params.id);
+    if (!html) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    sendText(res, 200, html, 'text/html; charset=utf-8');
+  });
+
+  router.post('/api/quality/:id/open', async (req, res, { params }) => {
+    if (!(await qualityStore.readReport(params.id))) {
+      sendError(res, 404, 'Отчёт ещё не сформирован');
+      return;
+    }
+    openUrl(`http://${SERVER.host}:${SERVER.port}/api/quality/${params.id}/report.html`, {
+      appWindow: false,
+      maximized: true,
+    });
     sendJson(res, 200, { ok: true });
   });
 

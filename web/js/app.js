@@ -7,6 +7,7 @@
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
 import { initUpdate, showUpdateStages, reloadUpdateHistory } from './update.js';
+import { initQuality, showQualityStages } from './quality.js';
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
   formatDuration, formatNumber, formatDateTime, attachPathHint,
@@ -46,9 +47,16 @@ const SECTIONS = {
     history: 'history',
   },
   update: {
-    title: 'Обновление нетиповой конфигурации',
+    title: 'Обновление конфигурации',
     main: 'update',
     history: 'update-history',
+  },
+  // У проверки качества истории нет: её результат — отчёт, который открывается
+  // сразу, а держать третий список прогонов пользователь не просил.
+  quality: {
+    title: 'Проверка качества кода',
+    main: 'quality',
+    history: null,
   },
 };
 
@@ -58,6 +66,7 @@ const VIEW_SECTION = {
   history: 'audit',
   update: 'update',
   'update-history': 'update',
+  quality: 'quality',
 };
 
 /** Раздел, в котором мы находимся: нужен, чтобы «О программе» не сбрасывала шапку. */
@@ -122,7 +131,12 @@ function renderTopNav(view) {
   const historyBtn = $('#navHistory');
 
   sectionBtn.hidden = !section;
-  historyBtn.hidden = !section;
+  // У раздела может не быть истории — тогда и кнопки быть не должно: иначе
+  // она вела бы в никуда.
+  historyBtn.hidden = !section?.history;
+  // «О программе» — только на главной. Внутри раздела шапка говорит о работе,
+  // которая идёт: название режима и его история. Требование пользователя.
+  $$('.tab--about').forEach((t) => { t.hidden = Boolean(section); });
   if (!section) return;
 
   sectionBtn.textContent = section.title;
@@ -166,8 +180,10 @@ async function loadEnvironment() {
 
     // Про движок рекомендаций сказано в заголовке приложения — здесь только
     // то, что зависит от машины: какие платформы 1С установлены.
+    // «Версии платформы», а не «Платформа 1С»: дальше идёт перечень через
+    // запятую, и в единственном числе подпись противоречила бы содержимому.
     $('#envSummary').textContent = env.platforms.length
-      ? `Платформа 1С: ${env.platforms.map((p) => p.version).join(', ')}`
+      ? `Версии платформы: ${env.platforms.map((p) => p.version).join(', ')}`
       : 'Платформа 1С не найдена';
 
     if (env.version) $('#appVersion').textContent = `версия ${env.version}`;
@@ -185,6 +201,7 @@ async function loadEnvironment() {
 
     renderStages(env.stages.map((s) => ({ ...s, status: 'pending', detail: '', note: '' })));
     if (env.updateStages?.length) showUpdateStages(env.updateStages);
+    if (env.qualityStages?.length) showQualityStages(env.qualityStages);
   } catch (err) {
     $('#envSummary').textContent = `Ошибка проверки окружения: ${err.message}`;
   }
@@ -794,5 +811,6 @@ requireLicense().then(() => {
   // ключа: без действующего ключа сервер отвечает 403 на любой запрос,
   // и его форма выглядела бы работающей, но не работала.
   initUpdate();
+  initQuality();
   loadEnvironment();
 });

@@ -61,7 +61,7 @@ export const api = {
 
   deleteAudit: (id) => request(`api/audits/${id}`, { method: 'DELETE' }),
 
-  // --- Обновление нетиповой конфигурации ---
+  // --- Обновление конфигурации ---
 
   startUpdate: (input) =>
     request('api/updates', { method: 'POST', body: JSON.stringify(input) }),
@@ -86,6 +86,19 @@ export const api = {
     request(`api/updates/${id}/load`, { method: 'POST', body: JSON.stringify(credentials) }),
 
   deleteUpdate: (id) => request(`api/updates/${id}`, { method: 'DELETE' }),
+
+  // --- Проверка качества кода ---
+
+  startQuality: (input) =>
+    request('api/quality', { method: 'POST', body: JSON.stringify(input) }),
+
+  cancelQuality: (id) => request(`api/quality/${id}/cancel`, { method: 'POST' }),
+
+  quality: (id) => request(`api/quality/${id}`),
+
+  listQuality: () => request('api/quality'),
+
+  openQualityReport: (id) => request(`api/quality/${id}/open`, { method: 'POST' }),
 };
 
 /**
@@ -118,6 +131,11 @@ export function subscribeToAudit(auditId, handlers) {
 /** То же для прогона объединения: поток событий устроен одинаково. */
 export function subscribeToUpdate(updateId, handlers) {
   return subscribeToStream(`api/updates/${updateId}/stream`, handlers);
+}
+
+/** Поток событий проверки качества кода — тот же механизм, другой адрес. */
+export function subscribeToQuality(qualityId, handlers) {
+  return subscribeToStream(`api/quality/${qualityId}/stream`, handlers);
 }
 
 function subscribeToStream(url, handlers) {

@@ -157,6 +157,7 @@ function buildSummary(result) {
     loaded: Boolean(result?.loaded),
     dbUpdated: Boolean(result?.dbUpdated),
     checkErrors: (result?.checks?.config?.errors?.length ?? 0)
+      + (result?.checks?.extensionsSyntax?.errors?.length ?? 0)
       + (result?.checks?.extensions?.errors?.length ?? 0),
   };
 }

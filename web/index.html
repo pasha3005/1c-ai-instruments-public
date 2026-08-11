@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI-аудит базы 1С</title>
+<title>1С: AI инструменты</title>
 <!--
   Цвет заголовка окна.
 
@@ -17,7 +17,7 @@
 <meta name="theme-color" content="#1b1e25">
 <meta name="color-scheme" content="dark">
 <link rel="manifest" href="app.webmanifest">
-<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="icon" type="image/svg+xml" href="icon-1c-ai.svg">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -55,7 +55,7 @@
 -->
 <div class="license-gate" id="licenseGate" hidden>
   <form class="license-card" id="licenseForm" autocomplete="off">
-    <img class="license-card__mark" src="icon.svg" alt="" width="52" height="52">
+    <img class="license-card__mark" src="icon-1c-ai.svg" alt="" width="52" height="52">
     <h1>Лицензионный ключ</h1>
     <p>
       Программа распространяется по ключу. Введите ключ, выданный владельцем
@@ -79,10 +79,10 @@
       «назад» рядом с ним была бы вторым способом сделать то же самое.
     -->
     <button class="brand" id="homeBtn" type="button" title="На главную">
-      <img class="brand__mark" src="icon.svg" alt="" width="40" height="40">
+      <img class="brand__mark" src="icon-1c-ai.svg" alt="" width="40" height="40">
       <span class="brand__text">
         <span class="brand__title">
-          AI-аудит базы 1С
+          1С: AI инструменты
           <span class="brand__engine">локальный движок</span>
         </span>
         <span class="brand__sub" id="envSummary">Проверка окружения…</span>
@@ -101,6 +101,10 @@
         «О программе» открывает README тем же интерфейсом, что и всё остальное:
         отдельное окно с текстовым файлом выглядело бы как выпадение из
         приложения, а искать документацию в каталоге программы никто не станет.
+
+        Кнопка живёт только на главной (`renderTopNav` её скрывает внутри
+        раздела): в разделе шапка должна говорить о работе, которая идёт,
+        а не предлагать почитать описание программы.
       -->
       <button class="tab tab--about" data-view="about" type="button" title="Описание программы (README)">
         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
@@ -119,18 +123,18 @@
 
   <!-- ================= ГЛАВНАЯ ================= -->
   <!--
-    Два рабочих режима — двумя крупными кнопками, а не строкой вкладок.
-    Режимы делают принципиально разное: один ничего не меняет, второй пишет
-    в информационную базу, — и выбор между ними должен быть осознанным шагом,
-    а не переключением вкладки мимоходом.
+    Рабочие режимы — крупными кнопками, а не строкой вкладок. Режимы делают
+    принципиально разное: два только читают, третий пишет в информационную
+    базу, — и выбор между ними должен быть осознанным шагом, а не переключением
+    вкладки мимоходом.
   -->
   <section class="view is-active" data-view="home">
     <div class="hero hero--home">
       <h1>Что нужно сделать с базой?</h1>
       <p>
-        Два рабочих режима. Обследование только читает базу и собирает отчёт;
-        обновление объединяет конфигурацию с новой поставкой и, если вы это
-        подтвердите, записывает результат в базу.
+        Три раздела. Обследование и проверка качества кода только читают
+        и собирают отчёт; обновление переводит конфигурацию на новый релиз
+        и, если вы это подтвердите, записывает результат в базу.
       </p>
     </div>
 
@@ -162,13 +166,33 @@
             <path d="M16 9l4 3-4 3"></path>
           </svg>
         </span>
-        <span class="mode__title">Обновление нетиповой конфигурации</span>
+        <span class="mode__title">Обновление конфигурации</span>
         <span class="mode__text">
-          Трёхстороннее объединение с новой поставкой: правки вендора
+          <b>Типовая конфигурация на поддержке</b> обновляется средствами самой
+          платформы, без сравнения и объединения: решать там нечего.
+          <b>Доработанная</b> — трёхсторонним объединением: правки вендора
           применяются, доработки сохраняются, спорные места разбираются
           автоматически, остальное — с вашим решением.
         </span>
         <span class="mode__foot mode__foot--write">Может писать в базу — по подтверждению</span>
+      </button>
+
+      <button class="mode" type="button" data-goto="quality">
+        <span class="mode__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 8l-4 4 4 4"></path>
+            <path d="M15 8l4 4-4 4"></path>
+            <path d="M13 5l-2 14"></path>
+          </svg>
+        </span>
+        <span class="mode__title">Проверка качества кода</span>
+        <span class="mode__text">
+          Только замечания к коду — по критичности и по разработчикам, с поиском.
+          Источник на выбор: информационная база либо <b>хранилище конфигурации</b>,
+          где видно, кто что поместил за выбранный период.
+        </span>
+        <span class="mode__foot mode__foot--safe">Ничего не меняет: только чтение</span>
       </button>
     </div>
   </section>
@@ -366,17 +390,24 @@
     </div>
   </section>
 
-  <!-- ================= ОБНОВЛЕНИЕ НЕТИПОВОЙ КОНФИГУРАЦИИ ================= -->
+  <!-- ================= ОБНОВЛЕНИЕ КОНФИГУРАЦИИ ================= -->
   <section class="view" data-view="update">
 
     <div class="hero">
-      <h1>Обновление нетиповой конфигурации</h1>
+      <h1>Обновление конфигурации</h1>
       <p>
-        Трёхстороннее объединение, как при обновлении конфигурации на поддержке:
-        программа сравнивает <b>основную конфигурацию</b> и <b>новую поставку</b>
-        с <b>текущей конфигурацией поставщика</b>, сама переносит изменения поставщика,
-        сохраняет ваши доработки и показывает <b>дважды изменённые</b> места —
-        те, где решение может принять только человек.
+        <b>Если конфигурация типовая и стоит на поддержке</b> — обновление
+        выполняется средствами платформы, без сравнения и объединения: своих
+        правок нет, значит и решать нечего, весь новый релиз применяется целиком.
+        Программа проверяет это сама, за пять секунд, до начала работы.
+      </p>
+      <p>
+        <b>Если в конфигурации есть доработки</b> — выполняется трёхстороннее
+        объединение: программа сравнивает <b>основную конфигурацию</b>
+        и <b>новую поставку</b> с <b>текущей конфигурацией поставщика</b>, сама
+        переносит изменения поставщика, сохраняет ваши доработки и показывает
+        <b>дважды изменённые</b> места — те, где решение может принять только
+        человек.
       </p>
     </div>
 
@@ -540,6 +571,171 @@
       <div class="run-stats" id="uRunStats" hidden></div>
 
       <div class="error-box" id="uErrorBox" hidden></div>
+    </div>
+
+  </section>
+
+  <!-- ================= ПРОВЕРКА КАЧЕСТВА КОДА ================= -->
+  <!--
+    Тот же движок проверок, что в обследовании, но один вопрос — качество кода,
+    и другой возможный источник. Хранилище конфигурации ценнее базы тем, что
+    авторство в нём записано платформой: видно, кто именно что поместил.
+  -->
+  <section class="view" data-view="quality">
+
+    <div class="hero">
+      <h1>Проверка качества кода</h1>
+      <p>
+        Только замечания к коду: по критичности, по разработчикам, с поиском
+        и фрагментами кода. Движок проверок тот же, что в обследовании, — здесь
+        нет ни оценок состояния, ни объёма данных, ни трудозатрат.
+      </p>
+    </div>
+
+    <form id="qualityForm" class="card form" autocomplete="off">
+
+      <div class="field">
+        <label>Откуда брать код</label>
+        <div class="switch" id="qSource">
+          <label class="switch__item">
+            <input type="radio" name="qSource" value="infobase" checked>
+            <span class="switch__title">Информационная база</span>
+            <span class="switch__text">
+              Как в обследовании: выгрузка конфигурации, сравнение с поставщиком,
+              проверка только доработок. Авторство — по пометкам в коде.
+            </span>
+          </label>
+          <label class="switch__item">
+            <input type="radio" name="qSource" value="repository">
+            <span class="switch__title">Хранилище конфигурации</span>
+            <span class="switch__text">
+              Разбираются помещения за период: кто, когда и что поместил.
+              Авторство записано платформой, а не угадывается.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- ---------- Источник: информационная база ---------- -->
+      <div data-source="infobase">
+        <div class="field">
+          <label for="qPath">Путь к информационной базе <span class="req">*</span></label>
+          <input type="text" id="qPath" name="qPath"
+                 placeholder="D:\Bases\УправлениеТорговлей   или   srv-1c:1541\UT_Prod"
+                 spellcheck="false">
+          <div class="hint" id="qPathHint">
+            Файловая база — путь к каталогу; серверная — <span class="mono">сервер:порт\имя</span>.
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="qUser">Пользователь базы</label>
+            <input type="text" id="qUser" name="qUser" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="qPassword">Пароль</label>
+            <input type="password" id="qPassword" name="qPassword" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+
+      <!-- ---------- Источник: хранилище конфигурации ---------- -->
+      <div data-source="repository" hidden>
+        <div class="field">
+          <label for="qRepo">Каталог с хранилищами конфигурации <span class="req">*</span></label>
+          <div class="picker">
+            <input type="text" id="qRepo" name="qRepo"
+                   placeholder="D:\Хранилища   — внутри и основная конфигурация, и расширения"
+                   spellcheck="false">
+            <button type="button" class="btn btn--pick" data-pick="folder"
+                    data-target="qRepo"
+                    data-title="Выберите каталог, в котором лежат хранилища конфигурации">Каталог…</button>
+          </div>
+          <div class="hint">
+            Можно указать и сам каталог хранилища, и каталог, где их несколько:
+            программа найдёт все — и основной конфигурации, и расширений
+            (опознаются по файлу <span class="mono">cfgrepo.conf</span>).
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="qRepoUser">Пользователь хранилища <span class="req">*</span></label>
+            <input type="text" id="qRepoUser" name="qRepoUser" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="qRepoPassword">Пароль хранилища</label>
+            <input type="password" id="qRepoPassword" name="qRepoPassword" autocomplete="new-password">
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="qFrom">Помещения с даты</label>
+            <input type="date" id="qFrom" name="qFrom">
+          </div>
+          <div class="field">
+            <label for="qTo">по дату</label>
+            <input type="date" id="qTo" name="qTo">
+          </div>
+        </div>
+        <div class="hint">
+          Проверяются только объекты, помещённые за этот период: это и есть работа
+          разработчиков. Пусто — вся история хранилища.
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="qPlatform">Версия платформы</label>
+          <select id="qPlatform" name="qPlatform" data-platform-list></select>
+          <div class="hint">Список установленных на этом компьютере платформ.</div>
+        </div>
+        <div class="field">
+          <label for="qWorkDir">Рабочий каталог <span class="req">*</span></label>
+          <div class="picker">
+            <input type="text" id="qWorkDir" name="qWorkDir" required spellcheck="false">
+            <button type="button" class="btn btn--pick" data-pick="folder"
+                    data-target="qWorkDir" data-title="Выберите каталог для временных файлов">Каталог…</button>
+          </div>
+          <div class="hint">Сюда пишутся выгрузки на время проверки.</div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn--primary btn--big" id="qStartBtn" type="submit">
+          <span>Проверить качество кода</span>
+        </button>
+        <div class="form-note" id="qFormNote"></div>
+      </div>
+    </form>
+
+    <div class="card progress-card" id="qProgressCard" hidden>
+      <div class="progress-head">
+        <div>
+          <h2 id="qProgressTitle">Идёт проверка</h2>
+          <div class="progress-sub" id="qProgressSub">Подготовка…</div>
+        </div>
+        <div class="progress-side">
+          <div class="progress-percent" id="qProgressPercent">0%</div>
+          <div class="progress-timer" id="qProgressTimer">0 с</div>
+        </div>
+      </div>
+
+      <div class="progressbar"><i id="qProgressBar" style="width:0%"></i></div>
+      <ol class="stages" id="qStages"></ol>
+
+      <div class="run-actions" id="qRunActions">
+        <button class="btn btn--danger-solid" id="qCancelBtn" type="button" disabled>Прервать</button>
+      </div>
+
+      <div class="result-actions" id="qResultActions" hidden>
+        <a class="btn btn--success" id="qOpenReport" target="_blank" rel="noopener">Открыть отчёт</a>
+      </div>
+
+      <div class="run-stats" id="qRunStats" hidden></div>
+      <div class="error-box" id="qErrorBox" hidden></div>
     </div>
 
   </section>

@@ -207,7 +207,7 @@ function renderCover(result) {
 
   return `
 <header class="cover">
-  <p class="cover__eyebrow">Обновление нетиповой конфигурации</p>
+  <p class="cover__eyebrow">Обновление конфигурации</p>
   <h1 class="cover__title">${esc(cfg.synonym || cfg.name || 'Конфигурация 1С')}</h1>
   <p class="cover__subtitle">${esc(coverSubtitle(result))}</p>
   <dl class="cover__meta">
@@ -656,18 +656,27 @@ function renderChecks(result) {
   const checks = result.checks;
   if (!checks) return '';
 
-  const config = checks.config || {};
+  const config = checks.config || null;
+  const extensionsSyntax = checks.extensionsSyntax || null;
   const extensions = checks.extensions || {};
+  const typical = result.mode === 'typical';
+
+  const verdict = (check) => ((check.errors || []).length
+    ? `<b class="bad">замечаний: ${formatNumber(check.errors.length)}</b>`
+    : '<b class="ok">ошибок не найдено</b>');
 
   return `
   <p class="section__lead">
-    ${result.mode === 'typical'
-    ? 'После обновления конфигурации выполнены проверки самой платформы: обновление '
-      + 'конфигурации базы данных, синтаксический контроль и проверка возможности применения '
-      + 'расширений. Замечания ниже — это слова конфигуратора, а не наши.'
-    : 'После загрузки объединённой выгрузки в базу выполнены проверки самой платформы: обновление '
-      + 'конфигурации базы данных, синтаксический контроль и проверка возможности применения '
-      + 'расширений. Замечания ниже — это слова конфигуратора, а не наши.'}
+    ${typical
+    ? 'После обновления выполнены проверки самой платформы: обновление конфигурации базы '
+      + 'данных, синтаксический контроль расширений и проверка возможности их применения. '
+      + 'Саму конфигурацию не проверяли: она типовая, какой её выпустил вендор, — '
+      + 'и замечания к ней были бы замечаниями к типовому решению. Всё ниже — слова '
+      + 'конфигуратора, а не наши.'
+    : 'После загрузки объединённой выгрузки в базу выполнены проверки самой платформы: '
+      + 'обновление конфигурации базы данных, синтаксический контроль конфигурации '
+      + 'и расширений, проверка возможности применения расширений. Замечания ниже — '
+      + 'это слова конфигуратора, а не наши.'}
   </p>
 
   <div class="table-wrap">
@@ -682,10 +691,13 @@ function renderChecks(result) {
         </tr>
         <tr>
           <td>Синтаксический контроль конфигурации</td>
-          <td>${(config.errors || []).length
-    ? `<b class="bad">замечаний: ${formatNumber(config.errors.length)}</b>`
-    : '<b class="ok">ошибок не найдено</b>'}</td>
+          <td>${config ? verdict(config) : '<span class="muted">не выполнялся: конфигурация типовая</span>'}</td>
         </tr>
+        ${extensionsSyntax ? `
+        <tr>
+          <td>Синтаксический контроль расширений</td>
+          <td>${verdict(extensionsSyntax)}</td>
+        </tr>` : ''}
         <tr>
           <td>Применимость расширений</td>
           <td>${extensionsVerdict(extensions)}</td>

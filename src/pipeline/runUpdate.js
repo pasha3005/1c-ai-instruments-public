@@ -448,12 +448,18 @@ async function applyTypical({
     progress.message(`Обновление конфигурации базы данных не выполнено: ${err.message}`, 'warn');
   }
 
-  startWrite(progress, 'check', 'Синтаксический контроль конфигурации');
+  startWrite(progress, 'check', 'Синтаксический контроль расширений');
   result.checks = await runChecks({
-    platform, conn, input, workRoot, mergedDir: '', progress,
+    platform, conn, input, workRoot, mergedDir: '', progress, typical: true,
   });
-  const problems = (result.checks.config?.errors?.length || 0)
-    + (result.checks.extensions?.errors?.length || 0);
+  reportChecks(progress, result.checks);
+}
+
+/** Сколько всего замечаний нашла платформа и как это показать на шкале. */
+function reportChecks(progress, checks) {
+  const problems = (checks.config?.errors?.length || 0)
+    + (checks.extensionsSyntax?.errors?.length || 0)
+    + (checks.extensions?.errors?.length || 0);
   if (problems) progress.warn('check', `замечаний платформы: ${problems}`);
   else progress.done('check', 'ошибок не найдено');
 }
@@ -669,18 +675,11 @@ async function applyToBase({
   }
 
   // --- Проверки ---
-  startWrite(progress, 'check', 'Синтаксический контроль конфигурации');
+  startWrite(progress, 'check', 'Синтаксический контроль конфигурации и расширений');
   result.checks = await runChecks({
     platform, conn, input, workRoot, mergedDir: result.mergedDir, progress,
   });
-
-  const problems = (result.checks.config?.errors?.length || 0)
-    + (result.checks.extensions?.errors?.length || 0);
-  if (problems) {
-    progress.warn('check', `замечаний платформы: ${problems}`);
-  } else {
-    progress.done('check', 'ошибок не найдено');
-  }
+  reportChecks(progress, result.checks);
 }
 
 function startWrite(progress, id, detail) {
@@ -697,14 +696,32 @@ function startWrite(progress, id, detail) {
  * что чинится однозначно, — потерявшие цель аннотации расширений
  * (`update/fixExtensions.js`); всё остальное честно уходит в отчёт.
  */
-async function runChecks({ platform, conn, input, workRoot, mergedDir, progress }) {
-  const checks = { rounds: [], fixed: [], manual: [] };
+async function runChecks({ platform, conn, input, workRoot, mergedDir, progress, typical = false }) {
+  const checks = { rounds: [], fixed: [], manual: [], typical };
 
-  const config = await checkConfig({
+  // Основную конфигурацию проверяем только там, где её меняли мы. После типового
+  // обновления она ровно такая, какой её выпустил вендор: замечания в ней есть
+  // (проверено — на чистой УНФ 3.0.14.115 их находит и сама платформа), но это
+  // замечания к типовому решению, исправлять их никто не будет, а в отчёте они
+  // выглядели бы следствием обновления. Требование пользователя (11.08.2026):
+  // «нет смысла проверять конфигурацию, она типовая».
+  if (!typical) {
+    const config = await checkConfig({
+      platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    });
+    checks.config = config;
+    progress.update('check', `синтаксический контроль конфигурации: замечаний ${config.errors.length}`);
+  }
+
+  // Расширения проверяются всегда: их писали не в 1С, и обновление ломает
+  // именно их. Отдельный вызов с `-AllExtensions`, а не часть проверки
+  // конфигурации: платформа считает это разными проверками.
+  const extensionsSyntax = await checkConfig({
     platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    scope: 'extensions',
   });
-  checks.config = config;
-  progress.update('check', `синтаксический контроль: замечаний ${config.errors.length}`);
+  checks.extensionsSyntax = extensionsSyntax;
+  progress.update('check', `синтаксический контроль расширений: замечаний ${extensionsSyntax.errors.length}`);
 
   for (let round = 1; round <= FIX_ROUNDS; round += 1) {
     throwIfCancelled();
