@@ -139,10 +139,10 @@ async function runPipeline({ updateId, input, progress }) {
     };
     let vendor = await prepareVendorConfig({ vendorPath: input.vendorConfigPath, ...vendorCtx });
 
-    // Конфигурация снята с поддержки — поставщика в базе нет. Прежде чем сдаться
-    // и просить файл, ищем дистрибутив текущего релиза сами: он и есть старая
-    // поставка, и у того, кто эту конфигурацию обновлял, он уже лежит на диске.
-    if (!vendor.available && vendor.offSupport && !String(input.vendorConfigPath || '').trim()) {
+    // Платформа не отдала поставщика. Прежде чем сдаться и просить файл, ищем
+    // дистрибутив текущего релиза сами: это та же поставка, и у того, кто эту
+    // конфигурацию когда-нибудь обновлял, он уже лежит на диске.
+    if (!vendor.available && vendor.vendorUnavailable && !String(input.vendorConfigPath || '').trim()) {
       vendor = await lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings });
     }
 
@@ -264,11 +264,13 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
 
   if (!candidates.length) {
     progress.message(
-      `Конфигурация снята с поддержки, дистрибутив релиза ${mainProps.version || '—'} на этом `
+      `Дистрибутив релиза ${mainProps.version || '—'} на этом компьютере тоже не нашёлся`
       + (roots.length
-        ? `компьютере тоже не нашёлся. Искал в каталогах шаблонов обновлений: ${roots.join('; ')}. `
-        : 'компьютере не нашёлся: каталоги шаблонов обновлений не заданы в 1CEStart.cfg. ')
-      + 'Укажите файл поставки в поле «Конфигурация поставщика — текущая поставка».',
+        ? `. Искал в каталогах шаблонов обновлений: ${roots.join('; ')}. `
+        : ': каталоги шаблонов обновлений не заданы в 1CEStart.cfg. ')
+      + 'Сохраните текущую поставку сами — Конфигуратор → Конфигурация → Поддержка → '
+      + 'Настройка поддержки → «Сохранить в файл» — и укажите файл в поле «Конфигурация '
+      + 'поставщика — текущая поставка».',
       'warn',
     );
     return vendor;
@@ -276,7 +278,7 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
 
   for (const candidate of candidates.slice(0, RELEASE_TRIES)) {
     progress.message(
-      `Конфигурация снята с поддержки, но дистрибутив текущего релиза нашёлся сам: `
+      'Дистрибутив текущего релиза нашёлся сам: '
       + `${candidate.file} (${candidate.why}). Разворачиваю его как текущую поставку.`,
     );
     const next = await prepareVendorConfig({ vendorPath: candidate.file, ...vendorCtx });
@@ -298,8 +300,8 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
     }
 
     warnings.push(
-      `Конфигурация снята с поддержки: конфигурации поставщика в базе нет. За текущую поставку `
-      + `взят дистрибутив того же релиза, найденный на этом компьютере: ${candidate.file}. `
+      'Платформа не отдала конфигурацию поставщика из базы, поэтому за текущую поставку взят '
+      + `дистрибутив того же релиза, найденный на этом компьютере: ${candidate.file}. `
       + 'Убедитесь, что это действительно та поставка, с которой начинали доработку.',
     );
     return next;
