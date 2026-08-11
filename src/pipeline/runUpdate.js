@@ -36,6 +36,7 @@ import { checkConfig, checkExtensionsApplicable, updateDbConfig } from '../onec/
 import {
   prepareVendorConfig, exportCfToXml, readConfigurationProperties,
 } from '../analyze/vendorConfig.js';
+import { findVendorRelease } from '../onec/templates.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
@@ -116,9 +117,11 @@ async function runPipeline({ updateId, input, progress }) {
       `${humanSize(await dirSize(exported.dir))}, ${mainProps.name || 'конфигурация'} ${mainProps.version || ''}`.trim());
 
     // ---------- 5. Новая поставка ----------
-    // Раньше она готовилась после старой. Теперь наоборот: восстановление
-    // старой поставки из базы заглядывает в новую, чтобы заполнить строки,
-    // которые интегратор удалил, — их текста отчёт сравнения не печатает.
+    // Она готовится ПЕРЕД старой: восстановление старой поставки из базы
+    // заглядывает в новую, чтобы заполнить строки, которые интегратор удалил, —
+    // их текста отчёт сравнения не печатает. Порядок в `UPDATE_STAGES` держать
+    // таким же: пользователь читает шкалу как последовательность и этап,
+    // отработавший раньше стоящего над ним, принимает за сбой.
     startStage('vendor-new', 'Подготовка целевой конфигурации');
     const target = await prepareTarget({ input, platform, workRoot, progress });
     const targetTree = await dirTree(target.dir);
@@ -128,20 +131,26 @@ async function runPipeline({ updateId, input, progress }) {
 
     // ---------- 6. Текущая конфигурация поставщика ----------
     startStage('vendor-old', 'Подготовка текущей конфигурации поставщика');
-    const vendor = await prepareVendorConfig({
-      vendorPath: input.vendorConfigPath,
+    const vendorCtx = {
       platform, conn, workDir: workRoot, user: input.user, password: input.password,
       configName: mainProps.name,
       totalEntries: 0,
       onProgress: (text) => progress.update('vendor-old', text),
-    });
+    };
+    let vendor = await prepareVendorConfig({ vendorPath: input.vendorConfigPath, ...vendorCtx });
+
+    // Конфигурация снята с поддержки — поставщика в базе нет. Прежде чем сдаться
+    // и просить файл, ищем дистрибутив текущего релиза сами: он и есть старая
+    // поставка, и у того, кто эту конфигурацию обновлял, он уже лежит на диске.
+    if (!vendor.available && vendor.offSupport && !String(input.vendorConfigPath || '').trim()) {
+      vendor = await lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings });
+    }
 
     if (!vendor.available) {
       throw new Error(
         `Не удалось получить текущую конфигурацию поставщика: ${vendor.reason} `
         + 'Без неё обновление невозможно: непонятно, какие изменения ваши, а какие пришли '
-        + 'от поставщика, и объединять нечего. Проверьте, что конфигурация стоит на поддержке, '
-        + 'либо укажите файл .cf текущей поставки.',
+        + 'от поставщика, и объединять нечего.',
       );
     }
 
@@ -227,6 +236,76 @@ async function runPipeline({ updateId, input, progress }) {
     await store.markFailed(updateId, err, durationMs);
     throw err;
   }
+}
+
+/**
+ * Сколько найденных дистрибутивов пробовать.
+ *
+ * Каждая попытка — разворачивание `.cf` во временную базу, на крупной
+ * конфигурации это минуты. Кандидаты отсортированы по надёжности, и если
+ * не подошли два лучших, дешевле спросить файл, чем перебирать диск дальше.
+ */
+const RELEASE_TRIES = 2;
+
+/**
+ * Ищет дистрибутив текущего релиза среди шаблонов обновлений и проверяет его.
+ *
+ * Проверка обязательна: файл выбран по версии в имени каталога или в манифесте,
+ * а версии у разных конфигураций совпадают запросто. Объединение с поставкой
+ * ЧУЖОЙ конфигурации дало бы тысячи ложных отличий и мусор в выгрузке, поэтому
+ * не подошедший файл отбрасывается, а причина проговаривается вслух.
+ */
+async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings }) {
+  progress.update('vendor-old', 'Поиск дистрибутива текущего релиза среди шаблонов обновлений');
+  const { candidates, roots } = await findVendorRelease({
+    version: mainProps.version,
+    onProgress: (text) => progress.update('vendor-old', text),
+  });
+
+  if (!candidates.length) {
+    progress.message(
+      `Конфигурация снята с поддержки, дистрибутив релиза ${mainProps.version || '—'} на этом `
+      + (roots.length
+        ? `компьютере тоже не нашёлся. Искал в каталогах шаблонов обновлений: ${roots.join('; ')}. `
+        : 'компьютере не нашёлся: каталоги шаблонов обновлений не заданы в 1CEStart.cfg. ')
+      + 'Укажите файл поставки в поле «Конфигурация поставщика — текущая поставка».',
+      'warn',
+    );
+    return vendor;
+  }
+
+  for (const candidate of candidates.slice(0, RELEASE_TRIES)) {
+    progress.message(
+      `Конфигурация снята с поддержки, но дистрибутив текущего релиза нашёлся сам: `
+      + `${candidate.file} (${candidate.why}). Разворачиваю его как текущую поставку.`,
+    );
+    const next = await prepareVendorConfig({ vendorPath: candidate.file, ...vendorCtx });
+    if (!next.available) {
+      progress.message(`Файл ${candidate.file} не подошёл: ${next.reason}`, 'warn');
+      continue;
+    }
+
+    const props = await readConfigurationProperties(path.join(next.dir, 'Configuration.xml'));
+    const wrongName = props.name && mainProps.name && props.name !== mainProps.name;
+    const wrongVersion = props.version && mainProps.version && props.version !== mainProps.version;
+    if (wrongName || wrongVersion) {
+      progress.message(
+        `Файл ${candidate.file} не подошёл: это «${props.name || '?'}» ${props.version || '?'}, `
+        + `а в базе «${mainProps.name}» ${mainProps.version}.`,
+        'warn',
+      );
+      continue;
+    }
+
+    warnings.push(
+      `Конфигурация снята с поддержки: конфигурации поставщика в базе нет. За текущую поставку `
+      + `взят дистрибутив того же релиза, найденный на этом компьютере: ${candidate.file}. `
+      + 'Убедитесь, что это действительно та поставка, с которой начинали доработку.',
+    );
+    return next;
+  }
+
+  return vendor;
 }
 
 /**

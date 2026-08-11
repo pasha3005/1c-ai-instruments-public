@@ -98,6 +98,22 @@ export async function prepareVendorConfig({
       };
     }
 
+    // Совет зависит от того, ПОЧЕМУ не вышло. Снятой с поддержки конфигурации
+    // нечего сохранять в файл: поставщика в базе нет. Зато дистрибутив того же
+    // релиза лежит у любого, кто эту конфигурацию когда-то обновлял, и он
+    // ничем не хуже — это ровно та же поставка.
+    if (inBase.offSupport) {
+      return unavailable(
+        `${inBase.reason} Возьмите дистрибутив того релиза, который стоит в базе сейчас ` +
+        '(файл 1cv8.cf из шаблонов обновлений или с диска ИТС) и укажите его в поле ' +
+        '«Конфигурация поставщика — текущая поставка».',
+        { offSupport: true },
+      );
+    }
+    if (inBase.needsNewerPlatform) {
+      return unavailable(inBase.reason, { needsNewerPlatform: true });
+    }
+
     return unavailable(
       `${inBase.reason}. Укажите файл .cf конфигурации поставщика вручную ` +
       '(Конфигуратор → Конфигурация → Поддержка → «Сохранить конфигурацию поставщика в файл»).',
@@ -143,8 +159,8 @@ export async function prepareVendorConfig({
   return { available: true, dir: dumpDir, properties, hashes, source };
 }
 
-function unavailable(reason) {
-  return { available: false, reason, hashes: {} };
+function unavailable(reason, flags = {}) {
+  return { available: false, reason, hashes: {}, ...flags };
 }
 
 /**
