@@ -68,10 +68,17 @@ function clientAttached() {
     clearTimeout(presence.timer);
     presence.timer = null;
   }
+  log.info(`Окно интерфейса подключилось (открытых окон: ${presence.clients})`);
 }
 
 function clientDetached() {
   presence.clients = Math.max(0, presence.clients - 1);
+  // Считаем открытые окна вслух. Иначе на вопрос «почему программа
+  // не завершилась, я же закрыл окно» ответить нечем: держать её может
+  // ЛЮБАЯ вкладка с этим адресом — забытая в другом окне браузера, во второй
+  // рабочей области, в предпросмотре редактора. Сервер их не различает
+  // и различать не должен, но в журнале должно быть видно, что окно не одно.
+  log.info(`Окно интерфейса отключилось (осталось открытых: ${presence.clients})`);
   if (presence.clients > 0 || !presence.seen) return;
   if (presence.timer) clearTimeout(presence.timer);
 
