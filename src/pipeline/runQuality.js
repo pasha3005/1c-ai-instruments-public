@@ -31,6 +31,7 @@ import {
   findRepositories, repositoryHistory, repositoryDumpCfg, filterByPeriod, authorsByObject,
   createContextInfobase,
 } from '../onec/repository.js';
+import { loadConfigFromFiles } from '../onec/designer.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -38,13 +39,17 @@ import { readConfigDumpInfo } from '../analyze/baselines.js';
 import {
   prepareVendorConfig, buildChangeSet, summarizeVendorComparison, exportCfToXml,
 } from '../analyze/vendorConfig.js';
+import { diffModule, diffModuleAligned, attachVendorLines } from '../analyze/bsl/moduleDiff.js';
 import { runAnalysis } from '../analyze/index.js';
+import { takeFragments } from '../analyze/codeAnalyzer.js';
 import { tagByRu } from '../parse/metadataKinds.js';
 import { renderQualityReport } from '../report/qualityReport.js';
 import * as store from '../store/qualityStore.js';
-import { ensureDir, pathExists, dirSize, humanSize } from '../util/fsx.js';
+import { ensureDir, pathExists, dirSize, humanSize, readText } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
-import { runCancellable, throwIfCancelled, isCancelled, CANCEL_MESSAGE } from '../util/cancel.js';
+import {
+  runCancellable, throwIfCancelled, isCancelled, rethrowIfCancelled, CANCEL_MESSAGE,
+} from '../util/cancel.js';
 
 const log = createLogger('quality');
 
@@ -259,6 +264,10 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   const commits = [];
   let mainDir = null;
   const extensionDirs = [];
+  // Статус каждого хранилища — отдельно от warnings (тех же текстов, но
+  // строкой для всего прогона): отчёту нужно показать таблицу помещений
+  // при каждом хранилище персонально, включая те, что не прочитались.
+  const repoStatus = [];
 
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
@@ -269,6 +278,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     if (!history.ok) {
       warnings.push(`Хранилище «${repo.name}»: ${history.reason}`);
       progress.message(`Хранилище «${repo.name}» не прочитано: ${history.reason}`, 'warn');
+      repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: history.reason });
       continue;
     }
     const own = filterByPeriod(history.commits, period);
@@ -282,6 +292,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     });
     if (!dumped.ok) {
       warnings.push(`Хранилище «${repo.name}»: код не получен — ${dumped.reason}`);
+      repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: dumped.reason });
       continue;
     }
 
@@ -291,13 +302,42 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     });
     if (!expanded.ok) {
       warnings.push(`Хранилище «${repo.name}»: конфигурация не развернулась — ${expanded.reason}`);
+      repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: expanded.reason });
       continue;
     }
+    repoStatus.push({ name: repo.name, dir: repo.dir, ok: true, isMain: !mainDir });
     // Первое хранилище с Configuration.xml считаем основной конфигурацией,
     // остальные — расширениями: у расширения свой корень, но модули читаются
     // тем же кодом.
-    if (!mainDir) mainDir = expanded.dir;
-    else extensionDirs.push({ name: repo.name, dir: expanded.dir });
+    if (!mainDir) {
+      mainDir = expanded.dir;
+      // Хранилищу основной конфигурации хватало пустой базы-контекста —
+      // проверено. Хранилищу расширения, судя по ответу платформы
+      // «Соединение основной конфигурации с хранилищем расширений
+      // конфигураций невозможно», этого недостаточно: расширение подчинено
+      // конкретной конфигурации, и подключиться к его хранилищу можно только
+      // если та же основная конфигурация уже загружена в базу-контекст.
+      // Загружаем её сюда же, пока не дошли до хранилищ расширений — если
+      // расширений в перечне нет, это просто лишний шаг, а не ошибка.
+      //
+      // Это предположение по тексту ответа платформы, не подтверждённый факт:
+      // живого хранилища расширений для проверки нет. Если после этой правки
+      // ошибка останется, об этом стоит сообщить с точным текстом из отчёта.
+      try {
+        await loadConfigFromFiles({
+          platform, conn: parseConnection(contextBase), srcDir: mainDir,
+          logFile: path.join(workRoot, 'repo', `load-main-${safeFileName(repo.name)}.log`),
+        });
+      } catch (err) {
+        rethrowIfCancelled(err);
+        warnings.push(
+          `Основная конфигурация не загрузилась в базу-контекст (${err.message}) — если дальше `
+          + 'не прочитается хранилище расширения, вероятная причина в этом.',
+        );
+      }
+    } else {
+      extensionDirs.push({ name: repo.name, dir: expanded.dir });
+    }
   }
 
   if (!mainDir) {
@@ -306,6 +346,19 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       + 'и пароль хранилища: ' + (warnings[warnings.length - 1] || 'причина не определена'),
     );
   }
+
+  const diffStats = await buildPlacementDiffs({
+    platform, contextBase, workRoot, progress, commits, repositories,
+    user: input.repositoryUser, password: input.repositoryPassword,
+  });
+  if (diffStats.limited) {
+    warnings.push(
+      `Правки показаны не по всем помещениям периода: выгрузок понадобилось больше `
+      + `${diffStats.dumps}, и дальше отчёт бы собирался слишком долго. Сузьте период, `
+      + 'чтобы увидеть правки остальных помещений.',
+    );
+  }
+
   progress.done('export', `помещений за период: ${commits.length}`);
 
   const parsedData = await parseAll({ dir: mainDir, extensionDirs, progress });
@@ -324,9 +377,18 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   }
   progress.skip('vendor', 'не требуется: разбираются помещения за период');
 
+  // У хранилища нет понятия «поставщик» — сравнивать помещённый код не с чем.
+  // Поэтому все тронутые за период объекты идут в `added`, а не в `modified`:
+  // `modified` в остальном движке означает «изменённый ТИПОВОЙ модуль», и тогда
+  // анализ ищет в нём только участки, обрамлённые пометками разработчика
+  // («// ++ Фамилия»). В хранилище таких пометок обычно нет — код и так весь
+  // авторский, — и модуль без пометок тихо исключался из анализа целиком.
+  // Так, например, не находился вызов Сообщить() во вновь помещённом модуле:
+  // модуль был в `touched`, но `isAddedModule` смотрел только в `added`,
+  // видел пустое множество и включал модуль в «типовые с пометками».
   const changeSet = {
-    modified: touched,
-    added: new Set(),
+    modified: new Set(),
+    added: touched,
     removed: new Set(),
     unchanged: 0,
     totalClient: parsedData.modules.length,
@@ -340,11 +402,158 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     vendorComparison: { available: false, reason: 'источник — хранилище конфигурации' },
     vendorDir: null,
     vendorDetails: null,
-    repositories: repositories.map((r) => ({ name: r.name, dir: r.dir })),
+    repositories: repoStatus,
     period,
     commits,
     authorsByObject: byObject,
   };
+}
+
+/** Сколько дополнительных выгрузок хранилища допускается ради диффов правок. */
+const MAX_PLACEMENT_DUMPS = 40;
+
+/**
+ * Дифф каждого помещённого модуля — именно той правки, что внесена ЭТИМ
+ * помещением, а не накопленной за весь период.
+ *
+ * Версии хранилища атомарны: между версией V-1 и версией V поменялось ровно
+ * то, что перечислено в помещении V, — поэтому выгрузки конфигурации на этих
+ * двух версиях достаточно, чтобы построить точный дифф каждого затронутого
+ * объекта. Соседние помещения делят выгрузки версий между собой через кэш,
+ * поэтому число выгрузок растёт с числом РАЗНЫХ версий в периоде, а не
+ * с числом помещений.
+ *
+ * Предел числа выгрузок — не подстраховка «на всякий случай»: каждая
+ * выгрузка — это отдельный вызов конфигуратора на десятки секунд-минуты,
+ * а не миллисекунды, и период в сотню помещений растянул бы проверку
+ * на часы. При достижении предела часть диффов остаётся без текста — это
+ * показано в отчёте предупреждением, а не подменяется тишиной.
+ */
+async function buildPlacementDiffs({
+  platform, contextBase, workRoot, progress, commits, repositories, user, password,
+}) {
+  const withCode = commits.filter((c) => (c.added.length || c.changed.length));
+  if (!withCode.length) return { limited: false, dumps: 0 };
+
+  const repoByName = new Map(repositories.map((r) => [r.name, r]));
+  const cache = new Map();
+  let dumps = 0;
+  let limited = false;
+
+  const versionModules = async (repoName, version) => {
+    if (version < 1) return null;
+    const key = `${repoName} ${version}`;
+    if (cache.has(key)) return cache.get(key);
+    if (dumps >= MAX_PLACEMENT_DUMPS) {
+      limited = true;
+      cache.set(key, null);
+      return null;
+    }
+    const repo = repoByName.get(repoName);
+    if (!repo) return null;
+    dumps += 1;
+    progress.update('export', `хранилище «${repoName}»: версия ${version} для диффа правок`);
+    let entry = null;
+    try {
+      const dumped = await repositoryDumpCfg({
+        platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version,
+      });
+      if (dumped.ok) {
+        const expanded = await exportCfToXml({
+          cfFile: dumped.file, platform, workDir: workRoot, name: `repo-${safeFileName(repoName)}-v${version}`,
+        });
+        if (expanded.ok) {
+          const modules = await collectModules(expanded.dir);
+          const byObject = new Map();
+          for (const m of modules) {
+            if (!m.ownerKind || !m.ownerName) continue;
+            const k = `${m.ownerKind}.${m.ownerName}`;
+            if (!byObject.has(k)) byObject.set(k, []);
+            byObject.get(k).push(m);
+          }
+          entry = { byObject };
+        }
+      }
+    } catch (err) {
+      rethrowIfCancelled(err);
+      log.warn(`Хранилище «${repoName}», версия ${version}: диф не построен (${err.message})`);
+    }
+    cache.set(key, entry);
+    return entry;
+  };
+
+  for (const commit of withCode) {
+    throwIfCancelled();
+    const objects = [...new Set([...commit.added, ...commit.changed])];
+    const after = await versionModules(commit.repository, commit.version);
+    if (!after) continue;
+    const before = await versionModules(commit.repository, commit.version - 1);
+
+    const diffs = [];
+    for (const russian of objects) {
+      const key = keyFromRussian(russian);
+      if (!key) continue;
+      const afterModules = after.byObject.get(key) || [];
+      const beforeModules = before?.byObject.get(key) || [];
+
+      for (const am of narrowByRussianSuffix(russian, afterModules)) {
+        throwIfCancelled();
+        const bm = beforeModules.find(
+          (m) => m.moduleType === am.moduleType && m.formName === am.formName,
+        );
+        const afterSource = await readTextSafe(am.file);
+        if (afterSource == null) continue;
+        const beforeSource = bm ? ((await readTextSafe(bm.file)) ?? '') : '';
+
+        const diff = diffModule(beforeSource, afterSource);
+        const aligned = diffModuleAligned(beforeSource, afterSource);
+        if (aligned.exact) attachVendorLines(diff.regions, aligned.hunks);
+
+        diffs.push({
+          object: russian,
+          moduleTitle: am.title,
+          moduleType: am.moduleType,
+          moduleTypeRu: am.moduleTypeRu,
+          isNew: !bm,
+          addedLines: diff.addedLines,
+          regionCount: diff.regions.length,
+          fragments: takeFragments(afterSource, diff.regions),
+        });
+      }
+    }
+    if (diffs.length) commit.moduleDiffs = diffs;
+  }
+
+  return { limited, dumps };
+}
+
+/**
+ * Сужает список модулей объекта до того, о котором говорит история хранилища.
+ *
+ * Помещение перечисляет не только объекты целиком («Справочник.Номенклатура»),
+ * но и подчинённые им формы и команды («Справочник.Номенклатура.Форма.ФормаЭлемента»).
+ * Ключ анализа знает только владельца, поэтому без сужения к одной помещённой
+ * форме приписались бы правки всех форм объекта разом.
+ *
+ * Сужаем ТОЛЬКО при точном совпадении имени формы или команды с хвостом
+ * русского имени. Не совпало — возвращаем всё: перечень русских имён подчинённых
+ * объектов у платформы шире, чем проверено живьём, и потерять правку хуже,
+ * чем показать соседнюю.
+ */
+function narrowByRussianSuffix(russian, modules) {
+  const parts = String(russian).split('.');
+  if (parts.length < 3 || modules.length < 2) return modules;
+  const tail = parts[parts.length - 1];
+  const exact = modules.filter((m) => m.formName === tail);
+  return exact.length ? exact : modules;
+}
+
+async function readTextSafe(file) {
+  try {
+    return await readText(file);
+  } catch {
+    return null;
+  }
 }
 
 // --- Общее -------------------------------------------------------------------
@@ -423,6 +632,11 @@ function countBy(items, pick) {
 function startOrThrow(progress, id, detail) {
   throwIfCancelled();
   progress.start(id, detail);
+}
+
+/** Имя хранилища → безопасное имя файла журнала. */
+function safeFileName(name) {
+  return String(name).replace(/[^\wа-яёА-ЯЁ-]+/g, '_').slice(0, 40) || 'repo';
 }
 
 function sanitize(input) {

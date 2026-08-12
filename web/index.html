@@ -707,19 +707,17 @@
           </div>
         </div>
 
-        <div class="grid-2">
-          <div class="field">
-            <label for="qFrom">Помещения с даты</label>
-            <input type="date" id="qFrom" name="qFrom">
+        <div class="field">
+          <label for="qPeriod">Период помещений</label>
+          <div class="picker">
+            <input type="text" id="qPeriod" name="qPeriod" readonly placeholder="Весь период"
+                   aria-haspopup="dialog">
+            <button type="button" class="btn btn--period-pick" id="qPeriodPick">Выбрать…</button>
           </div>
-          <div class="field">
-            <label for="qTo">по дату</label>
-            <input type="date" id="qTo" name="qTo">
+          <div class="hint">
+            Проверяются только объекты, помещённые за этот период: это и есть работа
+            разработчиков. Пусто — вся история хранилища.
           </div>
-        </div>
-        <div class="hint">
-          Проверяются только объекты, помещённые за этот период: это и есть работа
-          разработчиков. Пусто — вся история хранилища.
         </div>
       </div>
 
@@ -747,6 +745,28 @@
         <div class="form-note" id="qFormNote"></div>
       </div>
     </form>
+
+    <dialog class="dialog" id="qPeriodDialog">
+      <div class="dialog__body">
+        <h3 class="dialog__title">Период помещений</h3>
+        <div class="grid-2">
+          <div class="field">
+            <label for="qFrom">С даты</label>
+            <input type="date" id="qFrom" name="qFrom">
+          </div>
+          <div class="field">
+            <label for="qTo">По дату</label>
+            <input type="date" id="qTo" name="qTo">
+          </div>
+        </div>
+        <div class="hint">Оставьте поля пустыми, чтобы разобрать всю историю хранилища.</div>
+        <div class="dialog__actions">
+          <button type="button" class="btn" id="qPeriodReset">Сбросить</button>
+          <button type="button" class="btn" id="qPeriodCancel">Отмена</button>
+          <button type="button" class="btn btn--primary" id="qPeriodApply">Применить</button>
+        </div>
+      </div>
+    </dialog>
 
     <div class="card progress-card" id="qProgressCard" hidden>
       <div class="progress-head">

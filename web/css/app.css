@@ -298,7 +298,9 @@ body {
 /* Поле с кнопками системного диалога выбора файла/каталога. */
 .picker { display: flex; gap: 8px; align-items: stretch; }
 .picker input { flex: 1; min-width: 0; }
-.btn--pick {
+.picker input[readonly] { cursor: default; color: var(--ink-soft); }
+.btn--pick,
+.btn--period-pick {
   white-space: nowrap;
   padding: 10px 14px;
   font-size: 13.5px;
@@ -315,6 +317,26 @@ body {
 
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 @media (max-width: 680px) { .field-row { grid-template-columns: 1fr; gap: 0; } }
+
+/* Отдельное окно выбора (период и подобное) — поверх формы, а не инлайн-поля. */
+.dialog {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  padding: 0;
+  width: min(420px, calc(100vw - 40px));
+}
+.dialog::backdrop { background: rgba(8, 9, 12, .6); }
+.dialog__body { padding: 22px 24px; }
+.dialog__title { font-size: 16px; margin: 0 0 16px; }
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
 
 /*
  * Свёрнутого раздела «Дополнительные параметры» больше нет: пользователь

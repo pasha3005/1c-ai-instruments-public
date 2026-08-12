@@ -468,7 +468,7 @@ function expandToAuthored(regions, authored) {
  * Куски исходного текста по участкам изменений — чтобы в дереве отличий
  * было видно не «модуль изменён», а что именно дописано.
  */
-function takeFragments(source, regions, routines = []) {
+export function takeFragments(source, regions, routines = []) {
   if (!regions?.length) return [];
   const lines = source.split(/\r?\n/);
 

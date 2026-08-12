@@ -431,6 +431,48 @@ details.collapsible--group > .collapsible__body { padding: 12px 0 2px 14px; bord
   margin: 0 0 18px;
 }
 .tree-legend span { display: flex; align-items: center; gap: 7px; }
+/*
+ * Помещения хранилища — таблица, у которой каждая строка раскрывается.
+ *
+ * Обычная таблица тут не годится: у строки должно быть содержимое (перечень
+ * помещённых объектов и правки в модулях), а строка таблицы не раскрывается
+ * без скриптов. Поэтому строки сделаны сеткой внутри summary — колонки
+ * выстроены так же, как в таблице, а раскрытие даёт сам details.
+ */
+.commits__head,
+.dt--commit > summary > .commits__row {
+  display: grid;
+  grid-template-columns: 62px 1fr 132px 2fr 96px;
+  gap: 12px;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+}
+/*
+ * Ширина значка раскрытия задана явно, иначе шапка не встанет над колонками:
+ * ширина глифа зависит от шрифта, и подбирать под неё отступ шапки на глаз
+ * значит промахиваться на каждой второй машине.
+ */
+.dt--commit > summary::before { width: 12px; }
+.commits__head {
+  padding: 6px 10px 6px 30px;
+  font-size: 12px;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--line);
+}
+.dt--commit { border-bottom: 1px solid var(--line); }
+.dt--commit > summary { align-items: baseline; }
+.commits__cell { overflow-wrap: anywhere; font-size: 13.5px; }
+.commits__cell--num { font-variant-numeric: tabular-nums; text-align: right; }
+.commits__cell--who { font-weight: 560; }
+.commits__cell--comment { color: var(--ink-soft); }
+@media (max-width: 900px) {
+  .commits__head { display: none; }
+  .dt--commit > summary > .commits__row { grid-template-columns: 1fr; gap: 2px; }
+  .commits__cell--num { text-align: left; }
+}
 .dt__note { font-size: 13px; color: var(--ink-soft); margin: 6px 0 8px; max-width: none; }
 .dt__fragment { margin: 0 0 14px; }
 .dt__fragment-head { font-size: 12px; color: var(--ink-faint); margin-bottom: 3px; }

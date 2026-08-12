@@ -19,6 +19,7 @@ const state = {
   running: false,
   cancelling: false,
   timer: null,
+  periodApplied: { from: '', to: '' },
 };
 
 export function initQuality() {
@@ -29,12 +30,76 @@ export function initQuality() {
     radio.addEventListener('change', () => applySource(radio.value));
   });
   applySource('infobase');
+  initPeriodDialog();
 
   $('#qualityForm').addEventListener('submit', (event) => {
     event.preventDefault();
     start();
   });
   $('#qCancelBtn').addEventListener('click', () => cancel());
+}
+
+/**
+ * Период помещений — отдельное окно вместо двух дат прямо в форме.
+ *
+ * Поле «Период» показывает уже применённый выбор и само не редактируется;
+ * даты меняются только внутри диалога и попадают наружу по кнопке
+ * «Применить». Так «Отмена» и закрытие по Esc гарантированно ничего
+ * не портят: `#qFrom`/`#qTo` — это и есть значения, которые читает
+ * collectInput(), поэтому при отмене их нужно вернуть к последним
+ * применённым, а не оставить недосохранённый ввод.
+ */
+function initPeriodDialog() {
+  const dialog = $('#qPeriodDialog');
+
+  $('#qPeriodPick').addEventListener('click', () => {
+    $('#qFrom').value = state.periodApplied.from;
+    $('#qTo').value = state.periodApplied.to;
+    dialog.showModal();
+  });
+
+  $('#qPeriodReset').addEventListener('click', () => {
+    $('#qFrom').value = '';
+    $('#qTo').value = '';
+  });
+
+  // Откат несохранённого ввода делается явно в каждом пути закрытия, а не
+  // через событие `close` диалога: в проверке живьём оно не сработало после
+  // программного `close()` — значения из диалога утекали наружу молча.
+  const revert = () => {
+    $('#qFrom').value = state.periodApplied.from;
+    $('#qTo').value = state.periodApplied.to;
+  };
+
+  $('#qPeriodCancel').addEventListener('click', () => {
+    revert();
+    dialog.close();
+  });
+
+  $('#qPeriodApply').addEventListener('click', () => {
+    state.periodApplied = { from: $('#qFrom').value, to: $('#qTo').value };
+    updatePeriodLabel();
+    dialog.close();
+  });
+
+  // Esc — тот же «отказ», что кнопка «Отмена»: событие `cancel` (в отличие
+  // от `close`) в проверке сработало надёжно.
+  dialog.addEventListener('cancel', revert);
+
+  updatePeriodLabel();
+}
+
+function updatePeriodLabel() {
+  const { from, to } = state.periodApplied;
+  const ru = (iso) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
+  };
+  const field = $('#qPeriod');
+  if (from && to) field.value = `${ru(from)} — ${ru(to)}`;
+  else if (from) field.value = `с ${ru(from)}`;
+  else if (to) field.value = `по ${ru(to)}`;
+  else field.value = '';
 }
 
 /** Этапы рисуются до запуска: видно, из чего состоит работа. */
