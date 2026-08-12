@@ -38,7 +38,7 @@ import { readConfigDumpInfo } from '../analyze/baselines.js';
 import {
   prepareVendorConfig, buildChangeSet, summarizeVendorComparison, exportCfToXml,
 } from '../analyze/vendorConfig.js';
-import { diffModule, diffModuleAligned, attachVendorLines } from '../analyze/bsl/moduleDiff.js';
+import { diffModule } from '../analyze/bsl/moduleDiff.js';
 import { runAnalysis } from '../analyze/index.js';
 import { takeFragments } from '../analyze/codeAnalyzer.js';
 import { tagByRu } from '../parse/metadataKinds.js';
@@ -586,9 +586,10 @@ async function buildPlacementDiffs({
         if (afterSource == null) continue;
         const beforeSource = bm ? ((await readTextSafe(bm.file)) ?? '') : '';
 
+        // Нужны только сами внесённые строки: колонки «до помещения» в отчёте
+        // больше нет, а значит незачем и выравнивать версии построчно
+        // (`diffModuleAligned` + `attachVendorLines`).
         const diff = diffModule(beforeSource, afterSource);
-        const aligned = diffModuleAligned(beforeSource, afterSource);
-        if (aligned.exact) attachVendorLines(diff.regions, aligned.hunks);
 
         diffs.push({
           object: russian,

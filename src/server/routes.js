@@ -315,8 +315,6 @@ export function buildRouter() {
       // Тема отчёта. По умолчанию тёмная — как окно программы.
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
       // Каталог выгрузки задаётся всегда — см. проверку ниже.
-      // По умолчанию снят: типовой код вендора не оценивается.
-      analyzeVendorCode: body.analyzeVendorCode === true,
     };
 
     await store.createAudit(auditId, input);
@@ -780,7 +778,6 @@ export function buildRouter() {
       workDir: String(body.workDir).trim(),
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
-      analyzeVendorCode: body.analyzeVendorCode === true,
       keepDump: body.keepDump === true,
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
     };

@@ -49,8 +49,6 @@ export async function runAnalysis({
   const codeAnalysis = await analyzeCode(modules, configurationContext, {
     onProgress: hooks.onCodeProgress,
     changeSet,
-    // Флаг с формы: проверять ли качество кода в типовой конфигурации.
-    analyzeVendorCode: input?.analyzeVendorCode === true,
     // Исходники поставщика на диске — тогда изменённые типовые модули
     // разбираются построчным сравнением, а не по пометкам.
     vendorDir,

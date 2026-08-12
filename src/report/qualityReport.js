@@ -105,14 +105,30 @@ function renderCover(result) {
     <div><dt>Из них критичных</dt><dd>${formatNumber(bySeverity.critical || 0)}</dd></div>
     <div><dt>Дата проверки</dt><dd>${esc(formatDate(result.generatedAt))}</dd></div>
   </dl>
-  <p class="cover__scope">
-    ${esc(fromRepo
-    ? 'Проверялись только объекты, помещённые в хранилище за указанный период: именно они '
-      + 'и есть работа разработчиков. Типовой код вендора не анализируется.'
-    : 'Проверялись только доработки: типовой код вендора не анализируется — замечания к нему '
-      + 'исправлять никто не будет, а отчёт они засоряют.')}
-  </p>
+  <p class="cover__scope">${esc(scopeSentence(result, fromRepo))}</p>
 </header>`;
+}
+
+/**
+ * Что именно проверялось — одной фразой на титуле.
+ *
+ * Фраза считается по факту, а не по намерению: когда конфигурация поставщика
+ * недоступна (её нет в базе и пользователь не указал файл), сравнивать не с чем
+ * и проверяется вся конфигурация целиком. Писать в этом случае «проверялись
+ * только доработки» нельзя — отчёт не должен утверждать того, чего не делал.
+ */
+function scopeSentence(result, fromRepo) {
+  if (fromRepo) {
+    return 'Проверялись только объекты, помещённые в хранилище за указанный период: именно они '
+      + 'и есть работа разработчиков. Типовой код вендора не анализируется.';
+  }
+  if (result.codeStats?.scope?.filtered === false) {
+    return 'Конфигурация поставщика недоступна — ни в самой базе, ни файлом, — поэтому отделить '
+      + 'доработки от типового кода нечем и проверена вся конфигурация целиком. Часть замечаний '
+      + 'относится к коду вендора: исправлять их силами интегратора не нужно.';
+  }
+  return 'Проверялись только доработки: типовой код вендора не анализируется — замечания к нему '
+    + 'исправлять никто не будет, а отчёт они засоряют.';
 }
 
 function renderFindings(result) {
@@ -349,30 +365,23 @@ function renderCommitModule(diff, commit) {
     <summary>${title}<span class="dt__stat">${esc(stat)}</span></summary>
     <div class="dt__body">
       <p class="dt__note">
-        Показано отличие версии ${esc(String(commit.version))} от версии ${esc(String(Number(commit.version) - 1))}
-        того же хранилища — то есть правка, внесённая этим помещением, а не всё,
-        что накопилось за период.
+        Код, внесённый помещением версии ${esc(String(commit.version))}, — а не всё,
+        что накопилось в модуле за период.
       </p>
-      ${fragments.map((fragment) => renderCommitFragment(fragment, diff, commit)).join('')}
+      ${fragments.map((fragment) => renderCommitFragment(fragment)).join('')}
     </div>
   </details>`;
 }
 
 /**
- * Участок правки — двумя колонками, как во всех остальных отчётах.
+ * Участок правки — одной колонкой.
  *
- * Колонки здесь другие: не «поставщик» и «основная конфигурация», а две версии
- * одного хранилища. Подписывать их поставщиком было бы неправдой — поставщик
- * в этой проверке не участвует вовсе.
+ * Двух колонок здесь не было смысла: «до помещения» пустует почти всегда —
+ * предыдущая версия хранилища трогала, как правило, другие объекты, и левая
+ * половина экрана уходила под надпись «этих строк здесь не было» (прямое
+ * замечание пользователя, 12.08.2026). Показываем то, что помещено.
  */
-function renderCommitFragment(fragment, diff, commit) {
-  const before = fragment.vendorLines || [];
-  const beforePane = before.length
-    ? codeBlock(before.join('\n'))
-    : `<div class="dt__diff-empty">${esc(diff.isNew
-      ? 'Модуля до этого помещения не было'
-      : 'До помещения этих строк здесь не было — строки добавлены')}</div>`;
-
+function renderCommitFragment(fragment) {
   const tail = fragment.truncated
     ? `<p class="muted" style="font-size:12px">Показаны первые ${formatNumber(fragment.lines.length)} строк участка,
         ещё ${plural(fragment.truncated, 'строка', 'строки', 'строк')} — в JSON-выгрузке результата проверки.</p>`
@@ -382,16 +391,7 @@ function renderCommitFragment(fragment, diff, commit) {
     <div class="dt__fragment">
       <div class="dt__fragment-head">строки ${fragment.startLine}–${fragment.endLine}${
   fragment.routine ? ` · процедура «${esc(fragment.routine)}»` : ''}</div>
-      <div class="dt__diff">
-        <div class="dt__diff-pane dt__diff-pane--vendor">
-          <div class="dt__diff-pane-head">До помещения (версия ${esc(String(Number(commit.version) - 1))})</div>
-          ${beforePane}
-        </div>
-        <div class="dt__diff-pane dt__diff-pane--client">
-          <div class="dt__diff-pane-head">После помещения (версия ${esc(String(commit.version))})</div>
-          ${codeBlock(fragment.lines.join('\n'))}
-        </div>
-      </div>
+      ${codeBlock(fragment.lines.join('\n'))}
       ${tail}
     </div>`;
 }

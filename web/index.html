@@ -268,10 +268,12 @@
         </div>
         <div class="hint">
           <b>Обычно заполнять не нужно.</b> Если база стоит на поддержке, конфигурация
-          поставщика берётся прямо из неё — анализ сам ограничится доработками.
-          Указывайте файл, только если база снята с поддержки либо сравнение с базой
-          не удалось: Конфигуратор → Конфигурация → Поддержка →
-          «Сохранить конфигурацию поставщика в файл».
+          поставщика берётся прямо из неё. Указывайте файл, только если база снята
+          с поддержки либо сравнение с базой не удалось: Конфигуратор → Конфигурация →
+          Поддержка → «Сохранить конфигурацию поставщика в файл».
+          <b>Проверяются только доработки: типовой код поставщика не проверяется
+          никогда.</b> Если поставщика нет ни в базе, ни в этом поле, проверяется
+          вся конфигурация целиком — в отчёте об этом сказано прямо.
         </div>
       </div>
 
@@ -328,14 +330,6 @@
           <input type="checkbox" id="keepDump">
           <span>Сохранить выгрузку конфигурации после аудита
             <em>(на ERP это 7 ГБ и более)</em></span>
-        </label>
-        <label class="check">
-          <input type="checkbox" id="analyzeVendorCode">
-          <span>Проверять качество кода в типовой конфигурации
-            <em>Включено — проверяется весь код конфигурации и расширений, включая типовой
-            код поставщика. Выключено — только отличия от конфигурации поставщика
-            (если она доступна) и расширения целиком. Расширения проверяются
-            всегда, независимо от этого флага.</em></span>
         </label>
       </div>
 
@@ -466,7 +460,9 @@
           и с базой на поддержке. Тогда сохраните её сами: <b>Конфигуратор → Конфигурация →
           Поддержка → Настройка поддержки → «Сохранить в файл»</b>. Подойдёт и дистрибутив
           ровно того релиза, который стоит сейчас, — его программа сначала поищет сама
-          в каталогах шаблонов обновлений 1С.
+          в каталогах шаблонов обновлений 1С. Здесь поставщик нужен для объединения,
+          поэтому <b>без него прогон остановится и попросит файл</b>, а не продолжит
+          «как получится».
         </div>
       </div>
 
@@ -665,7 +661,7 @@
           </div>
         </div>
 
-        <div class="grid-2">
+        <div class="field-row">
           <div class="field">
             <label for="qUser">Пользователь базы</label>
             <input type="text" id="qUser" name="qUser" spellcheck="false" autocomplete="off">
@@ -673,6 +669,29 @@
           <div class="field">
             <label for="qPassword">Пароль</label>
             <input type="password" id="qPassword" name="qPassword" autocomplete="new-password">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="qVendor">Конфигурация поставщика</label>
+          <div class="picker">
+            <input type="text" id="qVendor" name="qVendor"
+                   placeholder="D:\Эталоны\ERP_2.4.13.111.cf   или   каталог XML-выгрузки"
+                   spellcheck="false">
+            <button type="button" class="btn btn--pick" data-pick="file"
+                    data-target="qVendor" data-filter="cf"
+                    data-title="Выберите файл конфигурации поставщика (.cf)">Файл .cf…</button>
+            <button type="button" class="btn btn--pick" data-pick="folder"
+                    data-target="qVendor"
+                    data-title="Выберите каталог XML-выгрузки конфигурации поставщика">Каталог…</button>
+          </div>
+          <div class="hint">
+            <b>Обычно заполнять не нужно</b> — если база на поддержке, программа возьмёт
+            конфигурацию поставщика прямо из неё. Указанный здесь файл или каталог
+            используется вместо этого.
+            <b>Проверяются только доработки: типовой код поставщика не проверяется
+            никогда.</b> Если поставщика нет ни в базе, ни в этом поле, проверяется
+            вся конфигурация целиком — в отчёте об этом сказано прямо.
           </div>
         </div>
       </div>
@@ -696,7 +715,7 @@
           </div>
         </div>
 
-        <div class="grid-2">
+        <div class="field-row">
           <div class="field">
             <label for="qRepoUser">Пользователь хранилища <span class="req">*</span></label>
             <input type="text" id="qRepoUser" name="qRepoUser" spellcheck="false" autocomplete="off">
@@ -721,7 +740,7 @@
         </div>
       </div>
 
-      <div class="grid-2">
+      <div class="field-row">
         <div class="field">
           <label for="qPlatform">Версия платформы</label>
           <select id="qPlatform" name="qPlatform" data-platform-list></select>
@@ -760,7 +779,7 @@
     <dialog class="dialog" id="qPeriodDialog">
       <div class="dialog__body">
         <h3 class="dialog__title">Период помещений</h3>
-        <div class="grid-2">
+        <div class="field-row">
           <div class="field">
             <label for="qFrom">С даты</label>
             <input type="date" id="qFrom" name="qFrom">

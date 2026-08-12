@@ -134,6 +134,7 @@ function collectInput() {
     repositoryPassword: $('#qRepoPassword').value,
     periodFrom: $('#qFrom').value,
     periodTo: $('#qTo').value,
+    vendorConfigPath: $('#qVendor').value.trim(),
     platformVersion: $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),
     keepDump: $('#qKeepDump').checked,

@@ -281,7 +281,6 @@ function initForm() {
       reportTheme: $('#reportTheme').value,
       collectLiveData: $('#collectLiveData').checked,
       keepDump: $('#keepDump').checked,
-      analyzeVendorCode: $('#analyzeVendorCode').checked,
     };
 
     if (!input.infobasePath) {

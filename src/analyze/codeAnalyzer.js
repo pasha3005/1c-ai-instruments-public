@@ -39,12 +39,14 @@ const RULE_SETS = [performanceRules, architectureRules, securityRules, standards
  * @param {{onProgress?: (done: number, total: number, title: string) => void}} [options]
  */
 export async function analyzeCode(modules, configuration, options = {}) {
-  const { onProgress, changeSet, analyzeVendorCode = false, vendorDir = null } = options;
+  const { onProgress, changeSet, vendorDir = null } = options;
 
-  // Флаг «Проверять качество кода в типовой конфигурации» отменяет фильтр по
-  // изменениям: проверяется всё, включая типовой код вендора. По умолчанию
-  // снят — цель аудита — оценить работу интегратора, а не качество поставки.
-  const filtering = Boolean(changeSet) && !analyzeVendorCode;
+  // Есть с чем сравнивать — проверяем только доработки. Флага «проверять
+  // и типовой код» больше нет: типовой код вендора не анализируется никогда,
+  // это главное правило продукта (пользователь убрал флаг 12.08.2026).
+  // Поставщик недоступен — сравнивать не с чем, и тогда проверяется вся
+  // конфигурация; отчёт говорит об этом прямо.
+  const filtering = Boolean(changeSet);
 
   // При наличии конфигурации поставщика анализируем только изменённые и
   // добавленные модули: цель аудита — оценить доработки, а не типовой код вендора.
@@ -63,8 +65,8 @@ export async function analyzeCode(modules, configuration, options = {}) {
 
   if (filtering) {
     log.info(`Анализ ограничен доработками: ${targets.length} модулей из ${modules.length} (пропущено типовых: ${skipped.total})`);
-  } else if (changeSet) {
-    log.info(`Проверяется вся конфигурация по требованию пользователя: ${targets.length} модулей`);
+  } else {
+    log.info(`Конфигурация поставщика недоступна — проверяется вся конфигурация: ${targets.length} модулей`);
   }
 
   /**
@@ -344,7 +346,6 @@ export async function analyzeCode(modules, configuration, options = {}) {
     scope: {
       filtered: filtering,
       vendorComparisonUsed: Boolean(changeSet),
-      analyzeVendorCode: Boolean(analyzeVendorCode),
       analyzedModules: targets.length,
       totalModules: modules.length,
       skippedModules: skipped.total,
