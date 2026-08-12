@@ -161,6 +161,11 @@ function buildSummary(result) {
     // Открылась ли форма результатов обновления: если нет, человек следил за
     // отложенными обработчиками сам — это стоит помнить о прогоне.
     formOpened: result?.handlers?.form ? result.handlers.form.opened === true : null,
+    // Подтверждала ли программа легальность получения обновления: это запись
+    // в базу от имени пользователя, и в истории прогонов ей место.
+    legalityConfirmed: result?.handlers?.legality
+      ? result.handlers.legality.confirmed === true
+      : null,
     checkErrors: (result?.checks?.config?.errors?.length ?? 0)
       + (result?.checks?.extensionsSyntax?.errors?.length ?? 0)
       + (result?.checks?.extensions?.errors?.length ?? 0),

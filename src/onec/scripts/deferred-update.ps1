@@ -141,17 +141,6 @@ try {
     exit 1
 }
 
-# --- Rezhim proverki: nuzhno tolko uznat, puskaet li baza -------------------
-# Poka platforma vypolnyaet monopolnye obrabotchiki obnovleniya, ona derzhit
-# bazu monopolno i vneshnee soedinenie ne daet. Poetomu sam fakt uspeshnogo
-# soedineniya - eto otvet "monopolnaya chast zakonchilas", i nikakih zadaniy
-# v etom rezhime zapuskat nelzya.
-if ($cfg.probeOnly) {
-    $result.ok = $true
-    Write-Result $result
-    exit 0
-}
-
 # --- Poisk reglamentnogo zadaniya -------------------------------------------
 # Diagnostika popadaet v rezultat namerenno: kogda spisok zadaniy okazyvaetsya
 # pustym, bez nee nevozmozhno ponyat, chto imenno ne otvetilo - menedzher,

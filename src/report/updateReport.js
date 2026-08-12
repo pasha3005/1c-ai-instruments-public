@@ -752,6 +752,9 @@ function handlersRow(result) {
   }
 
   const details = [
+    // Подтверждение легальности — запись в базу от имени пользователя, поэтому
+    // в отчёте она названа прямо, а не спрятана в успешный итог.
+    legalityNote(h.legality),
     h.exclusiveSeconds != null ? `монопольные: ${formatNumber(h.exclusiveSeconds)} с` : '',
     h.deferred?.job?.name ? `задание «${h.deferred.job.name}»` : '',
     // Открытая форма — не украшение: пока отложенные обработчики идут, только
@@ -764,6 +767,14 @@ function handlersRow(result) {
           <td>Обработчики обновления${details ? `<br><span class="muted">${esc(details)}</span>` : ''}</td>
           <td>${verdict}</td>
         </tr>`;
+}
+
+/** Подтверждение легальности получения обновления — коротко, для строки отчёта. */
+function legalityNote(legality) {
+  if (!legality) return '';
+  if (legality.confirmed) return 'легальность получения обновления подтверждена программой';
+  if (legality.needed === false) return '';
+  return `легальность подтвердить не удалось: ${legality.reason || 'причина неизвестна'}`;
 }
 
 /** Открылась ли форма результатов обновления — коротко, для строки отчёта. */

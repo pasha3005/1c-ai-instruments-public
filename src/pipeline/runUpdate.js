@@ -51,7 +51,8 @@ import {
 import { findVendorRelease } from '../onec/templates.js';
 import { vendorConfigPresence } from '../onec/vendorCompare.js';
 import {
-  launchEnterprise, waitExclusiveReleased, runDeferredUpdate, openResultsForm,
+  launchEnterprise, waitUpdateApplied, runDeferredUpdate, openResultsForm,
+  confirmUpdateLegality,
 } from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
@@ -467,16 +468,28 @@ async function applyTypical({
  * при первом входе в базу после смены версии конфигурации, то есть уже после
  * `/UpdateDBCfg`.
  *
- * Конфигурацию здесь не меняем — этого и не требуется: 1С запускается в режиме
- * предприятия, и монопольные обработчики отрабатывают сами. Наша работа —
- * дождаться их, запустить отложенные и не соврать о результате.
+ * Конфигурацию здесь не меняем — этого и не требуется. Но одну запись в базу
+ * сделать приходится, и её просил сам пользователь: БСП не начинает обработчики,
+ * пока не подтверждена легальность получения обновления, и подтверждение
+ * программа записывает сама — процедурой БСП, той же, что и кнопка «Продолжить».
+ * Иначе прогон встаёт у формы и ждёт человека, а всё остальное едет дальше
+ * по ложному признаку.
  */
 async function runUpdateHandlers({ platform, conn, input, workRoot, progress, result }) {
-  startWrite(progress, 'handlers', 'Запуск 1С в режиме предприятия');
+  startWrite(progress, 'handlers', 'Подтверждение легальности получения обновления');
 
   const handlers = { launched: false, exclusiveSeconds: null, deferred: null };
   result.handlers = handlers;
 
+  // Подтверждение — ДО запуска клиента: подтверждённое заранее, оно не даёт
+  // форме легальности открыться вовсе, и монопольные обработчики начинаются сами.
+  const legality = await confirmUpdateLegality({
+    platform, conn, user: input.user, password: input.password, workDir: workRoot,
+  });
+  handlers.legality = legality;
+  reportLegality(progress, legality);
+
+  progress.update('handlers', 'Запуск 1С в режиме предприятия');
   try {
     const { pid } = launchEnterprise({
       platform, conn, user: input.user, password: input.password,
@@ -502,26 +515,39 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
     return;
   }
 
-  // Монопольная часть: пока она идёт, база занята и внешнее соединение не встаёт.
+  // Монопольная часть. Ждём не «база освободилась» (этот признак ложный: пока
+  // форма легальности ждёт ответа, база свободна, а обработчики ещё не начались),
+  // а ответа самой БСП, что обновление информационной базы больше не требуется.
   progress.update('handlers', 'ожидание монопольных обработчиков обновления');
-  const exclusive = await waitExclusiveReleased({
+  const exclusive = await waitUpdateApplied({
     platform, conn, user: input.user, password: input.password, workDir: workRoot,
     onProgress: (text) => progress.update('handlers', text),
   });
   handlers.exclusiveSeconds = exclusive.seconds;
+  handlers.askedBsp = exclusive.askedBsp;
 
   if (!exclusive.ok) {
     handlers.error = exclusive.reason;
     progress.warn('handlers', `монопольная часть не завершилась за ${exclusive.seconds} с`);
     progress.message(
-      `База так и не освободилась за ${Math.round(exclusive.seconds / 60)} мин: ${exclusive.reason}. `
-      + 'Отложенное обновление не запускалось — сделайте это вручную, когда монопольные '
+      `Обновление информационной базы не завершилось за ${Math.round(exclusive.seconds / 60)} мин: `
+      + `${exclusive.reason}. `
+      + (exclusive.legalityWaiting
+        ? 'В открытом окне 1С поставьте галочку в форме «Легальность получения обновления» '
+          + 'и нажмите «Продолжить» — без этого БСП обработчики не начнёт. '
+        : '')
+      + 'Отложенное обновление не запускалось — запустите его сами, когда монопольные '
       + 'обработчики закончатся.',
       'warn',
     );
     return;
   }
-  progress.message(`Монопольные обработчики обновления отработали за ${exclusive.seconds} с.`);
+  progress.message(exclusive.askedBsp
+    ? `Монопольные обработчики обновления отработали за ${exclusive.seconds} с: БСП больше `
+      + 'не требует обновления информационной базы.'
+    : `Монопольные обработчики обновления отработали за ${exclusive.seconds} с — судя по тому, `
+      + 'что база пускает соединение. Спросить БСП напрямую не удалось, поэтому признак '
+      + 'приблизительный.');
 
   // Отложенные: тем же методом, что стоит у регламентного задания.
   progress.update('handlers', 'запуск отложенного обновления фоновым заданием');
@@ -611,6 +637,45 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
       ? `Ход виден в открытой форме «${handlers.form.title}».`
       : 'Следите за ходом в 1С: «Администрирование → Обслуживание → Обновление '
         + 'информационной базы».'),
+    'warn',
+  );
+}
+
+/**
+ * Сообщение о подтверждении легальности получения обновления.
+ *
+ * Говорится вслух всегда, когда подтверждение потребовалось: программа делает
+ * от имени пользователя то, что в интерфейсе делает он сам галочкой и кнопкой
+ * «Продолжить», и умолчать об этом нельзя.
+ */
+function reportLegality(progress, legality) {
+  if (!legality) return;
+
+  if (legality.confirmed) {
+    progress.message(
+      'БСП не начинает обработчики обновления, пока не подтверждена легальность получения '
+      + 'обновления: при первом входе в базу она открывает форму «Легальность получения '
+      + 'обновлений» и ждёт человека. Подтвердил за вас — той же процедурой БСП, которую '
+      + 'вызывает кнопка «Продолжить»; проверено: подтверждения БСП больше не требует. '
+      + 'Согласие на отправку статистики в центр мониторинга, которое та же форма предлагает '
+      + 'рядом, программа не трогает — это ваше отдельное решение.',
+    );
+    return;
+  }
+
+  if (legality.needed === false) {
+    progress.update('handlers', 'подтверждение легальности обновления не требуется');
+    return;
+  }
+
+  progress.message(
+    `Подтвердить легальность получения обновления не удалось: ${legality.reason || 'причина неизвестна'}. `
+    + (legality.bspAvailable
+      ? 'Если 1С откроет форму «Легальность получения обновлений» — поставьте галочку и нажмите '
+        + '«Продолжить»: пока этого не сделать, монопольные обработчики обновления не начнутся.'
+      : 'Спросить об этом БСП нечем — либо это не БСП-конфигурация, либо у общих модулей '
+        + 'обновления информационной базы снят флаг «Внешнее соединение». Если 1С откроет форму '
+        + '«Легальность получения обновлений» — подтвердите её сами.'),
     'warn',
   );
 }

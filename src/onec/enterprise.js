@@ -9,19 +9,25 @@
  * выполнятся, самому запустить фоновое задание для выполнения отложенных
  * обработчиков обновления, модификации в базу вносить никакие не нужно».
  *
- * Отсюда три части, и ни одна из них не меняет конфигурацию:
+ * Отсюда четыре части, и ни одна из них не меняет конфигурацию:
  *
- *  1. **Клиент запускается и остаётся работать.** Монопольные обработчики
+ *  1. **Подтверждение легальности получения обновления — до запуска клиента.**
+ *     БСП не начинает обработчики обновления, пока человек не подтвердит
+ *     легальность в форме «Легальность получения обновлений». Программа
+ *     подтверждает это сама — процедурой самой БСП, той же, что вызывает
+ *     кнопка «Продолжить» на этой форме (`confirmUpdateLegality`).
+ *  2. **Клиент запускается и остаётся работать.** Монопольные обработчики
  *     платформа выполняет сама при первом входе в базу после смены версии
  *     конфигурации. Ждать завершения процесса нельзя и не нужно: в этом окне
  *     потом работает человек.
- *  2. **Признак того, что монопольная часть закончилась, — освободившаяся
- *     база.** Пока идут монопольные обработчики, база занята монопольно,
- *     и внешнее соединение к ней не встаёт. Как только соединение прошло,
- *     монопольная часть отработала. Признак ничей не выдуманный: его даёт
- *     сама платформа, и он не зависит ни от версии БСП, ни от состава
- *     обработчиков.
- *  3. **Отложенные обработчики запускаются фоновым заданием** — тем самым
+ *  3. **Завершение монопольной части спрашиваем у БСП.** Прежний признак —
+ *     «внешнее соединение встало, значит база освободилась» — оказался ЛОЖНЫМ:
+ *     пока форма легальности ждёт ответа, база монопольно не занята, и
+ *     соединение встаёт свободно. Измерено на живой базе (УНФ 3.0.14.115):
+ *     соединение проходило на нулевой секунде, монополия начиналась на 41-й,
+ *     а обновление заканчивалось на 67-й. Поэтому спрашиваем БСП её же
+ *     функцией «необходимо ли обновление ИБ» (`waitUpdateApplied`).
+ *  4. **Отложенные обработчики запускаются фоновым заданием** — тем самым
  *     методом, который стоит у регламентного задания отложенного обновления.
  *     Ждём, пока фоновое задание перестанет быть активным, и смотрим,
  *     осталось ли регламентное задание включённым: БСП гасит его, когда
@@ -42,6 +48,8 @@ import { fileURLToPath } from 'node:url';
 const log = createLogger('enterprise');
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'deferred-update.ps1');
+
+const STATE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'update-state.ps1');
 
 /**
  * Русские имена того, что скрипт-мост дёргает у COM-соединения.
@@ -73,6 +81,41 @@ const RU_NAMES = {
   forms: 'Формы',
   fullName: 'ПолноеИмя',
   synonym: 'Синоним',
+  version: 'Версия',
+};
+
+/**
+ * Имена, которыми у БСП спрашивают состояние обновления информационной базы.
+ *
+ * Это имена НЕ платформы, а библиотеки, поэтому взяты они не из головы:
+ * прочитаны в исходниках БСП конкретной базы (УНФ 3.0.14.115, выгрузка
+ * конфигурации в XML) и проверены живым вызовом через внешнее соединение.
+ * У всех трёх модулей стоит флаг «Внешнее соединение», иначе спросить было бы
+ * нечем.
+ *
+ *  * `updateRequired` — «Проверить необходимость обновления информационной базы
+ *    при смене версии конфигурации». Истина, пока обработчики обновления
+ *    не выполнены; она и есть честный признак завершения монопольной части.
+ *  * `legalityRequired` — Истина, когда БСП ждёт подтверждения легальности
+ *    получения обновления. Внутри сравнивается «легальная версия», записанная
+ *    в базе, с версией конфигурации.
+ *  * `confirmLegality` — записывает подтверждение. Это ровно та процедура,
+ *    которую вызывает кнопка «Продолжить» формы «Легальность получения
+ *    обновлений», и БСП сама числит её среди методов, разрешённых к вызову
+ *    как произвольный код.
+ *
+ * Английские имена перечислены только для модулей — их в БСП зовут именно так.
+ * Английских имён функций здесь нет намеренно: угадывать их и выдавать догадку
+ * за факт нельзя, а проверить не на чем. Не отозвался ни один вариант — так
+ * и сообщаем: «спросить нечем».
+ */
+const BSP_NAMES = {
+  updateModule: ['ОбновлениеИнформационнойБазы', 'InfobaseUpdate'],
+  internalModule: ['ОбновлениеИнформационнойБазыСлужебный', 'InfobaseUpdateInternal'],
+  updateRequired: ['НеобходимоОбновлениеИнформационнойБазы'],
+  legalityRequired: ['ТребуетсяПроверитьЛегальностьПолученияОбновления'],
+  confirmLegality: ['ЗаписатьПодтверждениеЛегальностиПолученияОбновлений'],
+  deferredDone: ['ОтложенноеОбновлениеЗавершено'],
 };
 
 /**
@@ -129,87 +172,248 @@ export function launchEnterprise({ platform, conn, user, password, extraArgs = [
 }
 
 /**
- * Ждёт, пока база освободится от монопольного обновления.
- *
- * Проверка — попытка внешнего соединения: пока платформа выполняет монопольные
- * обработчики, она держит базу монопольно и соединение не даёт. Первое успешное
- * соединение и означает, что монопольная часть закончилась.
- *
- * Первые несколько секунд соединение может пройти ещё ДО того, как клиент
- * успел взять базу монопольно, поэтому сначала выдерживается пауза: иначе
- * мы объявили бы обработчики выполненными, не дав им начаться.
- *
- * @returns {Promise<{ok: boolean, seconds: number, reason?: string}>}
- */
-export async function waitExclusiveReleased({
-  platform, conn, user, password, workDir,
-  settleMs = 20_000, budgetMs = 30 * 60_000, pollMs = 10_000, onProgress,
-}) {
-  const startedAt = Date.now();
-  await sleep(settleMs);
-
-  let lastReason = '';
-  while (Date.now() - startedAt < budgetMs) {
-    throwIfCancelled();
-    const probe = await probeConnection({ platform, conn, user, password, workDir });
-    const seconds = Math.round((Date.now() - startedAt) / 1000);
-    if (probe.ok) {
-      log.info(`База освободилась через ${seconds} с — монопольные обработчики отработали`);
-      return { ok: true, seconds };
-    }
-    lastReason = probe.reason || '';
-    onProgress?.(`ждём монопольные обработчики, ${seconds} с${lastReason ? `: ${short(lastReason)}` : ''}`);
-    await sleep(pollMs);
-  }
-
-  return {
-    ok: false,
-    seconds: Math.round((Date.now() - startedAt) / 1000),
-    reason: lastReason || 'база так и не освободилась',
-  };
-}
-
-/**
- * Однократная попытка внешнего соединения — она же проверка «база свободна».
+ * Состояние обновления информационной базы глазами самой БСП.
  *
  * Отдельным процессом PowerShell, тем же мостом, что и всё остальное COM:
- * соединение из Node напрямую невозможно, а держать его нам и не нужно.
+ * соединение из Node напрямую невозможно.
+ *
+ * Отказ соединения — не ошибка, а ответ: пока платформа выполняет монопольные
+ * обработчики, база занята монопольно и никого не пускает. Поэтому
+ * `connected: false` возвращается со причиной, а не исключением.
+ *
+ * @returns {Promise<{connected: boolean, bspAvailable: boolean,
+ *                    updateRequired: boolean|null, legalityRequired: boolean|null,
+ *                    legalityConfirmed: boolean, deferredDone: boolean|null,
+ *                    version: string, reason: string}>}
  */
-async function probeConnection({ platform, conn, user, password, workDir }) {
+export async function readUpdateState({
+  platform, conn, user, password, workDir, confirmLegality = false,
+}) {
   const dir = await ensureDir(path.join(workDir, 'handlers'));
-  const inputFile = path.join(dir, 'probe-input.json');
-  const outputFile = path.join(dir, 'probe-output.json');
+  const inputFile = path.join(dir, 'state-input.json');
+  const outputFile = path.join(dir, 'state-output.json');
   await rmrf(outputFile).catch(() => {});
 
   await writeJson(inputFile, {
     binDir: platform.binDir,
     progId: comConnectorProgId(platform.version),
     connectionString: toComConnectionString(conn, { user, password }),
-    // Соединяемся и сразу отпускаем: задача — узнать, пускает ли база.
-    jobNamePattern: JOB_PATTERN,
-    jobTitle: 'проверка доступности базы',
-    budgetSeconds: 0,
-    pollSeconds: 5,
+    confirmLegality,
+    bsp: BSP_NAMES,
     names: RU_NAMES,
-    probeOnly: true,
   });
 
+  const empty = {
+    connected: false,
+    bspAvailable: false,
+    updateRequired: null,
+    legalityRequired: null,
+    legalityConfirmed: false,
+    deferredDone: null,
+    version: '',
+  };
+
   try {
-    await runPowerShell(SCRIPT, ['-InputFile', inputFile, '-OutputFile', outputFile], {
-      timeout: 120_000,
+    await runPowerShell(STATE_SCRIPT, ['-InputFile', inputFile, '-OutputFile', outputFile], {
+      timeout: 180_000,
       allowNonZeroExit: true,
     });
   } catch (err) {
     if (isCancelled(err)) throw err;
-    return { ok: false, reason: err.message };
+    return { ...empty, reason: err.message };
   }
 
   const output = await readJson(outputFile);
-  if (!output) return { ok: false, reason: 'мост не вернул результат' };
-  // В режиме проверки скрипт соединяется и сразу выходит: `ok` здесь означает
-  // ровно то, что база пустила, — никаких заданий он не запускает.
-  if (output.ok) return { ok: true };
-  return { ok: false, reason: (output.errors || [])[0] || 'соединение не встало' };
+  if (!output) return { ...empty, reason: 'мост не вернул результат (см. журнал приложения)' };
+
+  return {
+    connected: output.connected === true,
+    bspAvailable: output.bspAvailable === true,
+    updateRequired: typeof output.updateRequired === 'boolean' ? output.updateRequired : null,
+    legalityRequired: typeof output.legalityRequired === 'boolean' ? output.legalityRequired : null,
+    legalityConfirmed: output.legalityConfirmed === true,
+    deferredDone: typeof output.deferredDone === 'boolean' ? output.deferredDone : null,
+    version: String(output.version || ''),
+    reason: (output.errors || [])[0] || '',
+  };
+}
+
+/**
+ * Подтверждает легальность получения обновления — до запуска предприятия.
+ *
+ * Зачем это здесь. БСП не начинает обработчики обновления, пока человек
+ * не подтвердит легальность получения обновления: при первом входе в базу она
+ * открывает форму «Легальность получения обновлений» и ждёт галочки и кнопки
+ * «Продолжить». На живом прогоне это и произошло — прогон встал, а программа
+ * тем временем решила, что монопольные обработчики отработали.
+ *
+ * Подтверждение записывается процедурой самой БСП — той же, которую вызывает
+ * кнопка «Продолжить» (см. `BSP_NAMES`), и успехом считается не отсутствие
+ * ошибки, а то, что БСП на повторный вопрос отвечает «подтверждения больше
+ * не требуется». Ничего кроме легальности мы не подтверждаем: согласие
+ * на отправку статистики в центр мониторинга, которое та же форма предлагает
+ * рядом, — отдельное решение пользователя, и его программа не трогает.
+ *
+ * @returns {Promise<{needed: boolean|null, confirmed: boolean,
+ *                    bspAvailable: boolean, reason: string}>}
+ */
+export async function confirmUpdateLegality(ctx) {
+  const state = await readUpdateState({ ...ctx, confirmLegality: true });
+
+  if (!state.connected) {
+    return {
+      needed: null, confirmed: false, bspAvailable: false,
+      reason: state.reason || 'база не пустила внешнее соединение',
+    };
+  }
+  if (!state.bspAvailable) {
+    return {
+      needed: null, confirmed: false, bspAvailable: false,
+      reason: state.reason || 'функции обновления ИБ через внешнее соединение недоступны',
+    };
+  }
+
+  // Подтверждения не требовалось — значит и подтверждать нечего: либо оно уже
+  // записано, либо конфигурация его не спрашивает.
+  if (state.legalityRequired === false && !state.legalityConfirmed) {
+    return { needed: false, confirmed: false, bspAvailable: true, reason: '' };
+  }
+
+  if (state.legalityConfirmed) {
+    log.info('Легальность получения обновления подтверждена процедурой БСП');
+    return { needed: true, confirmed: true, bspAvailable: true, reason: '' };
+  }
+
+  return {
+    needed: state.legalityRequired,
+    confirmed: false,
+    bspAvailable: true,
+    reason: state.reason || 'БСП всё равно требует подтверждения легальности',
+  };
+}
+
+/**
+ * Что означает прочитанное состояние базы.
+ *
+ * Вынесено отдельной функцией не для красоты: именно здесь прежняя версия
+ * ошибалась, принимая «база пустила соединение» за «обработчики отработали».
+ * Разбор случаев проверяется тестами.
+ *
+ *  * `exclusive` — база не пустила: идут монопольные обработчики. Единственное
+ *    место, где отказ соединения — хорошая новость;
+ *  * `applied` — БСП говорит, что обновление ИБ больше не требуется;
+ *  * `legality` — БСП ждёт подтверждения легальности, обработчики не начаты;
+ *  * `running` — обновление ещё требуется, значит обработчики идут;
+ *  * `unknown` — спросить БСП нечем.
+ *
+ * @returns {{kind: 'exclusive'|'applied'|'legality'|'running'|'unknown'}}
+ */
+export function judgeUpdateState(state) {
+  if (!state || state.connected !== true) return { kind: 'exclusive' };
+  if (state.bspAvailable !== true) return { kind: 'unknown' };
+  if (state.updateRequired === false) return { kind: 'applied' };
+  if (state.updateRequired === true) {
+    return { kind: state.legalityRequired === true ? 'legality' : 'running' };
+  }
+  return { kind: 'unknown' };
+}
+
+/**
+ * Ждёт, пока обновление информационной базы действительно выполнится.
+ *
+ * Признак берётся у БСП: пока её функция «необходимо ли обновление ИБ»
+ * отвечает Истина, монопольные обработчики не выполнены. Прежний признак —
+ * «внешнее соединение встало, значит база освободилась» — был ЛОЖНЫМ, и это
+ * измерено: на живой базе соединение проходило сразу, монополия начиналась
+ * на 41-й секунде, обновление заканчивалось на 67-й. По ложному признаку
+ * программа объявляла монопольную часть выполненной через 20 секунд, запускала
+ * отложенное обновление и открывала форму вторым сеансом — а БСП этот второй
+ * сеанс не пускала: «Вход в приложение временно невозможен».
+ *
+ * Отказ соединения по ходу ожидания — это нормальный этап, а не сбой: именно
+ * так выглядит монопольная работа обработчиков.
+ *
+ * Если спросить БСП нечем (не БСП-конфигурация либо у модулей снят флаг
+ * «Внешнее соединение»), остаётся прежний способ — ждать, пока база начнёт
+ * пускать соединение, — и об этом говорится вслух: точности того признака мы
+ * уже знаем цену.
+ *
+ * @returns {Promise<{ok: boolean, seconds: number, reason?: string,
+ *                    askedBsp: boolean, exclusiveSeen: boolean,
+ *                    legalityWaiting: boolean}>}
+ */
+export async function waitUpdateApplied({
+  platform, conn, user, password, workDir,
+  budgetMs = 30 * 60_000, pollMs = 10_000, settleMs = 20_000, onProgress,
+}) {
+  const startedAt = Date.now();
+  const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
+
+  let askedBsp = false;
+  let exclusiveSeen = false;
+  let legalityWaiting = false;
+  let lastReason = '';
+
+  while (Date.now() - startedAt < budgetMs) {
+    throwIfCancelled();
+    const state = await readUpdateState({ platform, conn, user, password, workDir });
+    const seconds = elapsed();
+    const { kind } = judgeUpdateState(state);
+
+    if (kind === 'applied') {
+      log.info(`Обновление информационной базы выполнено за ${seconds} с (по данным БСП)`);
+      return { ok: true, seconds, askedBsp: true, exclusiveSeen, legalityWaiting };
+    }
+
+    if (kind === 'exclusive') {
+      exclusiveSeen = true;
+      lastReason = state.reason || '';
+      onProgress?.(`монопольные обработчики обновления идут, база занята, ${seconds} с`);
+      await sleep(pollMs);
+      continue;
+    }
+
+    if (kind === 'legality' || kind === 'running') {
+      askedBsp = true;
+      if (kind === 'legality') {
+        legalityWaiting = true;
+        onProgress?.(`1С ждёт подтверждения легальности получения обновления, ${seconds} с`);
+      } else {
+        onProgress?.(`обработчики обновления выполняются, ${seconds} с`);
+      }
+      await sleep(pollMs);
+      continue;
+    }
+
+    // Спросить БСП нечем. Возвращаемся к прежнему признаку — база пускает
+    // соединение, — но выдерживаем паузу: сразу после запуска клиента база
+    // ещё не занята, и без паузы мы объявили бы обработчики выполненными,
+    // не дав им начаться.
+    if (seconds * 1000 < settleMs) {
+      onProgress?.(`ожидание обработчиков обновления, ${seconds} с`);
+      await sleep(pollMs);
+      continue;
+    }
+    return {
+      ok: true,
+      seconds,
+      askedBsp: false,
+      exclusiveSeen,
+      legalityWaiting,
+      reason: state.reason || 'состояние обновления у БСП спросить нечем',
+    };
+  }
+
+  return {
+    ok: false,
+    seconds: elapsed(),
+    askedBsp,
+    exclusiveSeen,
+    legalityWaiting,
+    reason: legalityWaiting
+      ? 'БСП так и ждёт подтверждения легальности получения обновления'
+      : (lastReason || 'обновление информационной базы так и не завершилось'),
+  };
 }
 
 /**
@@ -419,7 +623,3 @@ function sleep(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-function short(text) {
-  const line = String(text).split('\n').map((s) => s.trim()).find(Boolean) || '';
-  return line.length > 120 ? `${line.slice(0, 120)}…` : line;
-}
