@@ -155,6 +155,36 @@ export async function removeUpdateOwnEntries(workDir, { keepResult = true } = {}
   return removed;
 }
 
+/**
+ * Каталоги проверки качества: к общим добавляются те, что создаёт работа
+ * с хранилищем, — база-контекст (`repo-context`), отчёты и выгрузки хранилищ
+ * (`repo`, `repo-<имя>`, `repo-<имя>-v<версия>`).
+ */
+const QUALITY_PATTERNS = [/^repo(-|$)/i, /^designer-.*\.log$/i];
+
+/**
+ * Удаляет то, что создала сама проверка качества.
+ *
+ * Каталог выбирает пользователь — как и в остальных разделах, трогаем только
+ * своё. Результат проверки здесь беречь не нужно: отчёт лежит в базе прогонов,
+ * а не в каталоге выгрузки.
+ *
+ * @returns {Promise<number>} сколько элементов удалено
+ */
+export async function removeQualityOwnEntries(workDir) {
+  const dir = resolveDir(workDir);
+  if (!(await pathExists(dir))) return 0;
+
+  let removed = 0;
+  for (const name of await fs.readdir(dir)) {
+    const own = OWN_ENTRIES.has(name) || QUALITY_PATTERNS.some((re) => re.test(name));
+    if (!own) continue;
+    await rmrf(path.join(dir, name)).catch(() => {});
+    removed += 1;
+  }
+  return removed;
+}
+
 /** Размер каталога без обхода вглубь дальше разумного — только для оценки. */
 async function dirSizeFast(dir, depth = 0) {
   if (depth > 6) return 0;

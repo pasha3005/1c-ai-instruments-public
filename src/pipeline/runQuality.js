@@ -29,9 +29,8 @@ import { parseConnection, validateConnection } from '../onec/connection.js';
 import { exportConfiguration, exportExtensions } from '../onec/collector.js';
 import {
   findRepositories, repositoryHistory, repositoryDumpCfg, filterByPeriod, authorsByObject,
-  createContextInfobase,
+  createContextInfobase, ensureContextExtension, expandExtensionCf, isExtensionRepositoryRefusal,
 } from '../onec/repository.js';
-import { loadConfigFromFiles } from '../onec/designer.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -46,6 +45,7 @@ import { tagByRu } from '../parse/metadataKinds.js';
 import { renderQualityReport } from '../report/qualityReport.js';
 import * as store from '../store/qualityStore.js';
 import { ensureDir, pathExists, dirSize, humanSize, readText } from '../util/fsx.js';
+import { removeQualityOwnEntries } from '../util/workDir.js';
 import { createLogger } from '../util/logger.js';
 import {
   runCancellable, throwIfCancelled, isCancelled, rethrowIfCancelled, CANCEL_MESSAGE,
@@ -61,6 +61,9 @@ async function runPipeline({ qualityId, input, progress }) {
   const startedAt = Date.now();
   const workRoot = path.resolve(String(input.workDir || '').trim());
   const warnings = [];
+  // Флаг «Сохранить выгрузку» — как в остальных разделах. Каталог задаёт
+  // пользователь, поэтому удаляется только созданное самой проверкой.
+  let cleanupWorkDir = input.keepDump !== true;
 
   const startStage = (id, detail = '') => {
     throwIfCancelled();
@@ -151,6 +154,14 @@ async function runPipeline({ qualityId, input, progress }) {
     await store.saveReport(qualityId, renderQualityReport(result));
     progress.done('report', 'отчёт готов');
 
+    // Уборка — видимым этапом, а не молча после завершения: выгрузка хранилищ
+    // и база-контекст занимают место, и пользователь должен видеть, что с ними
+    // стало. Проверка считается законченной после уборки.
+    startStage('cleanup');
+    await cleanupQualityDump({ progress, workRoot, keep: !cleanupWorkDir });
+    cleanupWorkDir = false;
+
+    result.durationMs = Date.now() - startedAt;
     progress.finish({
       qualityId,
       findings: analysis.findings.length,
@@ -169,7 +180,34 @@ async function runPipeline({ qualityId, input, progress }) {
     log.error(`Проверка качества ${qualityId} завершилась ошибкой: ${err.message}`, { stack: err.stack });
     progress.fail(err);
     await store.markFailed(qualityId, err, durationMs);
+    cleanupWorkDir = false; // Оставляем выгрузку для разбора причины.
     throw err;
+  } finally {
+    // Сюда попадаем только после прерывания: успешный прогон убирает за собой
+    // видимым этапом, а неудачный оставляет выгрузку намеренно.
+    if (cleanupWorkDir) {
+      const removed = await removeQualityOwnEntries(workRoot).catch(() => 0);
+      log.info(`Выгрузка проверки качества удалена: элементов ${removed} в ${workRoot}`);
+    }
+  }
+}
+
+/** Очистка каталога выгрузки — по флагу «Сохранить выгрузку», видимым этапом. */
+async function cleanupQualityDump({ progress, workRoot, keep }) {
+  if (keep) {
+    progress.skip('cleanup', 'выгрузка сохранена по требованию пользователя');
+    return;
+  }
+  progress.update('cleanup', workRoot);
+  try {
+    const removed = await removeQualityOwnEntries(workRoot);
+    log.info(`Выгрузка проверки качества очищена: элементов ${removed} в ${workRoot}`);
+    progress.done('cleanup', `удалено элементов: ${removed}`);
+  } catch (err) {
+    // Отчёт уже готов — не повод считать проверку неудачной. Но сказать надо:
+    // иначе пользователь найдёт лишнее на диске и не поймёт откуда.
+    log.warn(`Не удалось очистить каталог выгрузки: ${err.message}`);
+    progress.warn('cleanup', `не удалось очистить: ${err.message}`);
   }
 }
 
@@ -271,10 +309,34 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
 
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
-    const history = await repositoryHistory({
+    let history = await repositoryHistory({
       platform, contextBase, dir: repo.dir, workDir: workRoot,
       user: input.repositoryUser, password: input.repositoryPassword,
     });
+
+    // Хранилище расширений отвечает «Соединение основной конфигурации
+    // с хранилищем расширений конфигураций невозможно»: ему нужно расширение
+    // базы-контекста, а не сама база. Заводим пустое и повторяем — имя
+    // расширения в базе с именем расширения в хранилище платформа не сверяет
+    // (проверено), поэтому одного хватает на все хранилища расширений.
+    if (!history.ok && isExtensionRepositoryRefusal(history.reason)) {
+      progress.update('export', `хранилище «${repo.name}»: это хранилище расширений`);
+      const context = await ensureContextExtension({ platform, contextBase });
+      if (context.ok) {
+        repo.extension = context.name;
+        history = await repositoryHistory({
+          platform, contextBase, dir: repo.dir, workDir: workRoot,
+          user: input.repositoryUser, password: input.repositoryPassword,
+          extension: repo.extension,
+        });
+      } else {
+        history = {
+          ...history,
+          reason: `${history.reason}. Расширение в базе-контексте не создано: ${context.reason}`,
+        };
+      }
+    }
+
     if (!history.ok) {
       warnings.push(`Хранилище «${repo.name}»: ${history.reason}`);
       progress.message(`Хранилище «${repo.name}» не прочитано: ${history.reason}`, 'warn');
@@ -289,6 +351,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     const dumped = await repositoryDumpCfg({
       platform, contextBase, dir: repo.dir, workDir: workRoot,
       user: input.repositoryUser, password: input.repositoryPassword,
+      extension: repo.extension || '',
     });
     if (!dumped.ok) {
       warnings.push(`Хранилище «${repo.name}»: код не получен — ${dumped.reason}`);
@@ -296,8 +359,8 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       continue;
     }
 
-    const expanded = await exportCfToXml({
-      cfFile: dumped.file, platform, workDir: workRoot, name: `repo-${repo.name}`,
+    const expanded = await expandRepositoryCf({
+      repo, cfFile: dumped.file, platform, contextBase, workRoot,
       onProgress: (text) => progress.update('export', `«${repo.name}»: ${text}`),
     });
     if (!expanded.ok) {
@@ -305,39 +368,26 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: expanded.reason });
       continue;
     }
-    repoStatus.push({ name: repo.name, dir: repo.dir, ok: true, isMain: !mainDir });
-    // Первое хранилище с Configuration.xml считаем основной конфигурацией,
-    // остальные — расширениями: у расширения свой корень, но модули читаются
-    // тем же кодом.
-    if (!mainDir) {
-      mainDir = expanded.dir;
-      // Хранилищу основной конфигурации хватало пустой базы-контекста —
-      // проверено. Хранилищу расширения, судя по ответу платформы
-      // «Соединение основной конфигурации с хранилищем расширений
-      // конфигураций невозможно», этого недостаточно: расширение подчинено
-      // конкретной конфигурации, и подключиться к его хранилищу можно только
-      // если та же основная конфигурация уже загружена в базу-контекст.
-      // Загружаем её сюда же, пока не дошли до хранилищ расширений — если
-      // расширений в перечне нет, это просто лишний шаг, а не ошибка.
-      //
-      // Это предположение по тексту ответа платформы, не подтверждённый факт:
-      // живого хранилища расширений для проверки нет. Если после этой правки
-      // ошибка останется, об этом стоит сообщить с точным текстом из отчёта.
-      try {
-        await loadConfigFromFiles({
-          platform, conn: parseConnection(contextBase), srcDir: mainDir,
-          logFile: path.join(workRoot, 'repo', `load-main-${safeFileName(repo.name)}.log`),
-        });
-      } catch (err) {
-        rethrowIfCancelled(err);
-        warnings.push(
-          `Основная конфигурация не загрузилась в базу-контекст (${err.message}) — если дальше `
-          + 'не прочитается хранилище расширения, вероятная причина в этом.',
-        );
-      }
-    } else {
-      extensionDirs.push({ name: repo.name, dir: expanded.dir });
-    }
+    // Основная конфигурация — первое хранилище БЕЗ расширения: у расширения
+    // свой корень, и подменять им конфигурацию нельзя. Модули и там, и там
+    // читаются одним кодом.
+    const isMain = !mainDir && !repo.extension;
+    repoStatus.push({
+      name: repo.name, dir: repo.dir, ok: true, isMain, isExtension: Boolean(repo.extension),
+    });
+    if (isMain) mainDir = expanded.dir;
+    else extensionDirs.push({ name: repo.name, dir: expanded.dir });
+  }
+
+  if (!mainDir && extensionDirs.length) {
+    // Указали каталог с одними хранилищами расширений — это законный случай
+    // (расширения ведут отдельно от конфигурации). Разбор состава объектов
+    // ждёт один корень, поэтому корнем становится первое расширение,
+    // а остальные остаются расширениями.
+    const first = extensionDirs.shift();
+    mainDir = first.dir;
+    const status = repoStatus.find((r) => r.name === first.name);
+    if (status) status.isMain = true;
   }
 
   if (!mainDir) {
@@ -413,6 +463,25 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
 const MAX_PLACEMENT_DUMPS = 40;
 
 /**
+ * Разворачивает выгрузку хранилища в XML — тем способом, который годится
+ * для этого хранилища.
+ *
+ * Конфигурация приходит файлом `.cf` и разворачивается своей временной базой
+ * (ibcmd умеет создать базу сразу из файла). Расширение приходит `.cfe`,
+ * и так его не развернуть: расширение живёт внутри базы под именем. Поэтому
+ * оно загружается в расширение-заглушку базы-контекста и выгружается оттуда.
+ */
+async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoot, onProgress }) {
+  const name = `repo-${safeFileName(repo.name)}${repo.suffix || ''}`;
+  if (repo.extension) {
+    return expandExtensionCf({
+      platform, contextBase, cfFile, workDir: workRoot, name, extension: repo.extension,
+    });
+  }
+  return exportCfToXml({ cfFile, platform, workDir: workRoot, name, onProgress });
+}
+
+/**
  * Дифф каждого помещённого модуля — именно той правки, что внесена ЭТИМ
  * помещением, а не накопленной за весь период.
  *
@@ -457,10 +526,12 @@ async function buildPlacementDiffs({
     try {
       const dumped = await repositoryDumpCfg({
         platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version,
+        extension: repo.extension || '',
       });
       if (dumped.ok) {
-        const expanded = await exportCfToXml({
-          cfFile: dumped.file, platform, workDir: workRoot, name: `repo-${safeFileName(repoName)}-v${version}`,
+        const expanded = await expandRepositoryCf({
+          repo: { ...repo, suffix: `-v${version}` },
+          cfFile: dumped.file, platform, contextBase, workRoot,
         });
         if (expanded.ok) {
           const modules = await collectModules(expanded.dir);

@@ -774,6 +774,7 @@ export function buildRouter() {
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
       analyzeVendorCode: body.analyzeVendorCode === true,
+      keepDump: body.keepDump === true,
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
     };
 

@@ -28,11 +28,14 @@ export function renderQualityReport(result) {
   const title = `Качество кода 1С — ${cfg.synonym || cfg.name || 'конфигурация'}`;
   const fromRepo = result.source === 'repository';
 
+  // Помещения идут первыми: в режиме хранилища это ответ на вопрос «что вообще
+  // делали за период», и замечания читаются уже поверх него. Прямое требование
+  // пользователя (12.08.2026).
   const sectionDefs = [
-    { id: 'q-findings', title: 'Качество кода: замечания', html: renderFindings(result) },
     fromRepo
       ? { id: 'q-commits', title: 'Помещения в хранилище за период', html: renderCommits(result) }
       : null,
+    { id: 'q-findings', title: 'Качество кода: замечания', html: renderFindings(result) },
   ].filter(Boolean).filter((s) => s.html);
 
   return `<!doctype html>

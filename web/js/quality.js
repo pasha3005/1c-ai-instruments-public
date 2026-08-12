@@ -133,6 +133,7 @@ function collectInput() {
     periodTo: $('#qTo').value,
     platformVersion: $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),
+    keepDump: $('#qKeepDump').checked,
   };
 }
 

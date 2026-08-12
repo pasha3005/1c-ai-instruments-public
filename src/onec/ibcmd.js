@@ -129,6 +129,37 @@ export async function extensionInfo({ platform, conn, name, user, password }) {
   return { name, ...parseKeyValueOutput(result.stdout) };
 }
 
+/**
+ * Создаёт в базе пустое расширение.
+ *
+ * Нужно ради хранилищ расширений: команды хранилища работают не с основной
+ * конфигурацией базы-контекста, а с её расширением, и без него платформа
+ * отвечает «Соединение основной конфигурации с хранилищем расширений
+ * конфигураций невозможно» (проверено 12.08.2026 на 8.5.1.1150).
+ *
+ * Возвращает `{ok, reason}`: повторное создание того же имени — не ошибка
+ * прогона, а сигнал «расширение уже есть».
+ */
+export async function createExtension({ platform, conn, name, prefix, user, password }) {
+  const args = [
+    'infobase', 'config', 'extension', 'create',
+    ...targetArgs(conn, { user, password }),
+    `--name=${name}`,
+    `--name-prefix=${prefix || name}`,
+  ];
+  const result = await run(platform.ibcmd, args, {
+    timeout: TIMEOUTS.configExport,
+    allowNonZeroExit: true,
+  });
+  if (result.code !== 0) {
+    const reason = (result.stderr || result.stdout || '').trim();
+    log.warn(`Расширение «${name}» не создано: ${reason}`);
+    return { ok: false, reason };
+  }
+  log.info(`В базе создано расширение «${name}»`);
+  return { ok: true };
+}
+
 /** Выгружает все расширения в XML: <outDir>/<ИмяРасширения>/... */
 export async function exportAllExtensions({ platform, conn, outDir, user, password, onProgress }) {
   await ensureDir(outDir);

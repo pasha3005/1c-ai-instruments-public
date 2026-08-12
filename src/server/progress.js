@@ -92,6 +92,7 @@ export const QUALITY_STAGES = [
   { id: 'vendor', title: 'Сравнение с конфигурацией поставщика', weight: 10 },
   { id: 'analyze', title: 'Проверка качества кода', weight: 26 },
   { id: 'report', title: 'Формирование отчёта', weight: 4 },
+  { id: 'cleanup', title: 'Очистка каталога выгрузки', weight: 3 },
 ];
 
 export class AuditProgress extends EventEmitter {

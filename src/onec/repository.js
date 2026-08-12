@@ -23,6 +23,14 @@
  *  * `/ConfigurationRepositoryDumpCfg <файл>` отдаёт конфигурацию хранилища
  *    файлом `.cf` — дальше её разворачивает `analyze/vendorConfig.js`.
  *
+ * И то, что стоило отдельного дня (12.08.2026, живые хранилища пользователя):
+ * **хранилищу расширений пустой базы мало — ему нужно расширение этой базы**.
+ * Без ключа `-Extension` платформа отвечает «Соединение основной конфигурации
+ * с хранилищем расширений конфигураций невозможно», с ключом, но без такого
+ * расширения в базе — «расширение конфигурации с указанным именем не найдено».
+ * Заводим пустое сами; имя своё, потому что с именем расширения в хранилище
+ * платформа его не сверяет (проверено двумя разными именами на одном хранилище).
+ *
  * Периода в самих командах нет (есть только диапазон версий `-NBegin`/`-NEnd`),
  * поэтому отчёт читается целиком, а по датам фильтруем сами.
  */
@@ -34,8 +42,39 @@ import { TIMEOUTS } from '../config.js';
 import { ensureDir, pathExists, readText, rmrf } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
 import { rethrowIfCancelled } from '../util/cancel.js';
+import { parseConnection } from './connection.js';
+import { listExtensions, createExtension } from './ibcmd.js';
+import { loadCfg, dumpConfigToFiles } from './designer.js';
 
 const log = createLogger('repository');
+
+/**
+ * Имя расширения-заглушки в базе-контексте.
+ *
+ * Хранилищу расширений нужна не основная конфигурация базы, а её расширение:
+ * без `-Extension` платформа отвечает «Соединение основной конфигурации
+ * с хранилищем расширений конфигураций невозможно».
+ *
+ * Имя расширения в базе с именем расширения в хранилище **не сверяется** —
+ * проверено 12.08.2026 на 8.5.1.1150: история одного и того же хранилища
+ * читается и через расширение «Расширение1», и через «ЧужоеИмя», отчёты
+ * совпадают до строчки. Поэтому имя берём своё и одно на все хранилища,
+ * а не выясняем настоящее.
+ */
+export const CONTEXT_EXTENSION = 'АИ_ХранилищеРасширения';
+
+/** Префикс имён того же расширения-заглушки: платформа требует его при создании. */
+const CONTEXT_EXTENSION_PREFIX = 'АИ';
+
+/**
+ * Отказ вида «это хранилище расширений, а вы пришли основной конфигурацией».
+ *
+ * Разбирается по тексту, потому что код возврата у конфигуратора один и тот же
+ * на все беды (см. заголовок onec-infobase-cli): 1 и молчание в stderr.
+ */
+export function isExtensionRepositoryRefusal(text) {
+  return /хранилищ\S*\s+расширени/i.test(String(text || ''));
+}
 
 /** Файл, по которому каталог опознаётся как хранилище конфигурации. */
 const MARKER = 'cfgrepo.conf';
@@ -116,6 +155,35 @@ function repositoryArgs({ dir, user, password }) {
   return args;
 }
 
+/** Ключ выбора расширения — общий для команд хранилища и выгрузки. */
+function extensionArgs(extension) {
+  return extension ? ['-Extension', extension] : [];
+}
+
+/**
+ * Заводит в базе-контексте пустое расширение, через которое ведётся работа
+ * с хранилищами расширений. Уже существующее — переиспользуется.
+ *
+ * @returns {Promise<{ok: boolean, name?: string, reason?: string}>}
+ */
+export async function ensureContextExtension({ platform, contextBase, name = CONTEXT_EXTENSION }) {
+  if (!platform.ibcmd) {
+    return {
+      ok: false,
+      reason: `в платформе ${platform.version} нет ibcmd — расширение в базе-контексте создать нечем`,
+    };
+  }
+  const conn = parseConnection(contextBase);
+  const existing = await listExtensions({ platform, conn });
+  if (existing.includes(name)) return { ok: true, name };
+
+  const created = await createExtension({
+    platform, conn, name, prefix: CONTEXT_EXTENSION_PREFIX,
+  });
+  if (!created.ok) return { ok: false, reason: created.reason };
+  return { ok: true, name };
+}
+
 /**
  * История помещений в хранилище.
  *
@@ -129,7 +197,7 @@ function repositoryArgs({ dir, user, password }) {
  * @returns {Promise<{ok: boolean, reason?: string, commits: object[]}>}
  */
 export async function repositoryHistory({
-  platform, contextBase, dir, workDir, user, password,
+  platform, contextBase, dir, workDir, user, password, extension = '',
 }) {
   if (!platform.client) {
     return { ok: false, reason: `в платформе ${platform.version} не найден 1cv8.exe`, commits: [] };
@@ -145,6 +213,7 @@ export async function repositoryHistory({
       'DESIGNER', `/F${contextBase}`,
       ...repositoryArgs({ dir, user, password }),
       '/ConfigurationRepositoryReport', reportFile,
+      ...extensionArgs(extension),
       '/DisableStartupDialogs', '/DisableStartupMessages',
       '/Out', logFile,
     ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
@@ -175,10 +244,10 @@ export async function repositoryHistory({
  * @returns {Promise<{ok: boolean, file?: string, reason?: string}>}
  */
 export async function repositoryDumpCfg({
-  platform, contextBase, dir, workDir, user, password, version = null,
+  platform, contextBase, dir, workDir, user, password, version = null, extension = '',
 }) {
   const out = await ensureDir(path.join(workDir, 'repo'));
-  const cfFile = path.join(out, `${safeName(dir)}.cf`);
+  const cfFile = path.join(out, `${safeName(dir)}${extension ? '.cfe' : '.cf'}`);
   const logFile = path.join(out, `dump-${safeName(dir)}.log`);
   await rmrf(cfFile).catch(() => {});
 
@@ -188,6 +257,7 @@ export async function repositoryDumpCfg({
       ...repositoryArgs({ dir, user, password }),
       '/ConfigurationRepositoryDumpCfg', cfFile,
       ...(version ? ['-v', String(version)] : []),
+      ...extensionArgs(extension),
       '/DisableStartupDialogs', '/DisableStartupMessages',
       '/Out', logFile,
     ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
@@ -206,6 +276,41 @@ export async function repositoryDumpCfg({
     };
   }
   return { ok: true, file: cfFile };
+}
+
+/**
+ * Разворачивает `.cfe` расширения в XML через базу-контекст.
+ *
+ * Для основной конфигурации это делает `analyze/vendorConfig.js` своей временной
+ * базой и ibcmd, но расширение так не развернуть: ibcmd умеет создать базу
+ * из `.cf`, а `.cfe` — это расширение, живущее внутри базы под своим именем.
+ * Поэтому расширение загружается в ту же заглушку базы-контекста и оттуда
+ * выгружается в файлы. Проверено 12.08.2026: `/LoadCfg … -Extension` и
+ * `/DumpConfigToFiles … -Extension` проходят с кодом 0, в каталоге появляется
+ * обычный XML с `Configuration.xml` — тот же формат, что у основной.
+ *
+ * @returns {Promise<{ok: boolean, dir?: string, reason?: string}>}
+ */
+export async function expandExtensionCf({
+  platform, contextBase, cfFile, workDir, name, extension,
+}) {
+  const outDir = path.join(workDir, name);
+  const conn = parseConnection(contextBase);
+  await rmrf(outDir).catch(() => {});
+  try {
+    await loadCfg({
+      platform, conn, cfFile, extension,
+      logFile: path.join(workDir, 'repo', `loadcfe-${safeName(name)}.log`),
+    });
+    await dumpConfigToFiles({
+      platform, conn, outDir, extension,
+      logFile: path.join(workDir, 'repo', `dumpcfe-${safeName(name)}.log`),
+    });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    return { ok: false, reason: err.message };
+  }
+  return { ok: true, dir: outDir };
 }
 
 // --- Разбор отчёта -----------------------------------------------------------

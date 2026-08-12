@@ -156,6 +156,55 @@ export async function loadConfigFromFiles({
 }
 
 /**
+ * Загружает конфигурацию из файла `.cf` (или расширение из `.cfe`).
+ *
+ * Нужно там, где исходников в XML нет, а есть двоичная поставка: так забирается
+ * конфигурация расширения, выгруженная из хранилища расширений. Для основной
+ * конфигурации быстрее ibcmd (`infobase create --load=`), но расширение он так
+ * не принимает — у расширения обязательно имя, и оно живёт внутри базы.
+ */
+export async function loadCfg({
+  platform, conn, cfFile, extension = '', user, password, logFile,
+}) {
+  const logPath = logFile || path.join(path.dirname(cfFile), `designer-loadcfg-${Date.now()}.log`);
+  const args = [
+    'DESIGNER',
+    ...toClientArgs(conn),
+    ...authArgs({ user, password }),
+    '/LoadCfg', cfFile,
+    ...(extension ? ['-Extension', extension] : []),
+    ...COMMON_FLAGS,
+    '/Out', logPath,
+  ];
+
+  log.info(`Загрузка конфигурации из файла ${cfFile}`, { extension });
+  let procResult;
+  try {
+    procResult = await run(platform.client, args, {
+      timeout: TIMEOUTS.configExport,
+      allowNonZeroExit: true,
+    });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    const designerLog = await readLogSafe(logPath);
+    throw new ProcessError(
+      `Конфигуратор не смог загрузить ${path.basename(cfFile)}: ${err.message}`
+      + (designerLog ? `\n${designerLog}` : ''),
+      { code: err.code, stdout: err.stdout, stderr: err.stderr, command: platform.client },
+    );
+  }
+
+  const designerLog = await readLogSafe(logPath);
+  if (procResult.code !== 0 || /ошибк|error/i.test(designerLog)) {
+    throw new Error(
+      `Загрузка ${path.basename(cfFile)} не удалась.`
+      + (designerLog ? ` Журнал конфигуратора:\n${designerLog}` : ` Код возврата: ${procResult.code}.`),
+    );
+  }
+  return { log: designerLog };
+}
+
+/**
  * Собирает .epf из XML-исходников (используется для служебной обработки сбора данных).
  * Доступно с 8.3.9.
  */
