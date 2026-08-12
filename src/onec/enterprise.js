@@ -69,7 +69,25 @@ const RU_NAMES = {
   description: 'Описание',
   end: 'Конец',
   stringFn: 'Строка',
+  dataProcessors: 'Обработки',
+  forms: 'Формы',
+  fullName: 'ПолноеИмя',
+  synonym: 'Синоним',
 };
+
+/**
+ * Как узнать в метаданных форму результатов обновления.
+ *
+ * Имя формы не зашито: в базе его читает мост, и оттуда же берётся полное имя
+ * для навигационной ссылки. В БСП это `Обработка.РезультатыОбновленияПрограммы`,
+ * форма `РезультатыОбновленияПрограммы` — та самая, что открывается из
+ * «Администрирование → Обслуживание → Результаты обновления и дополнительная
+ * обработка данных». Ищем по образцу, потому что имя объекта у отраслевых
+ * решений и у англоязычных метаданных отличается.
+ */
+const FORM_PATTERN = 'РезультатыОбновления|UpdateResult';
+
+const WINDOW_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'window-titles.ps1');
 
 /**
  * Как узнать регламентное задание отложенного обновления.
@@ -195,13 +213,127 @@ async function probeConnection({ platform, conn, user, password, workDir }) {
 }
 
 /**
+ * Разбор строки, которую печатает мост.
+ *
+ * Мост сообщает три вещи: найденную форму результатов обновления, момент
+ * запуска задания и ход ожидания. Разбор вынесен отдельной функцией, потому
+ * что именно на нём держится момент открытия формы: ошибись здесь — и форма
+ * откроется не тогда, когда нужно, или не откроется вовсе.
+ *
+ * @returns {{kind: 'form', full: string, title: string}
+ *          |{kind: 'started', uuid: string}
+ *          |{kind: 'progress', seconds: number, state: string}
+ *          |null}
+ */
+export function parseBridgeLine(line) {
+  const text = String(line ?? '').trim();
+
+  const progress = /^PROGRESS\|(\d+)\|(.*)$/.exec(text);
+  if (progress) return { kind: 'progress', seconds: Number(progress[1]), state: progress[2] };
+
+  const started = /^STARTED\|(.*)$/.exec(text);
+  if (started) return { kind: 'started', uuid: started[1] };
+
+  // В синониме формы могут быть любые символы, кроме перевода строки, поэтому
+  // разбираем по первым двум разделителям, а остаток считаем заголовком.
+  const form = /^FORM\|([^|]*)\|(.*)$/.exec(text);
+  if (form && form[1]) return { kind: 'form', full: form[1], title: form[2] };
+
+  return null;
+}
+
+/** Навигационная ссылка на форму по её полному имени из метаданных. */
+export function navigationLink(fullName) {
+  return `e1cib/app/${String(fullName).trim()}`;
+}
+
+/**
+ * Открывает форму результатов обновления и проверяет, что окно появилось.
+ *
+ * Открывается вторым сеансом 1С с ключом `/URL` и навигационной ссылкой:
+ * ключ проверен на 8.5.1.1150 — клиент запускается, входит в базу и открывает
+ * ровно ту форму, что указана в ссылке. Первый сеанс не трогаем: в нём человек
+ * может уже работать, а «вставить» команду в чужой запущенный клиент нечем.
+ *
+ * Успех не объявляется по факту запуска процесса: программа ждёт окно с
+ * заголовком, равным синониму формы. Не дождались — так и говорим.
+ *
+ * @returns {Promise<{opened: boolean, link: string, title: string,
+ *                    pid: number|null, seconds: number, reason?: string}>}
+ */
+export async function openResultsForm({
+  platform, conn, user, password, workDir, form, budgetMs = 3 * 60_000, pollMs = 5_000,
+}) {
+  const link = navigationLink(form.full);
+  const title = String(form.title || '').trim();
+  const startedAt = Date.now();
+
+  let pid = null;
+  try {
+    ({ pid } = launchEnterprise({
+      platform, conn, user, password, extraArgs: ['/URL', link],
+    }));
+  } catch (err) {
+    return { opened: false, link, title, pid: null, seconds: 0, reason: err.message };
+  }
+
+  if (!title) {
+    return {
+      opened: false, link, title, pid,
+      seconds: Math.round((Date.now() - startedAt) / 1000),
+      reason: 'у формы нет синонима — проверить открытие нечем',
+    };
+  }
+
+  while (Date.now() - startedAt < budgetMs) {
+    throwIfCancelled();
+    await sleep(pollMs);
+    const titles = await windowTitles({ processId: pid, workDir });
+    if (titles.some((t) => t.toLowerCase().includes(title.toLowerCase()))) {
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      log.info(`Форма «${title}» открыта через ${seconds} с`);
+      return { opened: true, link, title, pid, seconds };
+    }
+  }
+
+  return {
+    opened: false, link, title, pid,
+    seconds: Math.round((Date.now() - startedAt) / 1000),
+    reason: `окно «${title}» не появилось за отведённое время`,
+  };
+}
+
+/** Заголовки видимых окон процесса — через отдельный скрипт на WinAPI. */
+async function windowTitles({ processId, workDir }) {
+  if (!processId) return [];
+  const dir = await ensureDir(path.join(workDir, 'handlers'));
+  const outputFile = path.join(dir, `windows-${processId}.json`);
+  try {
+    await runPowerShell(WINDOW_SCRIPT, ['-ProcessId', String(processId), '-OutputFile', outputFile], {
+      timeout: 60_000,
+      allowNonZeroExit: true,
+    });
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    log.warn(`Не удалось прочитать заголовки окон: ${err.message}`);
+    return [];
+  }
+  const output = await readJson(outputFile);
+  return Array.isArray(output?.titles) ? output.titles.map(String) : [];
+}
+
+/**
  * Запускает отложенное обновление фоновым заданием и ждёт его завершения.
+ *
+ * `onStarted` вызывается ровно в тот момент, когда задание запущено, — по нему
+ * конвейер открывает форму результатов обновления, чтобы человек видел ход
+ * отложенных обработчиков с самого начала, а не по факту.
  *
  * @returns {Promise<{ok: boolean, finished: boolean, job?: object,
  *                    background?: object, jobNames?: string[], reason?: string}>}
  */
 export async function runDeferredUpdate({
-  platform, conn, user, password, workDir, budgetMs = 60 * 60_000, onProgress,
+  platform, conn, user, password, workDir, budgetMs = 60 * 60_000, onProgress, onStarted,
 }) {
   const dir = await ensureDir(path.join(workDir, 'handlers'));
   const inputFile = path.join(dir, 'deferred-input.json');
@@ -213,11 +345,16 @@ export async function runDeferredUpdate({
     progId: comConnectorProgId(platform.version),
     connectionString: toComConnectionString(conn, { user, password }),
     jobNamePattern: JOB_PATTERN,
+    formNamePattern: FORM_PATTERN,
     jobTitle: 'Отложенное обновление (запущено из «1С: AI инструменты»)',
     budgetSeconds: Math.floor(budgetMs / 1000),
     pollSeconds: 10,
     names: RU_NAMES,
   });
+
+  // Мост сообщает найденную форму раньше, чем запуск задания, — запоминаем её,
+  // чтобы в момент старта было чем открыть окно.
+  let foundForm = null;
 
   log.info('Запуск отложенного обновления фоновым заданием');
   try {
@@ -227,8 +364,13 @@ export async function runDeferredUpdate({
       allowNonZeroExit: true,
       onStdout: (chunk) => {
         for (const line of String(chunk).split(/\r?\n/)) {
-          const m = /^PROGRESS\|(\d+)\|(.*)$/.exec(line.trim());
-          if (m) onProgress?.(Number(m[1]), m[2]);
+          const event = parseBridgeLine(line);
+          if (!event) continue;
+          if (event.kind === 'progress') onProgress?.(event.seconds, event.state);
+          if (event.kind === 'form') foundForm = { full: event.full, title: event.title };
+          // Форму открываем в момент старта задания, а не после ожидания:
+          // ждать здесь нельзя, поэтому вызов не блокирует разбор вывода.
+          if (event.kind === 'started') onStarted?.(foundForm);
         }
       },
     });
@@ -259,6 +401,7 @@ export async function runDeferredUpdate({
     finished: output.finished === true,
     job: output.job,
     background: output.background,
+    form: output.form || foundForm,
     jobNames: output.jobNames || [],
   };
 }

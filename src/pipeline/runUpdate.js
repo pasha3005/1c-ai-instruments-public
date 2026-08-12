@@ -50,7 +50,9 @@ import {
 } from '../analyze/vendorConfig.js';
 import { findVendorRelease } from '../onec/templates.js';
 import { vendorConfigPresence } from '../onec/vendorCompare.js';
-import { launchEnterprise, waitExclusiveReleased, runDeferredUpdate } from '../onec/enterprise.js';
+import {
+  launchEnterprise, waitExclusiveReleased, runDeferredUpdate, openResultsForm,
+} from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
@@ -523,10 +525,24 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
 
   // Отложенные: тем же методом, что стоит у регламентного задания.
   progress.update('handlers', 'запуск отложенного обновления фоновым заданием');
+
+  // Форма результатов обновления открывается в момент запуска задания, а не
+  // после ожидания: смысл в том, чтобы человек видел ход отложенных
+  // обработчиков с начала. Открытие идёт своим ходом, пока конвейер ждёт
+  // задание, а результат забираем ниже — обещать «открыл» до проверки нельзя.
+  let formOpening = null;
   const deferred = await runDeferredUpdate({
     platform, conn, user: input.user, password: input.password, workDir: workRoot,
     onProgress: (seconds, state) => progress.update('handlers',
       `отложенное обновление: ${state || 'выполняется'}, ${seconds} с`),
+    onStarted: (form) => {
+      if (!form || formOpening) return;
+      formOpening = openResultsForm({
+        platform, conn, user: input.user, password: input.password, workDir: workRoot, form,
+      }).catch((err) => ({
+        opened: false, title: form.title || '', reason: err.message,
+      }));
+    },
   });
   handlers.deferred = deferred;
 
@@ -544,6 +560,11 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
     return;
   }
 
+  handlers.form = formOpening
+    ? await formOpening
+    : { opened: false, reason: 'форма результатов обновления в метаданных базы не найдена' };
+  reportForm(progress, handlers.form);
+
   if (deferred.finished) {
     const nothingPending = deferred.job?.useBefore === false;
     progress.done('handlers', nothingPending
@@ -555,9 +576,7 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
           + 'обновления выключено и до запуска, и после. Монопольные обработчики отработали, '
           + 'обновление закончено.'
         : 'Отложенное обновление завершено: регламентное задание больше не включено — значит '
-          + 'необработанных отложенных обработчиков не осталось. Форму их просмотра открывать '
-          + 'уже не за чем, но она в «Администрирование → Обслуживание → Обновление '
-          + 'информационной базы».',
+          + 'необработанных отложенных обработчиков не осталось.',
     );
     return;
   }
@@ -570,8 +589,11 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
     progress.message(
       `Отложенное обновление запущено и продолжает работу (состояние: `
       + `${deferred.background?.state || 'выполняется'}). Отведённое время ожидания вышло — `
-      + 'задание от этого не остановилось и доработает само. Следить за ним в 1С: '
-      + '«Администрирование → Обслуживание → Обновление информационной базы».',
+      + 'задание от этого не остановилось и доработает само. '
+      + (handlers.form?.opened
+        ? `Следите за ним в открытой форме «${handlers.form.title}».`
+        : 'Следить за ним в 1С: «Администрирование → Обслуживание → Обновление '
+          + 'информационной базы».'),
       'warn',
     );
     return;
@@ -584,8 +606,35 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
     `Отложенное обновление отработало (состояние задания: ${deferred.background?.state || '?'}`
     + `${deferred.background?.error ? `, ошибка: ${deferred.background.error}` : ''}), но `
     + 'регламентное задание осталось включённым — часть отложенных обработчиков ещё не выполнена. '
-    + 'БСП обрабатывает их порциями: откройте в 1С «Администрирование → Обслуживание → Обновление '
-    + 'информационной базы» и следите за ходом там; задание продолжит работу само.',
+    + 'БСП обрабатывает их порциями, задание продолжит работу само. '
+    + (handlers.form?.opened
+      ? `Ход виден в открытой форме «${handlers.form.title}».`
+      : 'Следите за ходом в 1С: «Администрирование → Обслуживание → Обновление '
+        + 'информационной базы».'),
+    'warn',
+  );
+}
+
+/**
+ * Сообщение о форме результатов обновления.
+ *
+ * Разделено на «открыл» и «не открыл» намеренно: сказать «форма открыта», не
+ * дождавшись окна, значит соврать — а проверка открытия у нас как раз есть.
+ */
+function reportForm(progress, form) {
+  if (form?.opened) {
+    progress.message(
+      `Открыл форму «${form.title}» — в ней виден ход отложенных обработчиков. Форма открыта `
+      + 'вторым окном 1С и остаётся открытой: закрывать её не нужно, пока обработчики идут. '
+      + 'В интерфейсе она же — «Администрирование → Обслуживание → Результаты обновления и '
+      + 'дополнительная обработка данных».',
+    );
+    return;
+  }
+  progress.message(
+    `Форму результатов обновления открыть не удалось: ${form?.reason || 'причина неизвестна'}. `
+    + 'Откройте её сами: «Администрирование → Обслуживание → Результаты обновления и '
+    + 'дополнительная обработка данных» — в ней виден ход отложенных обработчиков.',
     'warn',
   );
 }

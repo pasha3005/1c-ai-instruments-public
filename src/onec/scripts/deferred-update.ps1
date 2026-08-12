@@ -10,9 +10,11 @@
     Chto delaet:
       1. podklyuchaetsya k baze;
       2. ishchet reglamentnoe zadanie otlozhennogo obnovleniya IB (BSP);
-      3. zapuskaet ego metod fonovym zadaniem;
-      4. zhdet zaversheniya, pechataya progress;
-      5. otdaet sostoyanie zadaniya i priznak "Ispolzovanie" reglamentnogo
+      3. ishchet v metadannyh formu rezultatov obnovleniya i otdaet ee polnoe
+         imya - iz nego Node stroit navigatsionnuyu ssylku e1cib/app/...;
+      4. zapuskaet ego metod fonovym zadaniem;
+      5. zhdet zaversheniya, pechataya progress;
+      6. otdaet sostoyanie zadaniya i priznak "Ispolzovanie" reglamentnogo
          zadaniya: BSP gasit ego, kogda otlozhennyh obrabotchikov ne ostalos.
 
     Konfiguratsiyu skript NE menyaet: tolko zapusk zadaniya i chtenie sostoyaniya.
@@ -28,9 +30,13 @@
 
     Vyhod (JSON, UTF-8):
       { "ok": true, "job": {...}, "background": {...}, "finished": true,
+        "form": { "full": "...", "title": "..." },
         "jobNames": [...], "errors": [...] }
 
-    Progress v stdout strokami: PROGRESS|<seconds>|<state>
+    Stroki v stdout:
+      FORM|<polnoe imya formy>|<sinonim>   - do zapuska zadaniya
+      STARTED|<uuid>                       - zadanie zapushcheno
+      PROGRESS|<seconds>|<state>           - hod ozhidaniya
 #>
 
 param(
@@ -120,7 +126,7 @@ $cfg = Get-Content -LiteralPath $InputFile -Raw -Encoding UTF8 | ConvertFrom-Jso
 $n = $cfg.names
 $result = [ordered]@{
     ok = $false; job = $null; background = $null; finished = $false
-    jobNames = @(); errors = @()
+    form = $null; jobNames = @(); errors = @()
 }
 
 if ($cfg.binDir -and (Test-Path $cfg.binDir)) { $env:PATH = "$($cfg.binDir);$env:PATH" }
@@ -219,6 +225,49 @@ if ([string]::IsNullOrWhiteSpace($target.methodName)) {
     exit 1
 }
 
+# --- Forma rezultatov obnovleniya -------------------------------------------
+# Imya formy NE zashito: ono chitaetsya iz metadannyh toy zhe bazy. Polnoe imya
+# (PolnoeImya) platforma otdaet uzhe v tom vide, kotoryy nuzhen navigatsionnoy
+# ssylke: "Obrabotka.X.Forma.Y" - dostroit ostaetsya tolko prefiks e1cib/app/.
+# Sinonim - eto zagolovok okna, po nemu Node proveryaet, chto forma otkrylas.
+function Find-ResultsForm($meta, [string]$pattern) {
+    $group = Get-Any $meta @('DataProcessors', $n.dataProcessors)
+    if ($null -eq $group) { return $null }
+    foreach ($obj in (Get-Items $group $n.get $n.count)) {
+        if ($null -eq $obj) { continue }
+        $objName = [string](Get-Any $obj @('Name', $n.name))
+        if ($objName -notmatch $pattern) { continue }
+        $forms = Get-Items (Get-Any $obj @('Forms', $n.forms)) $n.get $n.count
+        $chosen = $null
+        foreach ($f in $forms) {
+            if ($null -eq $f) { continue }
+            if ([string](Get-Any $f @('Name', $n.name)) -match $pattern) { $chosen = $f; break }
+        }
+        if ($null -eq $chosen -and @($forms).Count -gt 0) { $chosen = @($forms)[0] }
+        if ($null -eq $chosen) { continue }
+        return [ordered]@{
+            full  = [string](Invoke-Any $chosen @('FullName', $n.fullName) @())
+            title = [string](Get-Any $chosen @('Synonym', $n.synonym))
+        }
+    }
+    return $null
+}
+
+if ($cfg.formNamePattern) {
+    try {
+        $meta = Get-Any $conn @('Metadata', $n.metadata)
+        $form = Find-ResultsForm $meta $cfg.formNamePattern
+        if ($null -ne $form -and -not [string]::IsNullOrWhiteSpace($form.full)) {
+            $result.form = $form
+            Write-Output "FORM|$($form.full)|$($form.title)"
+        } else {
+            [void]$errors.Add('Forma rezultatov obnovleniya v metadannyh bazy ne naydena')
+        }
+    } catch {
+        [void]$errors.Add("Poisk formy rezultatov obnovleniya: $($_.Exception.Message)")
+    }
+}
+
 # --- Zapusk fonovym zadaniem ------------------------------------------------
 $backgroundManager = Get-Any $conn @('BackgroundJobs', $n.backgroundJobs)
 if ($null -eq $backgroundManager) {
@@ -234,13 +283,17 @@ if ($null -eq $background) {
     exit 1
 }
 
+# Zadanie zapushcheno - Node po etoy stroke srazu otkryvaet formu rezultatov
+# obnovleniya, chtoby chelovek videl hod otlozhennyh obrabotchikov s nachala.
+$uuid = Get-Any $background @('UUID', $n.uuid)
+Write-Output "STARTED|$uuid"
+
 # --- Ozhidanie --------------------------------------------------------------
 $deadline = (Get-Date).AddSeconds([int]$cfg.budgetSeconds)
 $poll = [int]$cfg.pollSeconds
 if ($poll -lt 2) { $poll = 5 }
 $startedAt = Get-Date
 $state = ''
-$uuid = Get-Any $background @('UUID', $n.uuid)
 
 # Sostoyanie zadaniya - perechislenie, i cherez COM ego strokovoe predstavlenie
 # ravno "System.__ComObject": sravnivat s nim nechego. Poymano na zhivoy proverke -

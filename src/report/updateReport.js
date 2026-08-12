@@ -754,6 +754,9 @@ function handlersRow(result) {
   const details = [
     h.exclusiveSeconds != null ? `монопольные: ${formatNumber(h.exclusiveSeconds)} с` : '',
     h.deferred?.job?.name ? `задание «${h.deferred.job.name}»` : '',
+    // Открытая форма — не украшение: пока отложенные обработчики идут, только
+    // в ней и видно, сколько их осталось.
+    formNote(h.form),
   ].filter(Boolean).join(', ');
 
   return `
@@ -761,6 +764,13 @@ function handlersRow(result) {
           <td>Обработчики обновления${details ? `<br><span class="muted">${esc(details)}</span>` : ''}</td>
           <td>${verdict}</td>
         </tr>`;
+}
+
+/** Открылась ли форма результатов обновления — коротко, для строки отчёта. */
+function formNote(form) {
+  if (!form) return '';
+  if (form.opened) return `открыта форма «${form.title || 'результаты обновления'}»`;
+  return `форма не открыта: ${form.reason || 'причина неизвестна'}`;
 }
 
 function extensionsVerdict(extensions) {
