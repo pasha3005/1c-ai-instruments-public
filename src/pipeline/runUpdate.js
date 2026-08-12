@@ -50,6 +50,7 @@ import {
 } from '../analyze/vendorConfig.js';
 import { findVendorRelease } from '../onec/templates.js';
 import { vendorConfigPresence } from '../onec/vendorCompare.js';
+import { launchEnterprise, waitExclusiveReleased, runDeferredUpdate } from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
@@ -337,7 +338,7 @@ async function runTypical({
 
   if (!answer?.ok) {
     progress.skip('confirm', 'обновление отложено');
-    for (const id of ['update-cfg', 'load', 'db-update', 'check']) progress.skip(id, 'не выполнялось');
+    for (const id of ['update-cfg', 'load', 'db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
     progress.message('Обновление не выполнялось: вы отложили запись в базу.');
   } else {
     progress.done('confirm', 'разрешено пользователем');
@@ -409,7 +410,7 @@ async function applyTypical({
     result.loadError = upd.reason;
     await store.updateMeta(updateId, { loadError: upd.reason });
     progress.warn('update-cfg', 'не выполнено');
-    for (const id of ['db-update', 'check']) progress.skip(id, 'обновление не выполнено');
+    for (const id of ['db-update', 'check', 'handlers']) progress.skip(id, 'обновление не выполнено');
     progress.message(
       `Платформа обновление не выполнила: ${upd.reason}. База не изменена.`
       + ' Если конфигурация снята с поддержки, типовое обновление невозможно —'
@@ -453,6 +454,140 @@ async function applyTypical({
     platform, conn, input, workRoot, mergedDir: '', progress, typical: true,
   });
   reportChecks(progress, result.checks);
+
+  await runUpdateHandlers({ platform, conn, input, workRoot, progress, result });
+}
+
+/**
+ * Обработчики обновления: монопольные — самой платформой, отложенные — заданием.
+ *
+ * Шаг общий для обоих путей обновления и идёт последним: обработчики выполняются
+ * при первом входе в базу после смены версии конфигурации, то есть уже после
+ * `/UpdateDBCfg`.
+ *
+ * Конфигурацию здесь не меняем — этого и не требуется: 1С запускается в режиме
+ * предприятия, и монопольные обработчики отрабатывают сами. Наша работа —
+ * дождаться их, запустить отложенные и не соврать о результате.
+ */
+async function runUpdateHandlers({ platform, conn, input, workRoot, progress, result }) {
+  startWrite(progress, 'handlers', 'Запуск 1С в режиме предприятия');
+
+  const handlers = { launched: false, exclusiveSeconds: null, deferred: null };
+  result.handlers = handlers;
+
+  try {
+    const { pid } = launchEnterprise({
+      platform, conn, user: input.user, password: input.password,
+    });
+    handlers.launched = true;
+    handlers.pid = pid;
+    progress.message(
+      'Запущена 1С в режиме предприятия. Монопольные обработчики обновления платформа '
+      + 'выполняет сама при первом входе в базу; окно остаётся открытым — работайте в нём. '
+      + 'Программа ждёт, пока монопольная часть закончится, и после этого сама запустит '
+      + 'отложенное обновление.',
+    );
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    handlers.error = err.message;
+    progress.warn('handlers', `1С не запущена: ${err.message}`);
+    progress.message(
+      `Не удалось запустить 1С в режиме предприятия: ${err.message}. Обработчики обновления `
+      + 'выполнятся при первом входе в базу — войдите в неё сами, затем запустите отложенное '
+      + 'обновление из «Администрирование → Обслуживание».',
+      'warn',
+    );
+    return;
+  }
+
+  // Монопольная часть: пока она идёт, база занята и внешнее соединение не встаёт.
+  progress.update('handlers', 'ожидание монопольных обработчиков обновления');
+  const exclusive = await waitExclusiveReleased({
+    platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    onProgress: (text) => progress.update('handlers', text),
+  });
+  handlers.exclusiveSeconds = exclusive.seconds;
+
+  if (!exclusive.ok) {
+    handlers.error = exclusive.reason;
+    progress.warn('handlers', `монопольная часть не завершилась за ${exclusive.seconds} с`);
+    progress.message(
+      `База так и не освободилась за ${Math.round(exclusive.seconds / 60)} мин: ${exclusive.reason}. `
+      + 'Отложенное обновление не запускалось — сделайте это вручную, когда монопольные '
+      + 'обработчики закончатся.',
+      'warn',
+    );
+    return;
+  }
+  progress.message(`Монопольные обработчики обновления отработали за ${exclusive.seconds} с.`);
+
+  // Отложенные: тем же методом, что стоит у регламентного задания.
+  progress.update('handlers', 'запуск отложенного обновления фоновым заданием');
+  const deferred = await runDeferredUpdate({
+    platform, conn, user: input.user, password: input.password, workDir: workRoot,
+    onProgress: (seconds, state) => progress.update('handlers',
+      `отложенное обновление: ${state || 'выполняется'}, ${seconds} с`),
+  });
+  handlers.deferred = deferred;
+
+  if (!deferred.ok) {
+    progress.warn('handlers', 'отложенное обновление не запущено');
+    progress.message(
+      `Отложенное обновление запустить не удалось: ${deferred.reason}. Запустите регламентное `
+      + 'задание отложенного обновления вручную: «Администрирование → Обслуживание → '
+      + 'Обновление информационной базы».'
+      + (deferred.jobNames?.length
+        ? ` Регламентные задания в базе: ${deferred.jobNames.slice(0, 12).join(', ')}.`
+        : ''),
+      'warn',
+    );
+    return;
+  }
+
+  if (deferred.finished) {
+    const nothingPending = deferred.job?.useBefore === false;
+    progress.done('handlers', nothingPending
+      ? 'обработчики выполнены, отложенных не было'
+      : 'обработчики обновления выполнены');
+    progress.message(
+      nothingPending
+        ? 'Отложенных обработчиков в этой базе не было: регламентное задание отложенного '
+          + 'обновления выключено и до запуска, и после. Монопольные обработчики отработали, '
+          + 'обновление закончено.'
+        : 'Отложенное обновление завершено: регламентное задание больше не включено — значит '
+          + 'необработанных отложенных обработчиков не осталось. Форму их просмотра открывать '
+          + 'уже не за чем, но она в «Администрирование → Обслуживание → Обновление '
+          + 'информационной базы».',
+    );
+    return;
+  }
+
+  // Не дождались: задание ещё работает. Выдавать это за выполнение нельзя —
+  // на живой проверке задание шло 8 минут и не закончилось, а результат
+  // говорил «выполнено».
+  if (deferred.background?.stillRunning) {
+    progress.warn('handlers', 'отложенное обновление ещё идёт');
+    progress.message(
+      `Отложенное обновление запущено и продолжает работу (состояние: `
+      + `${deferred.background?.state || 'выполняется'}). Отведённое время ожидания вышло — `
+      + 'задание от этого не остановилось и доработает само. Следить за ним в 1С: '
+      + '«Администрирование → Обслуживание → Обновление информационной базы».',
+      'warn',
+    );
+    return;
+  }
+
+  // Задание закончилось, но обработчики остались: БСП обрабатывает их порциями
+  // и оставляет регламентное задание включённым до полного завершения.
+  progress.warn('handlers', 'отложенные обработчики выполнены не полностью');
+  progress.message(
+    `Отложенное обновление отработало (состояние задания: ${deferred.background?.state || '?'}`
+    + `${deferred.background?.error ? `, ошибка: ${deferred.background.error}` : ''}), но `
+    + 'регламентное задание осталось включённым — часть отложенных обработчиков ещё не выполнена. '
+    + 'БСП обрабатывает их порциями: откройте в 1С «Администрирование → Обслуживание → Обновление '
+    + 'информационной базы» и следите за ходом там; задание продолжит работу само.',
+    'warn',
+  );
 }
 
 /** Сколько всего замечаний нашла платформа и как это показать на шкале. */
@@ -613,7 +748,7 @@ async function applyToBase({
 
   if (!answer?.ok) {
     progress.skip('confirm', 'загрузка отложена');
-    for (const id of ['load', 'db-update', 'check']) progress.skip(id, 'не выполнялось');
+    for (const id of ['load', 'db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
     progress.message(
       'Результат объединения записан в файлы выгрузки. Загрузить его в конфигурацию можно '
       + 'кнопкой «Загрузить в конфигурацию» — после того как вы разберёте места, '
@@ -626,7 +761,7 @@ async function applyToBase({
 
   if ((result.warnings || []).some(isBlockingWarning)) {
     progress.warn('load', 'загрузка отменена: конфигурации не совпадают');
-    for (const id of ['db-update', 'check']) progress.skip(id, 'не выполнялось');
+    for (const id of ['db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
     progress.message(
       'Загрузка отменена: имя целевой конфигурации не совпадает с именем основной. '
       + 'Проверьте, тот ли файл .cf указан.',
@@ -648,7 +783,7 @@ async function applyToBase({
     result.loadError = err.message;
     await store.updateMeta(updateId, { loadError: err.message });
     progress.warn('load', `не удалось: ${err.message}`);
-    for (const id of ['db-update', 'check']) progress.skip(id, 'загрузка не выполнена');
+    for (const id of ['db-update', 'check', 'handlers']) progress.skip(id, 'загрузка не выполнена');
     progress.message(`Загрузка в конфигурацию не выполнена: ${err.message}`, 'warn');
     return;
   }
@@ -680,6 +815,8 @@ async function applyToBase({
     platform, conn, input, workRoot, mergedDir: result.mergedDir, progress,
   });
   reportChecks(progress, result.checks);
+
+  await runUpdateHandlers({ platform, conn, input, workRoot, progress, result });
 }
 
 function startWrite(progress, id, detail) {

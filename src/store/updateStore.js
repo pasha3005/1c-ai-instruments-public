@@ -156,6 +156,8 @@ function buildSummary(result) {
     mergedDir: result?.mergedDir || '',
     loaded: Boolean(result?.loaded),
     dbUpdated: Boolean(result?.dbUpdated),
+    // Обработчики обновления: главное — дошли ли до них и всё ли доделано.
+    handlersDone: result?.handlers ? result.handlers.deferred?.finished === true : null,
     checkErrors: (result?.checks?.config?.errors?.length ?? 0)
       + (result?.checks?.extensionsSyntax?.errors?.length ?? 0)
       + (result?.checks?.extensions?.errors?.length ?? 0),

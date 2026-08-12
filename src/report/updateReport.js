@@ -702,6 +702,7 @@ function renderChecks(result) {
           <td>Применимость расширений</td>
           <td>${extensionsVerdict(extensions)}</td>
         </tr>
+        ${handlersRow(result)}
       </tbody>
     </table>
   </div>
@@ -718,8 +719,48 @@ function renderChecks(result) {
     ${checks.manual.map((item) => `<div>${esc(fixLine(item))}</div>`).join('')}
   </div>` : ''}
 
-  ${renderCheckErrors('Синтаксический контроль', config.errors)}
+  ${renderCheckErrors('Синтаксический контроль конфигурации', config?.errors)}
+  ${renderCheckErrors('Синтаксический контроль расширений', extensionsSyntax?.errors)}
   ${renderCheckErrors('Применимость расширений', extensions.errors)}`;
+}
+
+/**
+ * Строка про обработчики обновления.
+ *
+ * Их не выполняет ни загрузка, ни обновление конфигурации базы данных:
+ * монопольные платформа отрабатывает при первом входе в базу, отложенные идут
+ * фоновым заданием. Читателю отчёта важно знать, дошло ли дело до них и всё ли
+ * доделано, — потому что до конца отложенного обновления база работает
+ * не в полном объёме.
+ */
+function handlersRow(result) {
+  const h = result.handlers;
+  if (!h) return '';
+
+  let verdict;
+  if (!h.launched) {
+    verdict = `<b class="bad">1С не запущена</b>${h.error ? ` — ${esc(h.error)}` : ''}`;
+  } else if (h.deferred?.finished) {
+    verdict = '<b class="ok">выполнены, отложенных не осталось</b>';
+  } else if (h.deferred?.ok) {
+    verdict = '<b class="warn">отложенные выполнены не полностью</b>'
+      + `${h.deferred.background?.state ? ` — задание: ${esc(h.deferred.background.state)}` : ''}`;
+  } else if (h.deferred) {
+    verdict = `<b class="bad">отложенное обновление не запущено</b> — ${esc(h.deferred.reason || '')}`;
+  } else {
+    verdict = `<b class="warn">монопольная часть не дождалась завершения</b>${h.error ? ` — ${esc(h.error)}` : ''}`;
+  }
+
+  const details = [
+    h.exclusiveSeconds != null ? `монопольные: ${formatNumber(h.exclusiveSeconds)} с` : '',
+    h.deferred?.job?.name ? `задание «${h.deferred.job.name}»` : '',
+  ].filter(Boolean).join(', ');
+
+  return `
+        <tr>
+          <td>Обработчики обновления${details ? `<br><span class="muted">${esc(details)}</span>` : ''}</td>
+          <td>${verdict}</td>
+        </tr>`;
 }
 
 function extensionsVerdict(extensions) {
