@@ -157,7 +157,7 @@ function buildSummary(result) {
     loaded: Boolean(result?.loaded),
     dbUpdated: Boolean(result?.dbUpdated),
     // Обработчики обновления: главное — дошли ли до них и всё ли доделано.
-    handlersDone: result?.handlers ? result.handlers.deferred?.finished === true : null,
+    handlersDone: result?.handlers ? result.handlers.deferredStatus === '' : null,
     // Открылась ли форма результатов обновления: если нет, человек следил за
     // отложенными обработчиками сам — это стоит помнить о прогоне.
     formOpened: result?.handlers?.form ? result.handlers.form.opened === true : null,

@@ -9,30 +9,42 @@
  * выполнятся, самому запустить фоновое задание для выполнения отложенных
  * обработчиков обновления, модификации в базу вносить никакие не нужно».
  *
- * Отсюда четыре части, и ни одна из них не меняет конфигурацию:
+ * **Всё происходит в ОДНОМ сеансе 1С** — прямое требование пользователя
+ * (12.08.2026): «Я хочу, чтобы ты всё обновление сделал в одном окне 1С
+ * в режиме предприятия, последовательно». Прежде программа открывала второй
+ * сеанс ради формы результатов, и это была ошибка: ключ `/URL` можно передать
+ * тому же первому запуску, а отложенные обработчики умеет выполнить в этом же
+ * сеансе сама БСП.
  *
- *  1. **Подтверждение легальности получения обновления — до запуска клиента.**
- *     БСП не начинает обработчики обновления, пока человек не подтвердит
- *     легальность в форме «Легальность получения обновлений». Программа
- *     подтверждает это сама — процедурой самой БСП, той же, что вызывает
- *     кнопка «Продолжить» на этой форме (`confirmUpdateLegality`).
- *  2. **Клиент запускается и остаётся работать.** Монопольные обработчики
- *     платформа выполняет сама при первом входе в базу после смены версии
- *     конфигурации. Ждать завершения процесса нельзя и не нужно: в этом окне
- *     потом работает человек.
- *  3. **Завершение монопольной части спрашиваем у БСП.** Прежний признак —
- *     «внешнее соединение встало, значит база освободилась» — оказался ЛОЖНЫМ:
- *     пока форма легальности ждёт ответа, база монопольно не занята, и
- *     соединение встаёт свободно. Измерено на живой базе (УНФ 3.0.14.115):
- *     соединение проходило на нулевой секунде, монополия начиналась на 41-й,
- *     а обновление заканчивалось на 67-й. Поэтому спрашиваем БСП её же
- *     функцией «необходимо ли обновление ИБ» (`waitUpdateApplied`).
- *  4. **Отложенные обработчики запускаются фоновым заданием** — тем самым
- *     методом, который стоит у регламентного задания отложенного обновления.
- *     Ждём, пока фоновое задание перестанет быть активным, и смотрим,
- *     осталось ли регламентное задание включённым: БСП гасит его, когда
- *     отложенных обработчиков больше нет. Это и есть ответ на вопрос
- *     «всё ли выполнилось».
+ * Отсюда три части, и ни одна из них не меняет конфигурацию:
+ *
+ *  1. **Подтверждение легальности получения обновления.** БСП не начинает
+ *     обработчики, пока человек не подтвердит легальность в форме «Легальность
+ *     получения обновлений». Программа подтверждает это сама — процедурой самой
+ *     БСП, той же, что вызывает кнопка «Продолжить» (`confirmUpdateLegality`).
+ *  2. **Обработчики выполняются через внешнее соединение, без окна**
+ *     (`runInfobaseUpdate`). Это штатный путь, а не обходной: у функции БСП
+ *     в комментарии написано «Выполнить неинтерактивное обновление данных ИБ.
+ *     Для вызова через внешнее соединение». Монопольные выполняются всегда,
+ *     отложенные — тем же вызовом.
+ *  3. **Запускается единственный сеанс 1С — уже с открытой формой результатов**
+ *     (`updateSessionArgs`, `waitResultsForm`): ключ `/URL` с навигационной
+ *     ссылкой. Окно остаётся у пользователя, форма — открытой.
+ *
+ * Почему обработчики не выполняются в самом окне предприятия, раз пользователь
+ * просил одно окно. Именно поэтому. Форму результатов открывает только ключ
+ * `/URL` при СТАРТЕ сеанса, а в сеансе, который сам выполняет обновление, эта
+ * форма не живёт: БСП закрывает открытые окна вместе со своим окном
+ * «Обновление версии приложения» — измерено на живой базе, форма была видна
+ * с 11-й по 44-ю секунду и была закрыта. Передать ссылку в уже работающий
+ * сеанс платформа не даёт: открывается второй сеанс (проверено). Значит одно
+ * окно с открытой формой возможно только так — обработчики без окна, а окно
+ * запускается после них.
+ *
+ * Фоновое задание отложенного обновления через отдельное COM-соединение убрано:
+ * это был ещё один сеанс, делавший работу, которую БСП делает сама.
+ * `waitUpdateApplied` остаётся запасным путём — на случай, когда неинтерактивное
+ * обновление недоступно и обработчики приходится выполнять входом в базу.
  */
 
 import path from 'node:path';
@@ -47,9 +59,9 @@ import { fileURLToPath } from 'node:url';
 
 const log = createLogger('enterprise');
 
-const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'deferred-update.ps1');
-
 const STATE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'update-state.ps1');
+
+const RUN_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'run-update.ps1');
 
 /**
  * Русские имена того, что скрипт-мост дёргает у COM-соединения.
@@ -60,23 +72,10 @@ const STATE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sc
  * сборки, где англоязычные обращения не проходят.
  */
 const RU_NAMES = {
-  scheduledJobs: 'РегламентныеЗадания',
-  getJobs: 'ПолучитьРегламентныеЗадания',
   count: 'Количество',
   get: 'Получить',
   metadata: 'Метаданные',
   name: 'Имя',
-  methodName: 'ИмяМетода',
-  use: 'Использование',
-  backgroundJobs: 'ФоновыеЗадания',
-  execute: 'Выполнить',
-  uuid: 'УникальныйИдентификатор',
-  findByUuid: 'НайтиПоУникальномуИдентификатору',
-  state: 'Состояние',
-  errorInfo: 'ИнформацияОбОшибке',
-  description: 'Описание',
-  end: 'Конец',
-  stringFn: 'Строка',
   dataProcessors: 'Обработки',
   forms: 'Формы',
   fullName: 'ПолноеИмя',
@@ -116,6 +115,33 @@ const BSP_NAMES = {
   legalityRequired: ['ТребуетсяПроверитьЛегальностьПолученияОбновления'],
   confirmLegality: ['ЗаписатьПодтверждениеЛегальностиПолученияОбновлений'],
   deferredDone: ['ОтложенноеОбновлениеЗавершено'],
+  deferredStatus: ['СтатусОтложенногоОбновления'],
+  runUpdate: ['ВыполнитьОбновлениеИнформационнойБазы'],
+};
+
+/**
+ * Ответы БСП на выполнение обновления информационной базы.
+ *
+ * Строки вендорские, из комментария к функции: «Успешно», «НеТребуется»,
+ * «ОшибкаУстановкиМонопольногоРежима». Переводить их своими словами нельзя —
+ * можно только объяснить.
+ */
+const UPDATE_RESULT = {
+  ok: 'Успешно',
+  notRequired: 'НеТребуется',
+  exclusiveFailed: 'ОшибкаУстановкиМонопольногоРежима',
+};
+
+/**
+ * Что означает статус отложенного обновления, который отдаёт БСП.
+ *
+ * Пустая строка — необработанных отложенных обработчиков не осталось; всё
+ * остальное БСП называет своими словами, и переводить их догадками нельзя.
+ */
+const DEFERRED_STATUS_TEXT = {
+  СтатусНеВыполнено: 'часть отложенных обработчиков ещё не выполнена',
+  СтатусОшибка: 'часть отложенных обработчиков завершилась с ошибкой',
+  СтатусПриостановлен: 'отложенное обновление приостановлено',
 };
 
 /**
@@ -131,16 +157,6 @@ const BSP_NAMES = {
 const FORM_PATTERN = 'РезультатыОбновления|UpdateResult';
 
 const WINDOW_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts', 'window-titles.ps1');
-
-/**
- * Как узнать регламентное задание отложенного обновления.
- *
- * Имя объекта метаданных в БСП — латиницей (`DeferredIBUpdate`), но у разных
- * версий и у отраслевых решений встречаются варианты, поэтому ищем по образцу,
- * а не по точному имени. Русские написания тоже учтены: в самописных
- * конфигурациях задание могло быть названо по-русски.
- */
-const JOB_PATTERN = 'Deferred.*(IB|Infobase)?Update|DeferredUpdate|ОтложенноеОбновление';
 
 /**
  * Запускает клиент 1С в режиме предприятия и НЕ ждёт его завершения.
@@ -172,6 +188,21 @@ export function launchEnterprise({ platform, conn, user, password, extraArgs = [
 }
 
 /**
+ * Ключи единственного сеанса 1С, который остаётся у пользователя.
+ *
+ * Обработчики обновления к этому моменту уже выполнены (внешним соединением),
+ * поэтому сеанс нужен ровно за одним: открыть форму результатов обновления
+ * и оставить её открытой. Делает это ключ `/URL` с навигационной ссылкой.
+ *
+ * Формы в метаданных не нашлось — ключа не будет: запуск без него правильнее,
+ * чем запуск со ссылкой в никуда.
+ */
+export function updateSessionArgs(form) {
+  const full = String(form?.full || '').trim();
+  return full ? ['/URL', navigationLink(full)] : [];
+}
+
+/**
  * Состояние обновления информационной базы глазами самой БСП.
  *
  * Отдельным процессом PowerShell, тем же мостом, что и всё остальное COM:
@@ -199,6 +230,7 @@ export async function readUpdateState({
     progId: comConnectorProgId(platform.version),
     connectionString: toComConnectionString(conn, { user, password }),
     confirmLegality,
+    formNamePattern: FORM_PATTERN,
     bsp: BSP_NAMES,
     names: RU_NAMES,
   });
@@ -210,6 +242,8 @@ export async function readUpdateState({
     legalityRequired: null,
     legalityConfirmed: false,
     deferredDone: null,
+    deferredStatus: null,
+    form: null,
     version: '',
   };
 
@@ -233,9 +267,91 @@ export async function readUpdateState({
     legalityRequired: typeof output.legalityRequired === 'boolean' ? output.legalityRequired : null,
     legalityConfirmed: output.legalityConfirmed === true,
     deferredDone: typeof output.deferredDone === 'boolean' ? output.deferredDone : null,
+    // Пустая строка от БСП значит «необработанных отложенных не осталось»,
+    // а `null` — «спросить не удалось». Разница существенная, поэтому пустую
+    // строку не подменяем на null.
+    deferredStatus: typeof output.deferredStatus === 'string' ? output.deferredStatus : null,
+    form: output.form?.full ? { full: String(output.form.full), title: String(output.form.title || '') } : null,
     version: String(output.version || ''),
     reason: (output.errors || [])[0] || '',
   };
+}
+
+/**
+ * Выполняет обработчики обновления через внешнее соединение — без окна 1С.
+ *
+ * Это штатный, документированный вендором путь, а не обходной: у функции БСП
+ * в комментарии прямо написано «Выполнить неинтерактивное обновление данных ИБ.
+ * Для вызова через внешнее соединение». Монопольные обработчики выполняются
+ * всегда, отложенные — если попросить (`deferredNow`); в файловой базе БСП
+ * и так выполняет их в основном цикле обновления.
+ *
+ * Почему не в окне предприятия, раз пользователь просил одно окно. Именно
+ * поэтому: окно должно остаться ОДНО и с открытой формой результатов, а форму
+ * можно открыть только ключом `/URL` при старте сеанса. В сеансе, который сам
+ * выполняет обновление, она не живёт — БСП закрывает открытые окна вместе со
+ * своим окном «Обновление версии приложения» (измерено на живой базе: форма
+ * была видна с 11-й по 44-ю секунду и была закрыта). Поэтому обработчики
+ * выполняются здесь, без окна, а единственный сеанс запускается уже после них.
+ *
+ * @returns {Promise<{ok: boolean, result: string, seconds: number,
+ *                    exclusiveFailed: boolean, reason: string}>}
+ */
+export async function runInfobaseUpdate({
+  platform, conn, user, password, workDir, deferredNow = true, timeoutMs = 4 * 60 * 60_000,
+}) {
+  const dir = await ensureDir(path.join(workDir, 'handlers'));
+  const inputFile = path.join(dir, 'run-input.json');
+  const outputFile = path.join(dir, 'run-output.json');
+  await rmrf(outputFile).catch(() => {});
+
+  await writeJson(inputFile, {
+    binDir: platform.binDir,
+    progId: comConnectorProgId(platform.version),
+    connectionString: toComConnectionString(conn, { user, password }),
+    deferredNow,
+    bsp: BSP_NAMES,
+  });
+
+  log.info('Выполнение обработчиков обновления через внешнее соединение');
+  try {
+    await runPowerShell(RUN_SCRIPT, ['-InputFile', inputFile, '-OutputFile', outputFile], {
+      timeout: timeoutMs,
+      allowNonZeroExit: true,
+    });
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    return { ok: false, result: '', seconds: 0, exclusiveFailed: false, reason: err.message };
+  }
+
+  const output = await readJson(outputFile);
+  if (!output) {
+    return {
+      ok: false, result: '', seconds: 0, exclusiveFailed: false,
+      reason: 'мост не вернул результат (см. журнал приложения)',
+    };
+  }
+
+  const result = String(output.result || '');
+  const exclusiveFailed = result === UPDATE_RESULT.exclusiveFailed;
+  const ok = output.ok === true
+    && (result === UPDATE_RESULT.ok || result === UPDATE_RESULT.notRequired);
+
+  log.info(`Обработчики обновления: ${result || 'ответа нет'}, ${output.seconds || 0} с`);
+  return {
+    ok,
+    result,
+    seconds: Number(output.seconds) || 0,
+    exclusiveFailed,
+    reason: ok ? '' : ((output.errors || [])[0] || result || 'обновление не выполнено'),
+  };
+}
+
+/** Человеческими словами: что БСП думает об отложенных обработчиках. */
+export function deferredStatusText(status) {
+  if (status === null || status === undefined) return '';
+  if (status === '') return 'отложенных обработчиков не осталось';
+  return DEFERRED_STATUS_TEXT[status] || `состояние отложенного обновления: ${status}`;
 }
 
 /**
@@ -260,15 +376,19 @@ export async function readUpdateState({
 export async function confirmUpdateLegality(ctx) {
   const state = await readUpdateState({ ...ctx, confirmLegality: true });
 
+  // Форма результатов обновления читается тем же вызовом: её полное имя нужно
+  // ключу /URL при запуске клиента, то есть ДО того, как сеанс начался.
+  const form = state.form || null;
+
   if (!state.connected) {
     return {
-      needed: null, confirmed: false, bspAvailable: false,
+      needed: null, confirmed: false, bspAvailable: false, form,
       reason: state.reason || 'база не пустила внешнее соединение',
     };
   }
   if (!state.bspAvailable) {
     return {
-      needed: null, confirmed: false, bspAvailable: false,
+      needed: null, confirmed: false, bspAvailable: false, form,
       reason: state.reason || 'функции обновления ИБ через внешнее соединение недоступны',
     };
   }
@@ -276,18 +396,19 @@ export async function confirmUpdateLegality(ctx) {
   // Подтверждения не требовалось — значит и подтверждать нечего: либо оно уже
   // записано, либо конфигурация его не спрашивает.
   if (state.legalityRequired === false && !state.legalityConfirmed) {
-    return { needed: false, confirmed: false, bspAvailable: true, reason: '' };
+    return { needed: false, confirmed: false, bspAvailable: true, form, reason: '' };
   }
 
   if (state.legalityConfirmed) {
     log.info('Легальность получения обновления подтверждена процедурой БСП');
-    return { needed: true, confirmed: true, bspAvailable: true, reason: '' };
+    return { needed: true, confirmed: true, bspAvailable: true, form, reason: '' };
   }
 
   return {
     needed: state.legalityRequired,
     confirmed: false,
     bspAvailable: true,
+    form,
     reason: state.reason || 'БСП всё равно требует подтверждения легальности',
   };
 }
@@ -362,7 +483,12 @@ export async function waitUpdateApplied({
 
     if (kind === 'applied') {
       log.info(`Обновление информационной базы выполнено за ${seconds} с (по данным БСП)`);
-      return { ok: true, seconds, askedBsp: true, exclusiveSeen, legalityWaiting };
+      return {
+        ok: true, seconds, askedBsp: true, exclusiveSeen, legalityWaiting,
+        // Что с отложенными обработчиками, знает та же БСП: пустая строка —
+        // необработанных не осталось, иначе она называет причину.
+        deferredStatus: state.deferredStatus,
+      };
     }
 
     if (kind === 'exclusive') {
@@ -400,6 +526,7 @@ export async function waitUpdateApplied({
       askedBsp: false,
       exclusiveSeen,
       legalityWaiting,
+      deferredStatus: null,
       reason: state.reason || 'состояние обновления у БСП спросить нечем',
     };
   }
@@ -410,40 +537,11 @@ export async function waitUpdateApplied({
     askedBsp,
     exclusiveSeen,
     legalityWaiting,
+    deferredStatus: null,
     reason: legalityWaiting
       ? 'БСП так и ждёт подтверждения легальности получения обновления'
       : (lastReason || 'обновление информационной базы так и не завершилось'),
   };
-}
-
-/**
- * Разбор строки, которую печатает мост.
- *
- * Мост сообщает три вещи: найденную форму результатов обновления, момент
- * запуска задания и ход ожидания. Разбор вынесен отдельной функцией, потому
- * что именно на нём держится момент открытия формы: ошибись здесь — и форма
- * откроется не тогда, когда нужно, или не откроется вовсе.
- *
- * @returns {{kind: 'form', full: string, title: string}
- *          |{kind: 'started', uuid: string}
- *          |{kind: 'progress', seconds: number, state: string}
- *          |null}
- */
-export function parseBridgeLine(line) {
-  const text = String(line ?? '').trim();
-
-  const progress = /^PROGRESS\|(\d+)\|(.*)$/.exec(text);
-  if (progress) return { kind: 'progress', seconds: Number(progress[1]), state: progress[2] };
-
-  const started = /^STARTED\|(.*)$/.exec(text);
-  if (started) return { kind: 'started', uuid: started[1] };
-
-  // В синониме формы могут быть любые символы, кроме перевода строки, поэтому
-  // разбираем по первым двум разделителям, а остаток считаем заголовком.
-  const form = /^FORM\|([^|]*)\|(.*)$/.exec(text);
-  if (form && form[1]) return { kind: 'form', full: form[1], title: form[2] };
-
-  return null;
 }
 
 /** Навигационная ссылка на форму по её полному имени из метаданных. */
@@ -452,57 +550,48 @@ export function navigationLink(fullName) {
 }
 
 /**
- * Открывает форму результатов обновления и проверяет, что окно появилось.
+ * Ждёт, пока форма результатов обновления появится в ОКНЕ ЗАПУЩЕННОГО сеанса.
  *
- * Открывается вторым сеансом 1С с ключом `/URL` и навигационной ссылкой:
- * ключ проверен на 8.5.1.1150 — клиент запускается, входит в базу и открывает
- * ровно ту форму, что указана в ссылке. Первый сеанс не трогаем: в нём человек
- * может уже работать, а «вставить» команду в чужой запущенный клиент нечем.
+ * Второй сеанс ради формы больше не открывается: ссылка `/URL` передана тому же
+ * клиенту при запуске, и форма открывается в нём — после того как БСП закончит
+ * обработчики обновления. Здесь остаётся только дождаться окна.
  *
- * Успех не объявляется по факту запуска процесса: программа ждёт окно с
- * заголовком, равным синониму формы. Не дождались — так и говорим.
+ * Успех не объявляется по факту запуска процесса: программа ждёт окно
+ * с заголовком, равным синониму формы. Не дождались — так и говорим.
  *
- * @returns {Promise<{opened: boolean, link: string, title: string,
+ * @returns {Promise<{opened: boolean, title: string, link: string,
  *                    pid: number|null, seconds: number, reason?: string}>}
  */
-export async function openResultsForm({
-  platform, conn, user, password, workDir, form, budgetMs = 3 * 60_000, pollMs = 5_000,
+export async function waitResultsForm({
+  processId, form, workDir, budgetMs = 3 * 60_000, pollMs = 5_000,
 }) {
-  const link = navigationLink(form.full);
-  const title = String(form.title || '').trim();
+  const title = String(form?.title || '').trim();
+  const link = form?.full ? navigationLink(form.full) : '';
   const startedAt = Date.now();
+  const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
 
-  let pid = null;
-  try {
-    ({ pid } = launchEnterprise({
-      platform, conn, user, password, extraArgs: ['/URL', link],
-    }));
-  } catch (err) {
-    return { opened: false, link, title, pid: null, seconds: 0, reason: err.message };
+  if (!processId) {
+    return { opened: false, title, link, pid: null, seconds: 0, reason: '1С не запущена' };
   }
-
   if (!title) {
     return {
-      opened: false, link, title, pid,
-      seconds: Math.round((Date.now() - startedAt) / 1000),
+      opened: false, title, link, pid: processId, seconds: 0,
       reason: 'у формы нет синонима — проверить открытие нечем',
     };
   }
 
   while (Date.now() - startedAt < budgetMs) {
     throwIfCancelled();
-    await sleep(pollMs);
-    const titles = await windowTitles({ processId: pid, workDir });
+    const titles = await windowTitles({ processId, workDir });
     if (titles.some((t) => t.toLowerCase().includes(title.toLowerCase()))) {
-      const seconds = Math.round((Date.now() - startedAt) / 1000);
-      log.info(`Форма «${title}» открыта через ${seconds} с`);
-      return { opened: true, link, title, pid, seconds };
+      log.info(`Форма «${title}» открыта в том же сеансе через ${elapsed()} с`);
+      return { opened: true, title, link, pid: processId, seconds: elapsed() };
     }
+    await sleep(pollMs);
   }
 
   return {
-    opened: false, link, title, pid,
-    seconds: Math.round((Date.now() - startedAt) / 1000),
+    opened: false, title, link, pid: processId, seconds: elapsed(),
     reason: `окно «${title}» не появилось за отведённое время`,
   };
 }
@@ -524,90 +613,6 @@ async function windowTitles({ processId, workDir }) {
   }
   const output = await readJson(outputFile);
   return Array.isArray(output?.titles) ? output.titles.map(String) : [];
-}
-
-/**
- * Запускает отложенное обновление фоновым заданием и ждёт его завершения.
- *
- * `onStarted` вызывается ровно в тот момент, когда задание запущено, — по нему
- * конвейер открывает форму результатов обновления, чтобы человек видел ход
- * отложенных обработчиков с самого начала, а не по факту.
- *
- * @returns {Promise<{ok: boolean, finished: boolean, job?: object,
- *                    background?: object, jobNames?: string[], reason?: string}>}
- */
-export async function runDeferredUpdate({
-  platform, conn, user, password, workDir, budgetMs = 60 * 60_000, onProgress, onStarted,
-}) {
-  const dir = await ensureDir(path.join(workDir, 'handlers'));
-  const inputFile = path.join(dir, 'deferred-input.json');
-  const outputFile = path.join(dir, 'deferred-output.json');
-  await rmrf(outputFile).catch(() => {});
-
-  await writeJson(inputFile, {
-    binDir: platform.binDir,
-    progId: comConnectorProgId(platform.version),
-    connectionString: toComConnectionString(conn, { user, password }),
-    jobNamePattern: JOB_PATTERN,
-    formNamePattern: FORM_PATTERN,
-    jobTitle: 'Отложенное обновление (запущено из «1С: AI инструменты»)',
-    budgetSeconds: Math.floor(budgetMs / 1000),
-    pollSeconds: 10,
-    names: RU_NAMES,
-  });
-
-  // Мост сообщает найденную форму раньше, чем запуск задания, — запоминаем её,
-  // чтобы в момент старта было чем открыть окно.
-  let foundForm = null;
-
-  log.info('Запуск отложенного обновления фоновым заданием');
-  try {
-    await runPowerShell(SCRIPT, ['-InputFile', inputFile, '-OutputFile', outputFile], {
-      // Мост сам ждёт задание, поэтому его собственный запас времени больше.
-      timeout: budgetMs + 120_000,
-      allowNonZeroExit: true,
-      onStdout: (chunk) => {
-        for (const line of String(chunk).split(/\r?\n/)) {
-          const event = parseBridgeLine(line);
-          if (!event) continue;
-          if (event.kind === 'progress') onProgress?.(event.seconds, event.state);
-          if (event.kind === 'form') foundForm = { full: event.full, title: event.title };
-          // Форму открываем в момент старта задания, а не после ожидания:
-          // ждать здесь нельзя, поэтому вызов не блокирует разбор вывода.
-          if (event.kind === 'started') onStarted?.(foundForm);
-        }
-      },
-    });
-  } catch (err) {
-    if (isCancelled(err)) throw err;
-    return { ok: false, finished: false, reason: err.message };
-  }
-
-  const output = await readJson(outputFile);
-  if (!output) {
-    return { ok: false, finished: false, reason: 'мост не вернул результат (см. журнал приложения)' };
-  }
-  if (!output.ok) {
-    return {
-      ok: false,
-      finished: false,
-      jobNames: output.jobNames || [],
-      reason: (output.errors || []).join('; ') || 'отложенное обновление не запустилось',
-    };
-  }
-
-  log.info(
-    `Отложенное обновление: задание «${output.job?.name}», состояние ${output.background?.state || '?'}, `
-    + `осталось включённым: ${output.job?.useAfter}`,
-  );
-  return {
-    ok: true,
-    finished: output.finished === true,
-    job: output.job,
-    background: output.background,
-    form: output.form || foundForm,
-    jobNames: output.jobNames || [],
-  };
 }
 
 /**

@@ -740,23 +740,22 @@ function handlersRow(result) {
   let verdict;
   if (!h.launched) {
     verdict = `<b class="bad">1С не запущена</b>${h.error ? ` — ${esc(h.error)}` : ''}`;
-  } else if (h.deferred?.finished) {
+  } else if (h.error) {
+    verdict = `<b class="warn">обновление не дождалось завершения</b> — ${esc(h.error)}`;
+  } else if (h.deferredStatus === '') {
     verdict = '<b class="ok">выполнены, отложенных не осталось</b>';
-  } else if (h.deferred?.ok) {
-    verdict = '<b class="warn">отложенные выполнены не полностью</b>'
-      + `${h.deferred.background?.state ? ` — задание: ${esc(h.deferred.background.state)}` : ''}`;
-  } else if (h.deferred) {
-    verdict = `<b class="bad">отложенное обновление не запущено</b> — ${esc(h.deferred.reason || '')}`;
+  } else if (h.deferredStatus) {
+    verdict = `<b class="warn">отложенные выполнены не полностью</b> — ${esc(h.deferredStatus)}`;
   } else {
-    verdict = `<b class="warn">монопольная часть не дождалась завершения</b>${h.error ? ` — ${esc(h.error)}` : ''}`;
+    verdict = '<b class="ok">выполнены</b> <span class="muted">(состояние отложенных '
+      + 'у БСП спросить не удалось)</span>';
   }
 
   const details = [
     // Подтверждение легальности — запись в базу от имени пользователя, поэтому
     // в отчёте она названа прямо, а не спрятана в успешный итог.
     legalityNote(h.legality),
-    h.exclusiveSeconds != null ? `монопольные: ${formatNumber(h.exclusiveSeconds)} с` : '',
-    h.deferred?.job?.name ? `задание «${h.deferred.job.name}»` : '',
+    h.exclusiveSeconds != null ? `обработчики: ${formatNumber(h.exclusiveSeconds)} с` : '',
     // Открытая форма — не украшение: пока отложенные обработчики идут, только
     // в ней и видно, сколько их осталось.
     formNote(h.form),
@@ -780,7 +779,9 @@ function legalityNote(legality) {
 /** Открылась ли форма результатов обновления — коротко, для строки отчёта. */
 function formNote(form) {
   if (!form) return '';
-  if (form.opened) return `открыта форма «${form.title || 'результаты обновления'}»`;
+  if (form.opened) {
+    return `в том же окне открыта форма «${form.title || 'результаты обновления'}»`;
+  }
   return `форма не открыта: ${form.reason || 'причина неизвестна'}`;
 }
 

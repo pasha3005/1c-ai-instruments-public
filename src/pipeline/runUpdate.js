@@ -51,8 +51,8 @@ import {
 import { findVendorRelease } from '../onec/templates.js';
 import { vendorConfigPresence } from '../onec/vendorCompare.js';
 import {
-  launchEnterprise, waitUpdateApplied, runDeferredUpdate, openResultsForm,
-  confirmUpdateLegality,
+  launchEnterprise, waitUpdateApplied, waitResultsForm, updateSessionArgs,
+  confirmUpdateLegality, deferredStatusText, runInfobaseUpdate, readUpdateState,
 } from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
@@ -462,183 +462,258 @@ async function applyTypical({
 }
 
 /**
- * Обработчики обновления: монопольные — самой платформой, отложенные — заданием.
+ * Обработчики обновления — последний шаг, и весь он укладывается в ОДНО окно 1С.
  *
- * Шаг общий для обоих путей обновления и идёт последним: обработчики выполняются
- * при первом входе в базу после смены версии конфигурации, то есть уже после
- * `/UpdateDBCfg`.
+ * Требование пользователя (12.08.2026): «Я хочу, чтобы ты всё обновление сделал
+ * в одном окне 1С в режиме предприятия, последовательно». Порядок такой:
  *
- * Конфигурацию здесь не меняем — этого и не требуется. Но одну запись в базу
- * сделать приходится, и её просил сам пользователь: БСП не начинает обработчики,
- * пока не подтверждена легальность получения обновления, и подтверждение
- * программа записывает сама — процедурой БСП, той же, что и кнопка «Продолжить».
- * Иначе прогон встаёт у формы и ждёт человека, а всё остальное едет дальше
- * по ложному признаку.
+ *   1. подтверждаем легальность получения обновления — иначе БСП обработчики
+ *      не начнёт и будет ждать человека;
+ *   2. выполняем обработчики через внешнее соединение, без окна, — штатной
+ *      неинтерактивной функцией БСП;
+ *   3. запускаем единственный сеанс 1С сразу на форме результатов обновления
+ *      и оставляем его открытым.
+ *
+ * Раньше окон было два: одно выполняло обработчики, второе открывалось ради
+ * формы. Второе окно было ошибкой — и, как выяснилось, форму нельзя удержать
+ * открытой в том же сеансе, который делает обновление: БСП закрывает окна
+ * вместе со своим окном «Обновление версии приложения».
+ *
+ * Конфигурацию здесь не меняем. Записей в базу ровно две, и обе — то, что
+ * в интерфейсе делает сам человек: подтверждение легальности и, собственно,
+ * работа обработчиков обновления.
  */
 async function runUpdateHandlers({ platform, conn, input, workRoot, progress, result }) {
   startWrite(progress, 'handlers', 'Подтверждение легальности получения обновления');
 
-  const handlers = { launched: false, exclusiveSeconds: null, deferred: null };
+  const handlers = { launched: false, exclusiveSeconds: null };
   result.handlers = handlers;
 
   // Подтверждение — ДО запуска клиента: подтверждённое заранее, оно не даёт
   // форме легальности открыться вовсе, и монопольные обработчики начинаются сами.
+  // Этим же вызовом читается форма результатов обновления: её полное имя нужно
+  // ключу /URL при запуске, то есть ДО того, как клиент стартовал.
   const legality = await confirmUpdateLegality({
     platform, conn, user: input.user, password: input.password, workDir: workRoot,
   });
   handlers.legality = legality;
+  handlers.formMeta = legality.form || null;
   reportLegality(progress, legality);
 
+  // Обработчики — без окна, штатной неинтерактивной функцией БСП. Так окно 1С
+  // остаётся ровно одно, и запускается оно уже с открытой формой результатов.
+  progress.update('handlers', 'выполнение обработчиков обновления');
+  const applied = await runHandlersQuietly({
+    platform, conn, input, workRoot, progress, handlers,
+  });
+  if (!applied) return;
+
+  // Единственное окно 1С: обработчики уже выполнены, и сеанс нужен ровно затем,
+  // чтобы открыть форму результатов обновления и оставить её открытой.
   progress.update('handlers', 'Запуск 1С в режиме предприятия');
   try {
     const { pid } = launchEnterprise({
-      platform, conn, user: input.user, password: input.password,
+      platform,
+      conn,
+      user: input.user,
+      password: input.password,
+      extraArgs: updateSessionArgs(handlers.formMeta),
     });
     handlers.launched = true;
     handlers.pid = pid;
     progress.message(
-      'Запущена 1С в режиме предприятия. Монопольные обработчики обновления платформа '
-      + 'выполняет сама при первом входе в базу; окно остаётся открытым — работайте в нём. '
-      + 'Программа ждёт, пока монопольная часть закончится, и после этого сама запустит '
-      + 'отложенное обновление.',
+      'Запущена 1С в режиме предприятия — одним окном, и это единственное окно за весь прогон. '
+      + (handlers.formMeta
+        ? 'В нём сразу открывается форма результатов обновления; окно остаётся открытым — '
+          + 'в нём потом работаете вы.'
+        : 'Форму результатов обновления открыть нечем: в метаданных базы она не найдена.'),
     );
   } catch (err) {
     if (isCancelled(err)) throw err;
     handlers.error = err.message;
     progress.warn('handlers', `1С не запущена: ${err.message}`);
     progress.message(
-      `Не удалось запустить 1С в режиме предприятия: ${err.message}. Обработчики обновления `
-      + 'выполнятся при первом входе в базу — войдите в неё сами, затем запустите отложенное '
-      + 'обновление из «Администрирование → Обслуживание».',
+      `Обработчики обновления выполнены, но запустить 1С не удалось: ${err.message}. `
+      + 'Войдите в базу сами; итог обновления виден в «Администрирование → Обслуживание → '
+      + 'Результаты обновления и дополнительная обработка данных».',
       'warn',
     );
     return;
   }
 
-  // Монопольная часть. Ждём не «база освободилась» (этот признак ложный: пока
-  // форма легальности ждёт ответа, база свободна, а обработчики ещё не начались),
-  // а ответа самой БСП, что обновление информационной базы больше не требуется.
-  progress.update('handlers', 'ожидание монопольных обработчиков обновления');
-  const exclusive = await waitUpdateApplied({
-    platform, conn, user: input.user, password: input.password, workDir: workRoot,
-    onProgress: (text) => progress.update('handlers', text),
-  });
-  handlers.exclusiveSeconds = exclusive.seconds;
-  handlers.askedBsp = exclusive.askedBsp;
-
-  if (!exclusive.ok) {
-    handlers.error = exclusive.reason;
-    progress.warn('handlers', `монопольная часть не завершилась за ${exclusive.seconds} с`);
-    progress.message(
-      `Обновление информационной базы не завершилось за ${Math.round(exclusive.seconds / 60)} мин: `
-      + `${exclusive.reason}. `
-      + (exclusive.legalityWaiting
-        ? 'В открытом окне 1С поставьте галочку в форме «Легальность получения обновления» '
-          + 'и нажмите «Продолжить» — без этого БСП обработчики не начнёт. '
-        : '')
-      + 'Отложенное обновление не запускалось — запустите его сами, когда монопольные '
-      + 'обработчики закончатся.',
-      'warn',
-    );
-    return;
-  }
-  progress.message(exclusive.askedBsp
-    ? `Монопольные обработчики обновления отработали за ${exclusive.seconds} с: БСП больше `
-      + 'не требует обновления информационной базы.'
-    : `Монопольные обработчики обновления отработали за ${exclusive.seconds} с — судя по тому, `
-      + 'что база пускает соединение. Спросить БСП напрямую не удалось, поэтому признак '
-      + 'приблизительный.');
-
-  // Отложенные: тем же методом, что стоит у регламентного задания.
-  progress.update('handlers', 'запуск отложенного обновления фоновым заданием');
-
-  // Форма результатов обновления открывается в момент запуска задания, а не
-  // после ожидания: смысл в том, чтобы человек видел ход отложенных
-  // обработчиков с начала. Открытие идёт своим ходом, пока конвейер ждёт
-  // задание, а результат забираем ниже — обещать «открыл» до проверки нельзя.
-  let formOpening = null;
-  const deferred = await runDeferredUpdate({
-    platform, conn, user: input.user, password: input.password, workDir: workRoot,
-    onProgress: (seconds, state) => progress.update('handlers',
-      `отложенное обновление: ${state || 'выполняется'}, ${seconds} с`),
-    onStarted: (form) => {
-      if (!form || formOpening) return;
-      formOpening = openResultsForm({
-        platform, conn, user: input.user, password: input.password, workDir: workRoot, form,
-      }).catch((err) => ({
-        opened: false, title: form.title || '', reason: err.message,
-      }));
-    },
-  });
-  handlers.deferred = deferred;
-
-  if (!deferred.ok) {
-    progress.warn('handlers', 'отложенное обновление не запущено');
-    progress.message(
-      `Отложенное обновление запустить не удалось: ${deferred.reason}. Запустите регламентное `
-      + 'задание отложенного обновления вручную: «Администрирование → Обслуживание → '
-      + 'Обновление информационной базы».'
-      + (deferred.jobNames?.length
-        ? ` Регламентные задания в базе: ${deferred.jobNames.slice(0, 12).join(', ')}.`
-        : ''),
-      'warn',
-    );
-    return;
-  }
-
-  handlers.form = formOpening
-    ? await formOpening
+  progress.update('handlers', 'ожидание формы результатов обновления');
+  handlers.form = handlers.formMeta
+    ? await waitResultsForm({
+      processId: handlers.pid, form: handlers.formMeta, workDir: workRoot,
+    })
     : { opened: false, reason: 'форма результатов обновления в метаданных базы не найдена' };
   reportForm(progress, handlers.form);
 
-  if (deferred.finished) {
-    const nothingPending = deferred.job?.useBefore === false;
-    progress.done('handlers', nothingPending
-      ? 'обработчики выполнены, отложенных не было'
-      : 'обработчики обновления выполнены');
+  reportDeferred(progress, handlers);
+}
+
+/**
+ * Итог по отложенным обработчикам — словами БСП, а не догадками.
+ *
+ * Пустая строка у БСП значит «необработанных не осталось», `null` — «спросить
+ * не удалось»; выдавать второе за первое нельзя.
+ */
+function reportDeferred(progress, handlers) {
+  if (handlers.deferredStatus === '') {
+    progress.done('handlers', 'обработчики обновления выполнены');
     progress.message(
-      nothingPending
-        ? 'Отложенных обработчиков в этой базе не было: регламентное задание отложенного '
-          + 'обновления выключено и до запуска, и после. Монопольные обработчики отработали, '
-          + 'обновление закончено.'
-        : 'Отложенное обновление завершено: регламентное задание больше не включено — значит '
-          + 'необработанных отложенных обработчиков не осталось.',
+      'Обновление информационной базы закончено: необработанных отложенных обработчиков '
+      + 'у БСП не осталось.',
     );
     return;
   }
 
-  // Не дождались: задание ещё работает. Выдавать это за выполнение нельзя —
-  // на живой проверке задание шло 8 минут и не закончилось, а результат
-  // говорил «выполнено».
-  if (deferred.background?.stillRunning) {
-    progress.warn('handlers', 'отложенное обновление ещё идёт');
+  if (handlers.deferredStatus === null || handlers.deferredStatus === undefined) {
+    progress.done('handlers', 'обработчики обновления выполнены');
     progress.message(
-      `Отложенное обновление запущено и продолжает работу (состояние: `
-      + `${deferred.background?.state || 'выполняется'}). Отведённое время ожидания вышло — `
-      + 'задание от этого не остановилось и доработает само. '
-      + (handlers.form?.opened
-        ? `Следите за ним в открытой форме «${handlers.form.title}».`
-        : 'Следить за ним в 1С: «Администрирование → Обслуживание → Обновление '
-          + 'информационной базы».'),
-      'warn',
+      'Обновление информационной базы выполнено. Состояние отложенных обработчиков спросить '
+      + 'у БСП не удалось — посмотрите его в форме результатов обновления.',
     );
     return;
   }
 
-  // Задание закончилось, но обработчики остались: БСП обрабатывает их порциями
-  // и оставляет регламентное задание включённым до полного завершения.
   progress.warn('handlers', 'отложенные обработчики выполнены не полностью');
   progress.message(
-    `Отложенное обновление отработало (состояние задания: ${deferred.background?.state || '?'}`
-    + `${deferred.background?.error ? `, ошибка: ${deferred.background.error}` : ''}), но `
-    + 'регламентное задание осталось включённым — часть отложенных обработчиков ещё не выполнена. '
-    + 'БСП обрабатывает их порциями, задание продолжит работу само. '
+    `Монопольная часть обновления закончена, но ${deferredStatusText(handlers.deferredStatus)}. `
+    + 'БСП выполняет их порциями и продолжит сама. '
     + (handlers.form?.opened
-      ? `Ход виден в открытой форме «${handlers.form.title}».`
-      : 'Следите за ходом в 1С: «Администрирование → Обслуживание → Обновление '
-        + 'информационной базы».'),
+      ? `Ход виден в открытой форме «${handlers.form.title}» — она остаётся открытой.`
+      : 'Ход виден в 1С: «Администрирование → Обслуживание → Результаты обновления '
+        + 'и дополнительная обработка данных».'),
     'warn',
   );
+}
+
+/**
+ * Выполняет обработчики обновления без окна — и честно отчитывается.
+ *
+ * Основной путь: неинтерактивная функция БСП через внешнее соединение. Она для
+ * этого и сделана, а нам даёт главное — окно 1С остаётся ровно одно и
+ * открывается уже с формой результатов.
+ *
+ * Запасной путь нужен там, где спросить БСП нечем (не БСП-конфигурация либо
+ * у общих модулей снят флаг «Внешнее соединение»): тогда обработчики выполняет
+ * сама платформа при входе в базу, а программа ждёт их завершения. Форма в этом
+ * случае может и не открыться — БСП закрывает окна вместе со своим окном
+ * обновления, — и об этом говорится прямо, а не замалчивается.
+ *
+ * @returns {Promise<boolean>} можно ли продолжать (запускать окно и форму)
+ */
+async function runHandlersQuietly({ platform, conn, input, workRoot, progress, handlers }) {
+  const ctx = {
+    platform, conn, user: input.user, password: input.password, workDir: workRoot,
+  };
+
+  // Пока идёт обновление, показываем, сколько оно длится: вызов синхронный,
+  // и без этого шкала выглядит замершей.
+  const startedAt = Date.now();
+  const ticker = setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    progress.update('handlers', `обработчики обновления выполняются, ${seconds} с`);
+  }, 10_000);
+
+  let run;
+  try {
+    run = await runInfobaseUpdate(ctx);
+  } finally {
+    clearInterval(ticker);
+  }
+
+  handlers.run = run;
+  handlers.exclusiveSeconds = run.seconds;
+
+  if (run.ok) {
+    const state = await readUpdateState(ctx);
+    handlers.deferredStatus = state.deferredStatus;
+    progress.message(
+      run.result === 'НеТребуется'
+        ? 'Обработчики обновления не потребовались: БСП отвечает, что обновление информационной '
+          + 'базы не нужно.'
+        : `Обработчики обновления выполнены за ${run.seconds} с — неинтерактивно, через внешнее `
+          + 'соединение. Это штатный путь БСП: у её функции так и написано — «для вызова через '
+          + 'внешнее соединение». Отдельного окна 1С для этого не открывалось.',
+    );
+    return true;
+  }
+
+  if (run.exclusiveFailed) {
+    handlers.error = run.reason;
+    progress.warn('handlers', 'не удалось занять базу монопольно');
+    progress.message(
+      'Обработчики обновления не выполнены: БСП не смогла установить монопольный режим — '
+      + 'в базе есть другие сеансы. Закройте их и повторите: обработчики выполнятся при первом '
+      + 'входе в базу либо повторным запуском этого шага.',
+      'warn',
+    );
+    return false;
+  }
+
+  // Спросить БСП нечем — остаётся прежний путь: вход в базу и ожидание.
+  progress.message(
+    `Неинтерактивное обновление недоступно: ${run.reason}. Тогда обработчики выполнит сама `
+    + 'платформа при входе в базу — запускаю 1С и жду. Форма результатов обновления в этом '
+    + 'случае может не открыться: БСП закрывает окна вместе со своим окном обновления.',
+    'warn',
+  );
+
+  try {
+    const { pid } = launchEnterprise({
+      platform, conn, user: input.user, password: input.password,
+      extraArgs: updateSessionArgs(handlers.formMeta),
+    });
+    handlers.launched = true;
+    handlers.pid = pid;
+  } catch (err) {
+    if (isCancelled(err)) throw err;
+    handlers.error = err.message;
+    progress.warn('handlers', `1С не запущена: ${err.message}`);
+    progress.message(
+      `Не удалось запустить 1С в режиме предприятия: ${err.message}. Обработчики обновления `
+      + 'выполнятся при первом входе в базу — войдите в неё сами.',
+      'warn',
+    );
+    return false;
+  }
+
+  const waited = await waitUpdateApplied({
+    ...ctx, onProgress: (text) => progress.update('handlers', text),
+  });
+  handlers.exclusiveSeconds = waited.seconds;
+  handlers.askedBsp = waited.askedBsp;
+  handlers.deferredStatus = waited.deferredStatus;
+
+  if (!waited.ok) {
+    handlers.error = waited.reason;
+    progress.warn('handlers', `обработчики не завершились за ${waited.seconds} с`);
+    progress.message(
+      `Обновление информационной базы не завершилось за ${Math.round(waited.seconds / 60)} мин: `
+      + `${waited.reason}. `
+      + (waited.legalityWaiting
+        ? 'В открытом окне 1С поставьте галочку в форме «Легальность получения обновления» '
+          + 'и нажмите «Продолжить» — без этого БСП обработчики не начнёт. '
+        : '')
+      + 'Окно 1С осталось открытым: ход виден в «Администрирование → Обслуживание → '
+      + 'Результаты обновления и дополнительная обработка данных».',
+      'warn',
+    );
+    return false;
+  }
+
+  progress.message(`Обработчики обновления отработали за ${waited.seconds} с.`);
+  // Окно уже открыто этим путём: второго не запускаем.
+  handlers.form = handlers.formMeta
+    ? await waitResultsForm({
+      processId: handlers.pid, form: handlers.formMeta, workDir: workRoot, budgetMs: 30_000,
+    })
+    : { opened: false, reason: 'форма результатов обновления в метаданных базы не найдена' };
+  reportForm(progress, handlers.form);
+  reportDeferred(progress, handlers);
+  return false;
 }
 
 /**
@@ -689,17 +764,17 @@ function reportLegality(progress, legality) {
 function reportForm(progress, form) {
   if (form?.opened) {
     progress.message(
-      `Открыл форму «${form.title}» — в ней виден ход отложенных обработчиков. Форма открыта `
-      + 'вторым окном 1С и остаётся открытой: закрывать её не нужно, пока обработчики идут. '
-      + 'В интерфейсе она же — «Администрирование → Обслуживание → Результаты обновления и '
-      + 'дополнительная обработка данных».',
+      `В том же окне 1С открыта форма «${form.title}» — в ней виден итог обновления и `
+      + 'состояние отложенных обработчиков. Форма остаётся открытой: закрывать её не нужно, '
+      + 'пока обработчики идут. В интерфейсе она же — «Администрирование → Обслуживание → '
+      + 'Результаты обновления и дополнительная обработка данных».',
     );
     return;
   }
   progress.message(
-    `Форму результатов обновления открыть не удалось: ${form?.reason || 'причина неизвестна'}. `
-    + 'Откройте её сами: «Администрирование → Обслуживание → Результаты обновления и '
-    + 'дополнительная обработка данных» — в ней виден ход отложенных обработчиков.',
+    `Форма результатов обновления в окне 1С не появилась: ${form?.reason || 'причина неизвестна'}. `
+    + 'Откройте её сами в том же окне: «Администрирование → Обслуживание → Результаты обновления '
+    + 'и дополнительная обработка данных».',
     'warn',
   );
 }
