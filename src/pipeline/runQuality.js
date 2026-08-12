@@ -329,6 +329,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
           user: input.repositoryUser, password: input.repositoryPassword,
           extension: repo.extension,
         });
+        // Если и через расширение не вышло — сказать об этом прямо. Иначе
+        // сообщение слово в слово повторяет первую попытку, и по нему нельзя
+        // понять, дошло ли дело до второй: на этом однажды потерялся день.
+        if (!history.ok) {
+          history = {
+            ...history,
+            reason: `${history.reason} (повторная попытка через расширение базы-контекста `
+              + `«${context.name}» тоже не удалась)`,
+          };
+        }
       } else {
         history = {
           ...history,
