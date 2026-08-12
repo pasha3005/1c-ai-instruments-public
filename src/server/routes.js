@@ -568,6 +568,9 @@ export function buildRouter() {
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      // По умолчанию сняты: не сохранять выгрузку и не открывать базу ради формы.
+      keepDump: body.keepDump === true,
+      openResultsForm: body.openResultsForm === true,
     };
 
     await updateStore.createRun(updateId, input);

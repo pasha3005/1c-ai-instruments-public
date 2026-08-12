@@ -93,6 +93,34 @@ export async function exportConfiguration(ctx) {
 }
 
 /**
+ * Считает расширения конфигурации, не выгружая их целиком.
+ *
+ * Нужно, чтобы честно подписать в отчёте проверку применимости расширений:
+ * `/CheckCanApplyConfigurationExtensions` на базе без расширений отвечает
+ * пустым журналом — точно так же, как когда все расширения применяются
+ * успешно (см. `references/проверки-и-запись.md`). Без независимого счётчика
+ * «расширений нет» и «все расширения применяются» неразличимы.
+ *
+ * Для файловой базы с ibcmd — дешёвый список имён. Иначе (серверная база
+ * либо ibcmd недоступен) счётчика дешевле, чем полной выгрузки, нет —
+ * используется она же.
+ */
+export async function countExtensions({ platform, conn, workDir, user, password }) {
+  const strategy = chooseStrategy({ platform, conn });
+  if (strategy.driver === 'ibcmd') {
+    try {
+      const names = await ibcmd.listExtensions({ platform, conn, user, password });
+      return { count: names.length, names };
+    } catch (err) {
+      rethrowIfCancelled(err);
+      log.warn(`ibcmd не вернул список расширений (${err.message}), считаем полной выгрузкой`);
+    }
+  }
+  const dumped = await exportExtensions({ platform, conn, workDir, user, password });
+  return { count: dumped.extensions.length, names: dumped.names };
+}
+
+/**
  * Выгружает расширения конфигурации.
  * Возвращает список каталогов вида { name, dir }.
  * Отсутствие расширений — штатная ситуация, не ошибка.

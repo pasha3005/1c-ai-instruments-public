@@ -737,11 +737,14 @@ function handlersRow(result) {
   const h = result.handlers;
   if (!h) return '';
 
+  // `launched` само по себе не значит «плохо»: когда флаг «Открывать базу…»
+  // снят, 1С не запускается намеренно — окно тут просто не нужно. Судить
+  // о провале можно только по `error`.
   let verdict;
-  if (!h.launched) {
-    verdict = `<b class="bad">1С не запущена</b>${h.error ? ` — ${esc(h.error)}` : ''}`;
-  } else if (h.error) {
-    verdict = `<b class="warn">обновление не дождалось завершения</b> — ${esc(h.error)}`;
+  if (h.error) {
+    verdict = !h.launched
+      ? `<b class="bad">1С не запущена</b> — ${esc(h.error)}`
+      : `<b class="warn">обновление не дождалось завершения</b> — ${esc(h.error)}`;
   } else if (h.deferredStatus === '') {
     verdict = '<b class="ok">выполнены, отложенных не осталось</b>';
   } else if (h.deferredStatus) {
@@ -788,6 +791,12 @@ function formNote(form) {
 function extensionsVerdict(extensions) {
   if (!extensions.available) {
     return `<b class="warn">не выполнялась</b>${extensions.note ? ` — ${esc(extensions.note)}` : ''}`;
+  }
+  // На базе без расширений проверять нечего: сама проверка на такой базе
+  // отвечает точно так же, как при полном успехе, — сказать «применяются»
+  // здесь значило бы приписать программе проверку, которой не было.
+  if (extensions.count === 0) {
+    return '<span class="muted">расширений нет</span>';
   }
   return (extensions.errors || []).length
     ? `<b class="bad">замечаний: ${formatNumber(extensions.errors.length)}</b>`
@@ -953,15 +962,7 @@ function renderNext(result) {
   return `
   <ol class="steps">
     ${steps.map((step) => `<li>${step}</li>`).join('')}
-  </ol>
-
-  <div class="callout callout--info">
-    <div class="callout__title">Что программа не делает</div>
-    Не запускает обработчики обновления, не снимает конфигурацию с поддержки и не меняет
-    правила поддержки. Всё, что она изменила, — файлы XML-выгрузки и, если это было
-    подтверждено в ходе прогона, основная конфигурация базы вместе с конфигурацией базы
-    данных. Откат — из резервной копии базы, сделанной до загрузки.
-  </div>`;
+  </ol>`;
 }
 
 function manualCount(result) {

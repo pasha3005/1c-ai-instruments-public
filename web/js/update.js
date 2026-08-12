@@ -63,6 +63,9 @@ function collectInput() {
     vendorConfigPath: $('#uVendor').value.trim(),
     targetConfigPath: $('#uTarget').value.trim(),
     workDir: $('#uWorkDir').value.trim(),
+    reportTheme: $('#uReportTheme').value,
+    keepDump: $('#uKeepDump').checked,
+    openResultsForm: $('#uOpenResultsForm').checked,
   };
 }
 

@@ -42,7 +42,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { resolvePlatform } from '../onec/platform.js';
 import { parseConnection, validateConnection } from '../onec/connection.js';
-import { exportConfiguration, exportExtensions } from '../onec/collector.js';
+import { exportConfiguration, exportExtensions, countExtensions } from '../onec/collector.js';
 import { loadConfigFromFiles } from '../onec/designer.js';
 import { checkConfig, checkExtensionsApplicable, updateDbConfig } from '../onec/checkConfig.js';
 import {
@@ -61,6 +61,7 @@ import { fixExtensionAnnotations } from '../update/fixExtensions.js';
 import { renderUpdateReport } from '../report/updateReport.js';
 import * as store from '../store/updateStore.js';
 import { ensureDir, pathExists, rmrf, dirSize, humanSize } from '../util/fsx.js';
+import { removeUpdateOwnEntries } from '../util/workDir.js';
 import { createLogger } from '../util/logger.js';
 import { runCancellable, throwIfCancelled, isCancelled, CANCEL_MESSAGE } from '../util/cancel.js';
 
@@ -249,6 +250,10 @@ async function runPipeline({ updateId, input, progress }) {
       updateId, input, platform, conn, workRoot, progress, result, manualCount,
     });
 
+    // ---------- 11. Очистка каталога выгрузки — по флагу ----------
+    startStage('cleanup');
+    await cleanupUpdateDump({ progress, workRoot, keep: input.keepDump === true, keepResult: !result.loaded });
+
     result.durationMs = Date.now() - startedAt;
     await save(updateId, result);
 
@@ -348,6 +353,11 @@ async function runTypical({
     progress.skip('load', 'не требуется: обновление выполняет платформа');
     await applyTypical({ updateId, input, platform, conn, workRoot, progress, result, source, collectCtx });
   }
+
+  // ---------- Очистка каталога выгрузки — по флагу ----------
+  throwIfCancelled();
+  progress.start('cleanup');
+  await cleanupUpdateDump({ progress, workRoot, keep: input.keepDump === true, keepResult: !result.loaded });
 
   result.durationMs = Date.now() - startedAt;
   await save(updateId, result);
@@ -508,6 +518,24 @@ async function runUpdateHandlers({ platform, conn, input, workRoot, progress, re
   });
   if (!applied) return;
 
+  // Флаг «Открывать базу для просмотра формы результатов обновления»: обработчики
+  // уже выполнены без единого окна 1С, и всё, что осталось, — необязательный шаг
+  // просмотра. Требование пользователя: снят флаг — база вообще не открывается.
+  if (input.openResultsForm !== true) {
+    handlers.form = {
+      opened: false,
+      reason: 'флаг «Открывать базу для просмотра формы результатов обновления» снят — '
+        + 'база не открывается',
+    };
+    progress.message(
+      'База в режиме предприятия не запускалась: флаг «Открывать базу для просмотра формы '
+      + 'результатов обновления» снят. Итог обновления можно посмотреть, войдя в базу самим: '
+      + '«Администрирование → Обслуживание → Результаты обновления и дополнительная обработка данных».',
+    );
+    reportDeferred(progress, handlers);
+    return;
+  }
+
   // Единственное окно 1С: обработчики уже выполнены, и сеанс нужен ровно затем,
   // чтобы открыть форму результатов обновления и оставить её открытой.
   progress.update('handlers', 'Запуск 1С в режиме предприятия');
@@ -653,18 +681,26 @@ async function runHandlersQuietly({ platform, conn, input, workRoot, progress, h
     return false;
   }
 
-  // Спросить БСП нечем — остаётся прежний путь: вход в базу и ожидание.
+  // Спросить БСП нечем — остаётся прежний путь: вход в базу и ожидание. База
+  // открывается независимо от флага «Открывать базу…»: это единственный способ
+  // выполнить монопольные обработчики в этом случае, а не просмотр результата.
+  // Флаг решает только последнее — вести ли этот же сеанс сразу на форму.
+  const showForm = input.openResultsForm === true;
   progress.message(
     `Неинтерактивное обновление недоступно: ${run.reason}. Тогда обработчики выполнит сама `
-    + 'платформа при входе в базу — запускаю 1С и жду. Форма результатов обновления в этом '
-    + 'случае может не открыться: БСП закрывает окна вместе со своим окном обновления.',
+    + 'платформа при входе в базу — запускаю 1С и жду (это не связано с флагом «Открывать базу '
+    + 'для просмотра формы результатов обновления»: без окна здесь обработчики не выполнить). '
+    + (showForm
+      ? 'Форма результатов обновления в этом случае может не открыться: БСП закрывает окна '
+        + 'вместе со своим окном обновления.'
+      : 'Флаг снят, поэтому на форму результатов сеанс не наводится.'),
     'warn',
   );
 
   try {
     const { pid } = launchEnterprise({
       platform, conn, user: input.user, password: input.password,
-      extraArgs: updateSessionArgs(handlers.formMeta),
+      extraArgs: showForm ? updateSessionArgs(handlers.formMeta) : [],
     });
     handlers.launched = true;
     handlers.pid = pid;
@@ -706,12 +742,20 @@ async function runHandlersQuietly({ platform, conn, input, workRoot, progress, h
 
   progress.message(`Обработчики обновления отработали за ${waited.seconds} с.`);
   // Окно уже открыто этим путём: второго не запускаем.
-  handlers.form = handlers.formMeta
-    ? await waitResultsForm({
-      processId: handlers.pid, form: handlers.formMeta, workDir: workRoot, budgetMs: 30_000,
-    })
-    : { opened: false, reason: 'форма результатов обновления в метаданных базы не найдена' };
-  reportForm(progress, handlers.form);
+  if (showForm) {
+    handlers.form = handlers.formMeta
+      ? await waitResultsForm({
+        processId: handlers.pid, form: handlers.formMeta, workDir: workRoot, budgetMs: 30_000,
+      })
+      : { opened: false, reason: 'форма результатов обновления в метаданных базы не найдена' };
+    reportForm(progress, handlers.form);
+  } else {
+    handlers.form = {
+      opened: false,
+      reason: 'флаг «Открывать базу для просмотра формы результатов обновления» снят — '
+        + 'на форму не наводились',
+    };
+  }
   reportDeferred(progress, handlers);
   return false;
 }
@@ -1014,6 +1058,36 @@ function startWrite(progress, id, detail) {
 }
 
 /**
+ * Очистка каталога выгрузки — по флагу «Сохранить выгрузку», видимым этапом.
+ *
+ * В отличие от обследования, чистить можно не всё: результат объединения
+ * (`config`) и «Конфликты» бережём, пока он не загружен в базу (`keepResult`),
+ * иначе кнопке «Загрузить в конфигурацию» стало бы нечем загружать. Входные
+ * выгрузки (текущая и новая поставка, временные файлы проверки расширений)
+ * чистятся всегда, когда флаг снят.
+ */
+async function cleanupUpdateDump({ progress, workRoot, keep, keepResult }) {
+  if (keep) {
+    progress.skip('cleanup', 'выгрузка сохранена по требованию пользователя');
+    return;
+  }
+
+  progress.update('cleanup', workRoot);
+  try {
+    const removed = await removeUpdateOwnEntries(workRoot, { keepResult });
+    log.info(`Выгрузка обновления очищена: элементов ${removed} в ${workRoot}`);
+    progress.done('cleanup', keepResult
+      ? `удалено элементов: ${removed} (результат объединения сохранён — ещё не загружен в базу)`
+      : `удалено элементов: ${removed}`);
+  } catch (err) {
+    // Не повод считать обновление неудачным: результат уже готов. Но сказать
+    // надо — иначе пользователь найдёт лишнее на диске и не поймёт откуда.
+    log.warn(`Не удалось очистить каталог выгрузки обновления: ${err.message}`);
+    progress.warn('cleanup', `не удалось очистить: ${err.message}`);
+  }
+}
+
+/**
  * Синтаксический контроль и применимость расширений — с починкой и повтором.
  *
  * Требование пользователя: «если ты видишь, что проверки применимости
@@ -1049,13 +1123,28 @@ async function runChecks({ platform, conn, input, workRoot, mergedDir, progress,
   checks.extensionsSyntax = extensionsSyntax;
   progress.update('check', `синтаксический контроль расширений: замечаний ${extensionsSyntax.errors.length}`);
 
+  // Считаем расширения ДО проверки применимости: на базе без расширений
+  // журнал `/CheckCanApplyConfigurationExtensions` пуст точно так же, как
+  // когда все расширения применяются успешно — не узнав число заранее,
+  // «расширений нет» не отличить от «все применяются».
+  const extCount = await countExtensions({
+    platform, conn, workDir: workRoot, user: input.user, password: input.password,
+  });
+  progress.update('check', `расширений в базе: ${extCount.count}`);
+
+  if (extCount.count === 0) {
+    checks.extensions = { available: true, ok: true, errors: [], count: 0 };
+    checks.rounds.push({ round: 1, ok: true, errors: 0, note: 'расширений нет' });
+    return checks;
+  }
+
   for (let round = 1; round <= FIX_ROUNDS; round += 1) {
     throwIfCancelled();
     progress.update('check', `проверка применимости расширений, попытка ${round}`);
     const applicable = await checkExtensionsApplicable({
       platform, conn, user: input.user, password: input.password, workDir: workRoot,
     });
-    checks.extensions = applicable;
+    checks.extensions = { ...applicable, count: extCount.count };
     checks.rounds.push({
       round, ok: applicable.ok, errors: applicable.errors?.length || 0, note: applicable.note || '',
     });
