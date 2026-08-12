@@ -29,7 +29,10 @@ export function initQuality() {
   $$('#qSource input[name="qSource"]').forEach((radio) => {
     radio.addEventListener('change', () => applySource(radio.value));
   });
-  applySource('infobase');
+  // Хранилище — источник по умолчанию: авторство там записано платформой,
+  // а не угадывается по пометкам в коде. Отмечено оно и в разметке —
+  // здесь просто показываем соответствующие поля.
+  applySource(currentSource());
   initPeriodDialog();
 
   $('#qualityForm').addEventListener('submit', (event) => {

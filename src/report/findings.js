@@ -260,13 +260,34 @@ function renderCase(f, index) {
             data-search="${esc(searchKey(f))}">
           <td class="num muted">${index + 1}</td>
           <td>${whereCell(f)}</td>
-          <td class="nowrap">${authorBadge(f.author)}${f.author ? '<br>' : ''}${originBadge(f.origin)}</td>
+          <td class="nowrap">${ownerCell(f)}</td>
           <td class="num">${f.line || '—'}</td>
           <td class="muted">
             ${esc(shorten(f.detail, 300))}
             ${f.snippet ? codeBlock(f.snippet) : ''}
           </td>
         </tr>`;
+}
+
+/**
+ * Колонка «Чей код».
+ *
+ * Когда автор пришёл из хранилища конфигурации, показываем **фамилию из
+ * помещения** и говорим, откуда она. Значок происхождения там не нужен и
+ * вводил в заблуждение: в режиме хранилища весь разбираемый код помечается
+ * «добавлено интегратором» — сведений в этом нет никаких, а вместо имени
+ * помещавшего пользователь видел казённую подпись (прямое замечание
+ * пользователя, 12.08.2026).
+ *
+ * В обследовании всё как было: там автор — догадка по пометкам в коде,
+ * и происхождение модуля важнее фамилии.
+ */
+function ownerCell(f) {
+  const fromRepository = f.authorSource === 'хранилище конфигурации';
+  if (fromRepository && f.author) {
+    return `${authorBadge(f.author)}<div class="muted" style="font-size:12px">помещение в хранилище</div>`;
+  }
+  return `${authorBadge(f.author)}${f.author ? '<br>' : ''}${originBadge(f.origin)}`;
 }
 
 /**

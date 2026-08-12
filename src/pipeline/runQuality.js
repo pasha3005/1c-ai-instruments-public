@@ -689,15 +689,21 @@ function applyRepositoryAuthors(findings, byObject) {
   }
 }
 
-/** Ключ объекта замечания в русских именах — как их печатает хранилище. */
+/**
+ * Ключ объекта замечания — «Document.Документ4», как их складывает
+ * `keyFromRussian` из истории хранилища.
+ *
+ * Владелец лежит у замечания ПЛОСКО (`ownerKind`, `ownerName`), а не во
+ * вложенном `module`: так его кладёт `analyze/codeAnalyzer.js`. Пока здесь
+ * читалось только `finding.module.*`, ключ всегда получался пустым, автор
+ * из хранилища не проставлялся ни одному замечанию, и в колонке «Чей код»
+ * вместо фамилии оставался значок происхождения. Вложенную форму читаем тоже:
+ * так замечание выглядит в тестах и в старых сохранённых прогонах.
+ */
 function objectKeyOf(finding) {
-  const owner = finding.module?.ownerKind && finding.module?.ownerName
-    ? `${finding.module.ownerKind}.${finding.module.ownerName}`
-    : null;
-  if (!owner) return null;
-  // История хранилища печатает русские имена, а ключи анализа — английские.
-  // Сопоставляем по второй части: имя объекта платформа не переводит.
-  return owner;
+  const kind = finding.ownerKind || finding.module?.ownerKind;
+  const name = finding.ownerName || finding.module?.ownerName;
+  return kind && name ? `${kind}.${name}` : null;
 }
 
 function countBy(items, pick) {
@@ -727,3 +733,6 @@ function sanitize(input) {
 
 /** Существует ли путь — для проверок входных данных в маршруте. */
 export { pathExists };
+
+/** Экспортируется ради теста: привязка авторов — место, где уже ломалось. */
+export { applyRepositoryAuthors };
