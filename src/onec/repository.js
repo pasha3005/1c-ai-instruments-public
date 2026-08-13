@@ -44,7 +44,9 @@ import { createLogger } from '../util/logger.js';
 import { rethrowIfCancelled } from '../util/cancel.js';
 import { parseConnection } from './connection.js';
 import { listExtensions, createExtension } from './ibcmd.js';
-import { loadCfg, dumpConfigToFiles } from './designer.js';
+import {
+  loadCfg, dumpConfigToFiles, createInfobase, createExtensionByDesigner,
+} from './designer.js';
 
 const log = createLogger('repository');
 
@@ -188,17 +190,24 @@ export async function findRepositories(dir) {
 export async function createContextInfobase({ platform, workDir, name = 'repo-context' }) {
   const dir = path.join(workDir, name);
   if (await pathExists(path.join(dir, '1Cv8.1CD'))) return dir;
-  if (!platform.ibcmd) {
-    throw new Error(
-      `В платформе ${platform.version} нет ibcmd — временную базу для работы с хранилищем `
-      + 'создать нечем. Выберите версию платформы 8.3.14 или новее.',
-    );
-  }
+
   await rmrf(dir).catch(() => {});
   await ensureDir(dir);
-  await run(platform.ibcmd, [
-    'infobase', 'create', `--db-path=${dir}`, '--create-database',
-  ], { timeout: TIMEOUTS.configExport });
+
+  // ibcmd быстрее и не требует лицензии — берём его, когда он есть. А есть он
+  // не всегда: `ibcmd.exe` входит в СЕРВЕРНУЮ часть платформы, и на машине,
+  // где стоит только клиент (обычное дело для терминального сервера
+  // заказчика), его нет ни в какой версии. Тогда базу создаёт сам `1cv8.exe`
+  // режимом CREATEINFOBASE.
+  if (platform.ibcmd) {
+    await run(platform.ibcmd, [
+      'infobase', 'create', `--db-path=${dir}`, '--create-database',
+    ], { timeout: TIMEOUTS.configExport });
+  } else {
+    log.info(`ibcmd в платформе ${platform.version} нет — базу создаёт 1cv8 CREATEINFOBASE`);
+    await createInfobase({ platform, dir, logFile: path.join(workDir, 'repo-context.log') });
+  }
+
   log.info(`Создана временная база-контекст для хранилища: ${dir}`);
   return dir;
 }
@@ -223,13 +232,18 @@ function extensionArgs(extension) {
  * @returns {Promise<{ok: boolean, name?: string, reason?: string}>}
  */
 export async function ensureContextExtension({ platform, contextBase, name = CONTEXT_EXTENSION }) {
-  if (!platform.ibcmd) {
-    return {
-      ok: false,
-      reason: `в платформе ${platform.version} нет ibcmd — расширение в базе-контексте создать нечем`,
-    };
-  }
   const conn = parseConnection(contextBase);
+
+  // Без ibcmd (клиентская установка платформы) расширение заводит конфигуратор —
+  // окольным путём, зато проверенным на четырёх сборках. Подробности и причина,
+  // почему путь именно такой, — в `createExtensionByDesigner`.
+  if (!platform.ibcmd) {
+    const made = await createExtensionByDesigner({
+      platform, conn, name, workDir: path.dirname(contextBase),
+    });
+    return made.ok ? { ok: true, name } : made;
+  }
+
   const existing = await listExtensions({ platform, conn });
   if (existing.includes(name)) return { ok: true, name };
 

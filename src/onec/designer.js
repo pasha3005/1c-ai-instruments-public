@@ -205,6 +205,159 @@ export async function loadCfg({
 }
 
 /**
+ * Создаёт пустую файловую базу клиентом платформы, без ibcmd.
+ *
+ * Зачем понадобилось (13.08.2026, сервер заказчика, платформа 8.3.27.1688).
+ * **`ibcmd.exe` входит в СЕРВЕРНУЮ часть платформы, а не в клиентскую.**
+ * На терминальном сервере, где люди только работают в 1С, ставят один клиент —
+ * рядом с `1cv8.exe` лежат `1cv8c.exe` и `dumper.exe`, а `ibcmd.exe`, `ragent.exe`
+ * и `rphost.exe` отсутствуют. Программа объявляла это старой платформой
+ * и советовала «выберите 8.3.14 или новее», хотя стояла 8.3.27: версия была
+ * ни при чём, и совет вёл в тупик.
+ *
+ * `CREATEINFOBASE` — режим самого `1cv8.exe`, он есть в любой установке.
+ * Проверено на 8.3.22, 8.3.24, 8.3.27 и 8.5.1: код 0, 8 с, база создаётся.
+ *
+ * **Путь берётся в ОДИНАРНЫЕ кавычки** — и это не вкусовщина. Node, запуская
+ * процесс, сам заключает аргумент с пробелом в двойные кавычки, а внутренние
+ * двойные экранирует обратной косой чертой; разбор платформы такого не понимает
+ * и отвечает «Неверные или отсутствующие параметры соединения с информационной
+ * базой». Перебраны все четыре формы (`File="…";`, `File="…"`, `File=…;`,
+ * `File=…`) на каталоге с пробелами — не прошла ни одна. Одинарные кавычки
+ * Node не трогает, и платформа принимает их как ограничитель значения.
+ */
+export async function createInfobase({ platform, dir, logFile }) {
+  const connectionString = fileConnectionString(dir);
+  await ensureDir(dir);
+  const logPath = logFile || path.join(path.dirname(dir), `createinfobase-${Date.now()}.log`);
+
+  const result = await run(platform.client, [
+    'CREATEINFOBASE', connectionString,
+    ...COMMON_FLAGS,
+    '/Out', logPath,
+  ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
+
+  const designerLog = await readLogSafe(logPath);
+  // Проверяем не код возврата, а файл базы: код 0 у платформы не гарантирует
+  // ничего, и здесь это особенно важно — на пустом каталоге всё «получится».
+  if (!(await pathExists(path.join(dir, '1Cv8.1CD')))) {
+    throw new Error(
+      `Не удалось создать временную базу в ${dir}.`
+      + (designerLog ? ` Журнал платформы:\n${designerLog}` : ` Код возврата: ${result.code}.`),
+    );
+  }
+  log.info(`Создана пустая файловая база: ${dir}`);
+  return { dir, log: designerLog };
+}
+
+/**
+ * Строка соединения для `CREATEINFOBASE`.
+ *
+ * Отдельной функцией ради одной строчки, потому что эта строчка уже стоила
+ * разбора: кавычки здесь ОДИНАРНЫЕ. Двойные Node экранирует обратной косой
+ * чертой, когда сам заключает аргумент с пробелом в кавычки, и платформа
+ * отвечает «Неверные или отсутствующие параметры соединения с информационной
+ * базой». Проверены все четыре формы с двойными кавычками и без — на каталоге
+ * с пробелом не прошла ни одна.
+ */
+export function fileConnectionString(dir) {
+  if (String(dir).includes("'")) {
+    // Ограничитель значения внутри значения строку соединения и оборвёт.
+    throw new Error(
+      `В пути ${dir} есть апостроф — платформа не примет такую строку соединения. `
+      + 'Выберите рабочий каталог без апострофа в имени.',
+    );
+  }
+  return `File='${dir}';`;
+}
+
+/**
+ * Заводит в базе пустое расширение — тоже без ibcmd.
+ *
+ * Обходной путь, и он выглядит странно, поэтому объясняю целиком.
+ * Отдельной команды «создать расширение» у конфигуратора нет — она есть только
+ * у `ibcmd` (`infobase config extension create`), которого на клиентской
+ * установке не бывает. Зато `/LoadConfigFromFiles … -Extension <имя>`
+ * расширение с таким именем **создаёт сам**, прежде чем разбирать исходники.
+ * Значит, каталог-источник может быть и пустым: загрузка развалится
+ * («Файл объекта не существует … Configuration.xml»), а расширение останется.
+ *
+ * Проверено 13.08.2026 на четырёх сборках — 8.3.22.1923, 8.3.24.1691,
+ * 8.3.27.1989 и 8.5.1.1150: везде код 1 и везде расширение в базе есть.
+ *
+ * Опираться на побочный итог неудачной команды всё же нельзя, поэтому итог
+ * ПРОВЕРЯЕТСЯ: расширение выгружается обратно (`/DumpConfigToFiles -Extension`).
+ * Прошло с кодом 0 и тремя файлами — расширение настоящее и пригодно
+ * как контекст для хранилища; режим совместимости платформа проставила сама
+ * (`Version8_3_22`, `Version8_3_27`, `Version8_5_1` соответственно).
+ * Перестанет платформа его создавать — проверка это увидит и скажет прямо,
+ * вместо того чтобы уронить работу с хранилищем непонятной ошибкой.
+ *
+ * Готового пустого расширения в поставке нет намеренно: у выгрузки расширения
+ * в `Configuration.xml` стоит версия формата (`version="2.20"` у 8.3.27),
+ * и 8.3.22 такой файл не принимает — «Неизвестная версия формата 2.20».
+ * Шаблон пришлось бы держать на каждую сборку платформы.
+ *
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+export async function createExtensionByDesigner({
+  platform, conn, name, workDir, user, password,
+}) {
+  const emptyDir = path.join(workDir, 'ext-seed');
+  const probeDir = path.join(workDir, 'ext-probe');
+  await ensureDir(emptyDir);
+  await fs.rm(probeDir, { recursive: true, force: true });
+
+  const probe = () => dumpConfigToFiles({
+    platform, conn, outDir: probeDir, extension: name, user, password,
+    logFile: path.join(workDir, `designer-extension-probe-${Date.now()}.log`),
+  });
+
+  // Расширение уже есть — трогать его нечем и незачем. Проверка тем же
+  // способом, что и итоговая: списка расширений без ibcmd взять негде.
+  try {
+    await probe();
+    return { ok: true };
+  } catch (err) {
+    rethrowIfCancelled(err);
+  } finally {
+    await fs.rm(probeDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  const logPath = path.join(workDir, `designer-extension-${Date.now()}.log`);
+  await run(platform.client, [
+    'DESIGNER',
+    ...toClientArgs(conn),
+    ...authArgs({ user, password }),
+    '/LoadConfigFromFiles', emptyDir,
+    '-Extension', name,
+    ...COMMON_FLAGS,
+    '/Out', logPath,
+  ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
+
+  try {
+    await probe();
+  } catch (err) {
+    rethrowIfCancelled(err);
+    const designerLog = await readLogSafe(logPath);
+    return {
+      ok: false,
+      reason: `расширение «${name}» в базе-контексте не появилось`
+        + (designerLog ? `: ${firstMeaningfulLine(designerLog)}` : ''),
+    };
+  } finally {
+    await fs.rm(probeDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  log.info(`В базе создано расширение «${name}» (конфигуратором, без ibcmd)`);
+  return { ok: true };
+}
+
+function firstMeaningfulLine(text) {
+  return String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || '';
+}
+
+/**
  * Собирает .epf из XML-исходников (используется для служебной обработки сбора данных).
  * Доступно с 8.3.9.
  */

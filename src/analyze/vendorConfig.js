@@ -39,6 +39,8 @@ import { TIMEOUTS } from '../config.js';
 import { createLogger } from '../util/logger.js';
 import { rethrowIfCancelled } from '../util/cancel.js';
 import { compareWithVendorInBase } from '../onec/vendorCompare.js';
+import { parseConnection } from '../onec/connection.js';
+import { createInfobase, loadCfg, dumpConfigToFiles } from '../onec/designer.js';
 
 const log = createLogger('vendor');
 
@@ -197,16 +199,6 @@ export async function exportCfToXml({ cfFile, platform, workDir, name = 'vendor'
   const outDir = path.join(workDir, name);
   const tempDbDir = path.join(workDir, `${name}-db`);
 
-  if (!platform.ibcmd) {
-    return {
-      ok: false,
-      reason:
-        `В платформе ${platform.version} нет ibcmd, автоматическое разворачивание .cf невозможно. ` +
-        'Выгрузите конфигурацию поставщика в XML (Конфигуратор → Конфигурация → ' +
-        'Выгрузить конфигурацию в файлы) и укажите путь к каталогу.',
-    };
-  }
-
   try {
     // ibcmd не пишет в непустой каталог — оба чистим перед работой.
     await rmrf(tempDbDir).catch(() => {});
@@ -215,19 +207,34 @@ export async function exportCfToXml({ cfFile, platform, workDir, name = 'vendor'
     await ensureDir(outDir);
 
     onProgress?.('Загрузка .cf во временную базу (может занять несколько минут)');
-    await run(platform.ibcmd, [
-      'infobase', 'create',
-      `--db-path=${tempDbDir}`,
-      '--create-database',
-      `--load=${cfFile}`,
-    ], { timeout: TIMEOUTS.configExport });
+    if (platform.ibcmd) {
+      await run(platform.ibcmd, [
+        'infobase', 'create',
+        `--db-path=${tempDbDir}`,
+        '--create-database',
+        `--load=${cfFile}`,
+      ], { timeout: TIMEOUTS.configExport });
 
-    onProgress?.('Выгрузка конфигурации поставщика в XML');
-    await run(platform.ibcmd, [
-      'infobase', 'config', 'export',
-      `--db-path=${tempDbDir}`,
-      outDir,
-    ], { timeout: TIMEOUTS.configExport });
+      onProgress?.('Выгрузка конфигурации поставщика в XML');
+      await run(platform.ibcmd, [
+        'infobase', 'config', 'export',
+        `--db-path=${tempDbDir}`,
+        outDir,
+      ], { timeout: TIMEOUTS.configExport });
+    } else {
+      // Клиентская установка платформы: ibcmd в неё не входит. Те же три шага
+      // делает сам 1cv8 — создание базы, загрузка .cf, выгрузка в XML.
+      // Дольше (конфигуратор поднимает больше подсистем) и требует лицензии,
+      // но других отличий нет.
+      const conn = parseConnection(tempDbDir);
+      await createInfobase({ platform, dir: tempDbDir, logFile: `${tempDbDir}.log` });
+      await loadCfg({ platform, conn, cfFile, logFile: `${tempDbDir}-loadcfg.log` });
+
+      onProgress?.('Выгрузка конфигурации поставщика в XML');
+      await dumpConfigToFiles({
+        platform, conn, outDir, logFile: `${tempDbDir}-dump.log`,
+      });
+    }
 
     return { ok: true, dir: outDir };
   } catch (err) {
