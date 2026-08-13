@@ -589,7 +589,7 @@ export function takeFragments(source, regions, routines = []) {
  * Форма результата совпадает с `diffModule`, чтобы дальше по коду ветвление
  * не размножалось: правила в обоих случаях видят только изменённые строки.
  */
-function reportedRegions(module, changeSet, source) {
+export function reportedRegions(module, changeSet, source) {
   const lines = changeSet?.moduleLines;
   if (!lines?.size) return null;
 
@@ -649,6 +649,11 @@ function reportedRegions(module, changeSet, source) {
 
   return {
     regions,
+    // Сами номера строк, а не только сшитые участки. Нужны проверке качества
+    // по хранилищу: она строит блоки правки сама (`placementFragments`),
+    // и склейка соседних участков в `toRegions` там вредна — из-за неё
+    // в блок затягивался чужой код.
+    lines: [...found.keys()].sort((a, b) => a - b),
     addedLines: found.size,
     removedLines: entry.removedLines,
     exact: true,

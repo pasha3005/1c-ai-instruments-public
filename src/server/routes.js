@@ -811,6 +811,9 @@ export function buildRouter() {
       serviceBase: String(body.serviceBase || '').trim(),
       serviceBaseUser: String(body.serviceBaseUser || '').trim(),
       serviceBasePassword: typeof body.serviceBasePassword === 'string' ? body.serviceBasePassword : '',
+      // Указанную базу по умолчанию НЕ меняем: у разработчика на сервере
+      // заказчика есть только его рабочая база. Запись — отдельное согласие.
+      allowBaseWrite: body.allowBaseWrite === true,
       periodFrom: String(body.periodFrom || '').trim(),
       periodTo: String(body.periodTo || '').trim(),
       platformVersion: String(body.platformVersion || '').trim(),

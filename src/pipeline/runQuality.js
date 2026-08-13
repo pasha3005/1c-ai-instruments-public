@@ -41,6 +41,8 @@ import {
 } from '../analyze/vendorConfig.js';
 import { diffModule } from '../analyze/bsl/moduleDiff.js';
 import { placementFragments } from '../analyze/bsl/placementFragments.js';
+import { compareCfFiles } from '../onec/compareFiles.js';
+import { reportedRegions } from '../analyze/codeAnalyzer.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
 import { analyzeStructure } from '../analyze/bsl/structure.js';
 import { runAnalysis } from '../analyze/index.js';
@@ -342,9 +344,14 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   startOrThrow(progress, 'export', 'Чтение истории и выгрузка конфигурации из хранилища');
   // Командам хранилища нужна база-контекст, но привязывать её к хранилищу
   // не требуется — проверено. Поэтому создаём пустую временную.
-  // Служебную базу проверяем сразу: ошибиться в строке соединения легко,
-  // а узнать об этом через минуту работы обидно.
+  // Базу проверяем сразу: ошибиться в строке соединения легко, а узнать
+  // об этом через минуту работы обидно.
   if (input.serviceBase) await validateConnection(parseConnection(input.serviceBase));
+
+  // «Только чтение» — режим по умолчанию, когда база указана: чужую базу
+  // разработчика менять нельзя, и это требование пользователя (13.08.2026),
+  // а не осторожность. Своей временной базе запрещать нечего — она наша.
+  const readOnly = Boolean(input.serviceBase) && input.allowBaseWrite !== true;
 
   // База, из которой конфигуратор говорит с хранилищем. Своя временная —
   // либо служебная, указанная пользователем: на терминальном сервере без
@@ -362,7 +369,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   const period = { from: input.periodFrom || '', to: input.periodTo || '' };
   const commits = [];
   let mainDir = null;
-  const extensionDirs = [];
+  let extensionDirs = [];
   // Статус каждого хранилища — отдельно от warnings (тех же текстов, но
   // строкой для всего прогона): отчёту нужно показать таблицу помещений
   // при каждом хранилище персонально, включая те, что не прочитались.
@@ -432,10 +439,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       continue;
     }
 
-    const expanded = await expandRepositoryCf({
-      repo, cfFile: dumped.file, platform, contextBase, workRoot,
-      onProgress: (text) => progress.update('export', `«${repo.name}»: ${text}`),
-    });
+    // В режиме «только чтение» разворачивать выгрузку некуда: разворачивание
+    // идёт загрузкой в базу, а база чужая и менять её нельзя. Код для разбора
+    // берётся из самой базы (её выгрузка — операция читающая), а правки
+    // помещений строит сравнение двух файлов `.cf` средствами платформы.
+    const expanded = readOnly
+      ? { ok: true, dir: null }
+      : await expandRepositoryCf({
+        repo, cfFile: dumped.file, platform, contextBase, workRoot,
+        onProgress: (text) => progress.update('export', `«${repo.name}»: ${text}`),
+      });
     if (!expanded.ok) {
       warnings.push(`Хранилище «${repo.name}»: конфигурация не развернулась — ${expanded.reason}`);
       repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: expanded.reason });
@@ -448,8 +461,39 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     repoStatus.push({
       name: repo.name, dir: repo.dir, ok: true, isMain, isExtension: Boolean(repo.extension),
     });
+    if (readOnly) continue;
     if (isMain) mainDir = expanded.dir;
     else extensionDirs.push({ name: repo.name, dir: expanded.dir });
+  }
+
+  // Исходники для разбора — выгрузка самой базы. Операция читающая: платформа
+  // выгружает конфигурацию в XML, ничего в базе не меняя. Код в базе тот же,
+  // что в хранилище, пока разработчик обновлён из хранилища; расхождение
+  // возможно и оговаривается в отчёте.
+  if (readOnly) {
+    progress.update('export', 'выгрузка конфигурации базы в XML (в базу ничего не пишется)');
+    const ctx = {
+      platform,
+      conn: parseConnection(contextBase.base),
+      workDir: workRoot,
+      user: contextBase.user,
+      password: contextBase.password,
+    };
+    const exported = await exportConfiguration({
+      ...ctx,
+      onProgress: (text) => {
+        const line = String(text).trim().split('\n').pop();
+        if (line) progress.update('export', line.slice(0, 160));
+      },
+    });
+    mainDir = exported.dir;
+    try {
+      const ext = await exportExtensions({ ...ctx });
+      extensionDirs = ext.extensions || [];
+    } catch (err) {
+      rethrowIfCancelled(err);
+      warnings.push(`Расширения базы не выгружены: ${err.message} — их код в проверку не попал.`);
+    }
   }
 
   if (!mainDir && extensionDirs.length) {
@@ -477,10 +521,15 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     );
   }
 
-  const diffStats = await buildPlacementDiffs({
-    platform, contextBase, workRoot, progress, commits, repositories,
-    user: input.repositoryUser, password: input.repositoryPassword,
-  });
+  const diffStats = readOnly
+    ? await buildPlacementDiffsByCompare({
+      platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
+      user: input.repositoryUser, password: input.repositoryPassword,
+    })
+    : await buildPlacementDiffs({
+      platform, contextBase, workRoot, progress, commits, repositories,
+      user: input.repositoryUser, password: input.repositoryPassword,
+    });
   if (diffStats.limited) {
     warnings.push(
       `Правки показаны не по всем помещениям периода: выгрузок понадобилось больше `
@@ -704,6 +753,143 @@ async function buildPlacementDiffs({
           formName: am.formName || null,
           isNew: !bm,
           addedLines: addedLines.length,
+          regionCount: totalBlocks,
+          hiddenBlocks: Math.max(0, totalBlocks - fragments.length),
+          fragments,
+        });
+      }
+    }
+    if (diffs.length) commit.moduleDiffs = diffs;
+  }
+
+  return { limited, dumps };
+}
+
+/**
+ * Правки помещений БЕЗ ЗАПИСИ В БАЗУ.
+ *
+ * Прежний путь требовал развернуть версии N и N−1 в XML, а развернуть `.cf`
+ * можно только загрузкой в базу. У разработчика на сервере заказчика есть
+ * лишь его рабочая база, менять которую нельзя, — поэтому здесь всё иначе:
+ *
+ *  1. версии N и N−1 выгружаются из хранилища файлами `.cf` (чтение);
+ *  2. их сравнивает сама платформа — `/CompareCfg` между двумя ФАЙЛАМИ
+ *     (`onec/compareFiles.js`); база при этом только контекст запуска
+ *     и не меняется — проверено сверкой её конфигурации до и после;
+ *  3. подробный отчёт печатает и номера строк, и сам добавленный код;
+ *  4. участки привязываются к тексту модуля ИЗ БАЗЫ (`reportedRegions`) —
+ *     по совпадению строк, а не по номерам: в базе может стоять другая
+ *     версия. Не нашлось — правка не показывается, и это честнее выдумки.
+ *
+ * Отсюда же ограничение, которое отчёт оговаривает: код берётся из базы.
+ * Если разработчик не обновлён из хранилища, свежих чужих помещений в его
+ * базе нет — их правки показать неоткуда.
+ */
+async function buildPlacementDiffsByCompare({
+  platform, contextBase, workRoot, progress, commits, repositories,
+  mainDir, extensionDirs, user, password,
+}) {
+  const withCode = commits.filter((c) => (c.added.length || c.changed.length));
+  if (!withCode.length) return { limited: false, dumps: 0 };
+
+  // Модули базы — единый источник текста для всех помещений.
+  const byObject = new Map();
+  for (const dir of [mainDir, ...(extensionDirs || []).map((e) => e.dir)]) {
+    if (!dir) continue;
+    for (const m of await collectModules(dir)) {
+      if (!m.ownerKind || !m.ownerName) continue;
+      const k = `${m.ownerKind}.${m.ownerName}`;
+      if (!byObject.has(k)) byObject.set(k, []);
+      byObject.get(k).push(m);
+    }
+  }
+
+  const repoByName = new Map(repositories.map((r) => [r.name, r]));
+  const cache = new Map();
+  let dumps = 0;
+  let limited = false;
+
+  /** Отчёт сравнения версии N с N−1. Кэш — соседние помещения делят версии. */
+  const compareVersions = async (repoName, version) => {
+    const key = `${repoName} ${version}`;
+    if (cache.has(key)) return cache.get(key);
+    const repo = repoByName.get(repoName);
+    if (!repo || version < 2) return null;
+    if (dumps >= MAX_PLACEMENT_DUMPS) {
+      limited = true;
+      cache.set(key, null);
+      return null;
+    }
+
+    let sets = null;
+    try {
+      progress.update('export', `хранилище «${repoName}»: сравнение версий ${version - 1} и ${version}`);
+      const files = [];
+      for (const v of [version, version - 1]) {
+        dumps += 1;
+        const dumped = await repositoryDumpCfg({
+          platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version: v,
+          extension: repo.extension || '',
+        });
+        if (!dumped.ok) throw new Error(dumped.reason);
+        files.push(dumped.file);
+      }
+      const compared = await compareCfFiles({
+        platform, context: contextBase, newer: files[0], older: files[1],
+        workDir: workRoot, name: `${safeFileName(repoName)}-v${version}`,
+      });
+      if (!compared.ok) throw new Error(compared.reason);
+      sets = compared.sets;
+    } catch (err) {
+      rethrowIfCancelled(err);
+      log.warn(`Хранилище «${repoName}», версия ${version}: сравнение не вышло (${err.message})`);
+    }
+    cache.set(key, sets);
+    return sets;
+  };
+
+  for (const commit of withCode) {
+    throwIfCancelled();
+    const sets = await compareVersions(commit.repository, commit.version);
+    if (!sets) continue;
+
+    const diffs = [];
+    for (const russian of [...new Set([...commit.added, ...commit.changed])]) {
+      const key = keyFromRussian(russian);
+      if (!key) continue;
+
+      for (const module of narrowByRussianSuffix(russian, byObject.get(key) || [])) {
+        throwIfCancelled();
+        const source = await readTextSafe(module.file);
+        if (source == null) continue;
+
+        // Привязка блоков отчёта к тексту модуля из базы — по совпадению
+        // строк. Тот же код, что привязывает правки к типовым модулям
+        // в обследовании: задача одна и та же.
+        const found = reportedRegions(module, sets, source);
+        if (!found?.lines?.length) continue;
+
+        const routines = routinesOf(source);
+        // Процедур прежней версии у нас нет — версия N−1 в XML не
+        // разворачивалась. Но значок состояния по ним и считается: процедура
+        // «добавлена», если её объявление среди внесённых строк, и «изменена»
+        // иначе. Ровно это и означает список «прежних» процедур.
+        const addedSet = new Set(found.lines);
+        const previousRoutines = routines.filter((r) => !addedSet.has(r.line));
+
+        const { fragments, totalBlocks } = placementFragments({
+          source, addedLines: found.lines, routines, previousRoutines,
+        });
+        if (!fragments.length) continue;
+
+        diffs.push({
+          object: russian,
+          moduleTitle: module.title,
+          moduleType: module.moduleType,
+          moduleTypeRu: module.moduleTypeRu,
+          formName: module.formName || null,
+          isNew: sets.added.has(key),
+          addedLines: found.lines.length,
           regionCount: totalBlocks,
           hiddenBlocks: Math.max(0, totalBlocks - fragments.length),
           fragments,
