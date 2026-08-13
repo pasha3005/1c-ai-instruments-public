@@ -39,6 +39,8 @@ import {
   prepareVendorConfig, buildChangeSet, summarizeVendorComparison, exportCfToXml,
 } from '../analyze/vendorConfig.js';
 import { diffModule } from '../analyze/bsl/moduleDiff.js';
+import { tokenize } from '../analyze/bsl/lexer.js';
+import { analyzeStructure } from '../analyze/bsl/structure.js';
 import { runAnalysis } from '../analyze/index.js';
 import { takeFragments } from '../analyze/codeAnalyzer.js';
 import { tagByRu } from '../parse/metadataKinds.js';
@@ -591,15 +593,21 @@ async function buildPlacementDiffs({
         // (`diffModuleAligned` + `attachVendorLines`).
         const diff = diffModule(beforeSource, afterSource);
 
+        // Разбор структуры нужен ради группировки правок по процедурам
+        // и функциям: без списка процедур `takeFragments` не знает, в какой
+        // из них лежит участок, и отчёт показывал безымянные «строки 12–18».
+        const routines = routinesOf(afterSource);
+
         diffs.push({
           object: russian,
           moduleTitle: am.title,
           moduleType: am.moduleType,
           moduleTypeRu: am.moduleTypeRu,
+          formName: am.formName || null,
           isNew: !bm,
           addedLines: diff.addedLines,
           regionCount: diff.regions.length,
-          fragments: takeFragments(afterSource, diff.regions),
+          fragments: takeFragments(afterSource, diff.regions, routines),
         });
       }
     }
@@ -628,6 +636,25 @@ function narrowByRussianSuffix(russian, modules) {
   const tail = parts[parts.length - 1];
   const exact = modules.filter((m) => m.formName === tail);
   return exact.length ? exact : modules;
+}
+
+/**
+ * Процедуры и функции модуля — для группировки правок по ним.
+ *
+ * Разбор дешёвый (лексер + один проход), но модулей в помещении бывает много,
+ * поэтому сбой разбора не должен ронять весь прогон: без списка процедур
+ * правки просто останутся негруппированными.
+ */
+function routinesOf(source) {
+  try {
+    // tokenize отдаёт `{tokens, stats}`, а структуре нужен сам массив токенов:
+    // на объекте она молча возвращает ноль процедур, и все правки оказывались
+    // «вне процедур» — ошибка тихая, поэтому на неё есть тест.
+    return analyzeStructure(tokenize(source).tokens).routines;
+  } catch (err) {
+    log.warn(`Структура модуля не разобрана, правки покажем без процедур: ${err.message}`);
+    return [];
+  }
 }
 
 async function readTextSafe(file) {
@@ -737,3 +764,6 @@ export { pathExists };
 
 /** Экспортируется ради теста: привязка авторов — место, где уже ломалось. */
 export { applyRepositoryAuthors };
+
+/** Экспортируется ради теста: разбор процедур ломался молча, без ошибки. */
+export { routinesOf };

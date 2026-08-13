@@ -466,6 +466,23 @@ function expandToAuthored(regions, authored) {
 }
 
 /**
+ * Процедура, к которой относится участок правки.
+ *
+ * По первой строке участка искать мало: участок часто начинается строкой
+ * ВЫШЕ заголовка — директивой компиляции (`&НаКлиенте`) или комментарием
+ * разработчика, а процедура у структуры начинается со слова «Процедура».
+ * Проверено на живом хранилище: у новых модулей форм каждая правка числилась
+ * «вне процедур» именно поэтому. Поэтому берём первую процедуру, с которой
+ * участок пересекается хоть одной строкой.
+ */
+function findRoutineForRegion(routines, region) {
+  const direct = findRoutineAtLine(routines, region.startLine);
+  if (direct) return direct;
+  const to = region.endLine || region.startLine;
+  return (routines || []).find((r) => r.startLine <= to && r.endLine >= region.startLine) || null;
+}
+
+/**
  * Куски исходного текста по участкам изменений — чтобы в дереве отличий
  * было видно не «модуль изменён», а что именно дописано.
  */
@@ -479,15 +496,18 @@ export function takeFragments(source, regions, routines = []) {
   const seen = new Set();
   const selected = [];
   for (const region of regions) {
-    const routine = findRoutineAtLine(routines, region.startLine)?.name || null;
+    const found = findRoutineForRegion(routines, region);
+    const routine = found?.name || null;
     const dedupeKey = routine || `#${region.startLine}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    selected.push({ region, routine });
+    // Вид процедуры нужен отчёту: правки группируются по процедурам
+    // и функциям, и у каждой стоит свой значок.
+    selected.push({ region, routine, routineKind: found?.kind || null });
     if (selected.length >= FRAGMENTS_PER_MODULE) break;
   }
 
-  return selected.map(({ region, routine }) => {
+  return selected.map(({ region, routine, routineKind }) => {
     const from = Math.max(1, region.startLine);
     const to = Math.min(lines.length, region.endLine);
     // Дальше конца участка не берём. Раньше фрагмент всегда тянул
@@ -502,6 +522,7 @@ export function takeFragments(source, regions, routines = []) {
       lines: lines.slice(from - 1, from - 1 + count)
         .map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line)),
       routine,
+      routineKind,
       // Код поставщика на этом же месте — для двустороннего показа отличий.
       // Пуст для чистой вставки: у поставщика здесь ничего не было.
       vendorLines: region.vendorLines || [],

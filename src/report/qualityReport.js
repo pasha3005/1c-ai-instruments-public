@@ -14,7 +14,9 @@
 import { REPORT_STYLES } from './styles.js';
 import { LAYOUT_SCRIPT } from './layoutScript.js';
 import { renderFindingsBlock, FINDINGS_SCRIPT, FINDINGS_STYLES } from './findings.js';
-import { esc, plural, signature, collapsible, formatDate, formatDateTime } from './ui.js';
+import {
+  esc, plural, signature, collapsible, formatDate, formatDateTime, authorBadge,
+} from './ui.js';
 import { codeBlock } from './bslHighlight.js';
 import { formatNumber } from '../analyze/dataVolume.js';
 import { APP } from '../config.js';
@@ -190,11 +192,28 @@ function renderCommits(result) {
     Автор каждого замечания взят отсюда: платформа записывает, кто поместил объект.
   </p>
   ${renderAuthorSummary(commits)}
+  ${commits.length ? COMMIT_LEGEND : ''}
   ${blocks || `
   <div class="callout callout--warn">
     Ни одного хранилища прочитать не удалось — проверять нечего.
   </div>`}`;
 }
+
+/**
+ * Легенда значков дерева помещений.
+ *
+ * Значки заменили подписи «добавлен / изменён / удалён» у каждого узла
+ * (требование пользователя 12.08.2026), поэтому расшифровка обязана быть
+ * на виду — иначе `±` придётся угадывать.
+ */
+const COMMIT_LEGEND = `
+  <div class="tree-legend">
+    <span><i class="tree-mark tree-mark--added">+</i>добавлено</span>
+    <span><i class="tree-mark tree-mark--modified">±</i>изменено</span>
+    <span><i class="tree-mark tree-mark--removed">−</i>удалено</span>
+    <span><i class="rt-mark rt-mark--procedure">P()</i>процедура</span>
+    <span><i class="rt-mark rt-mark--function">F(x)</i>функция</span>
+  </div>`;
 
 /**
  * Перечень хранилищ для отчёта.
@@ -231,9 +250,11 @@ function renderAuthorSummary(commits) {
 
   const rows = [...byUser.entries()]
     .sort((a, b) => b[1].commits - a[1].commits)
+    // Фамилия — той же цветной плашкой, что и в разделе замечаний: один
+    // и тот же разработчик должен узнаваться по цвету в обоих разделах.
     .map(([user, entry]) => `
       <tr>
-        <td>${esc(user)}</td>
+        <td>${authorBadge(user)}</td>
         <td class="num">${formatNumber(entry.commits)}</td>
         <td class="num">${formatNumber(entry.objects.size)}</td>
       </tr>`).join('');
@@ -318,7 +339,7 @@ function renderCommit(commit) {
     <summary>
       <span class="commits__row">
         <span class="commits__cell commits__cell--num">${esc(String(commit.version))}</span>
-        <span class="commits__cell commits__cell--who">${esc(commit.user || '—')}</span>
+        <span class="commits__cell commits__cell--who">${commit.user ? authorBadge(commit.user) : '—'}</span>
         <span class="commits__cell">${esc(commit.date || '')}</span>
         <span class="commits__cell commits__cell--comment">${esc(commit.comment || '')}</span>
         <span class="commits__cell commits__cell--num">${formatNumber(objects.length)}</span>
@@ -329,12 +350,24 @@ function renderCommit(commit) {
 }
 
 const OBJECT_STATUS_RU = { added: 'добавлен', modified: 'изменён', removed: 'удалён' };
+/**
+ * Значки состояния — те же, что в дереве отличий от поставщика и в отчёте
+ * обновления: `+` добавлено, `±` изменено, `−` удалено. Словами это раньше
+ * писалось у объектов и не писалось у модулей; теперь значок стоит у каждого
+ * узла дерева, а расшифровка — в легенде над таблицей.
+ */
+const STATUS_MARK = { added: '+', modified: '±', removed: '−' };
+
+function statusMark(status) {
+  return `<span class="tree-mark tree-mark--${status}" title="${esc(OBJECT_STATUS_RU[status] || '')}"
+    >${STATUS_MARK[status] || '±'}</span>`;
+}
 
 /** Объект помещения; если есть правки модулей — раскрывается до них. */
 function renderCommitObject(object, diffs, commit) {
   const title = `
-    <span class="dt__label">${esc(object.name)}</span>
-    <span class="dt__status dt__status--${object.status}">${OBJECT_STATUS_RU[object.status]}</span>`;
+    ${statusMark(object.status)}
+    <span class="dt__label">${esc(object.name)}</span>`;
 
   if (!diffs.length) return `<div class="dt dt--leaf">${title}</div>`;
 
@@ -345,15 +378,31 @@ function renderCommitObject(object, diffs, commit) {
   </details>`;
 }
 
+/**
+ * Имя модуля внутри объекта — без повторения имени самого объекта.
+ *
+ * Объект уже назван строкой выше, и «Документ «Документ4»: модуль объекта»
+ * повторял его в каждой строке дерева (замечание пользователя 12.08.2026).
+ * У форм и команд имя нужно: их у объекта много.
+ */
+function moduleLabel(diff) {
+  const kind = diff.moduleTypeRu || 'Модуль';
+  if (diff.formName && (diff.moduleType === 'form' || diff.moduleType === 'command')) {
+    return `${kind} «${diff.formName}»`;
+  }
+  return kind;
+}
+
 /** Модуль объекта: правки, внесённые именно этим помещением. */
 function renderCommitModule(diff, commit) {
   const stat = [
     diff.addedLines ? `+${formatNumber(diff.addedLines)}` : '',
     plural(diff.regionCount || 0, 'участок', 'участка', 'участков'),
   ].filter(Boolean).join(' · ');
+  // Модуль помечается так же, как объект: добавлен целиком либо изменён.
   const title = `
-    <span class="dt__label">${esc(diff.moduleTitle || diff.moduleTypeRu || 'Модуль')}</span>
-    ${diff.isNew ? '<span class="dt__status dt__status--added">новый</span>' : ''}`;
+    ${statusMark(diff.isNew ? 'added' : 'modified')}
+    <span class="dt__label">${esc(moduleLabel(diff))}</span>`;
 
   const fragments = diff.fragments || [];
   if (!fragments.length) {
@@ -368,9 +417,64 @@ function renderCommitModule(diff, commit) {
         Код, внесённый помещением версии ${esc(String(commit.version))}, — а не всё,
         что накопилось в модуле за период.
       </p>
-      ${fragments.map((fragment) => renderCommitFragment(fragment)).join('')}
+      ${renderRoutineGroups(diff)}
     </div>
   </details>`;
+}
+
+/**
+ * Правки модуля, разложенные по процедурам и функциям.
+ *
+ * Читатель ищет не «строки 214–231», а «что сделали в ПередЗаписью»: имя
+ * процедуры — это единица работы разработчика. Участки, не попавшие ни в одну
+ * процедуру (код в теле модуля, объявления переменных), идут отдельной группой:
+ * приписывать их соседней процедуре было бы неправдой.
+ */
+function renderRoutineGroups(diff) {
+  const groups = new Map();
+  for (const fragment of diff.fragments || []) {
+    const key = fragment.routine || '';
+    if (!groups.has(key)) {
+      groups.set(key, { name: fragment.routine || '', kind: fragment.routineKind || null, fragments: [] });
+    }
+    groups.get(key).fragments.push(fragment);
+  }
+
+  return [...groups.values()].map((group) => {
+    const body = group.fragments.map((fragment) => renderCommitFragment(fragment)).join('');
+    if (!group.name) {
+      // Вне процедур — без лишнего уровня дерева: сворачивать нечего.
+      return `
+      <div class="dt__routine-plain">
+        <div class="dt__routine-head">Вне процедур и функций — тело модуля</div>
+        ${body}
+      </div>`;
+    }
+    const lines = group.fragments.reduce((sum, f) => sum + (f.lines?.length || 0), 0);
+    return `
+    <details class="dt dt--routine" open>
+      <summary>
+        ${routineMark(group.kind)}
+        <span class="dt__label">${esc(group.name)}</span>
+        <span class="dt__stat">${plural(lines, 'строка', 'строки', 'строк')}</span>
+      </summary>
+      <div class="dt__body">${body}</div>
+    </details>`;
+  }).join('');
+}
+
+/**
+ * Значок процедуры и функции — как в дереве метаданных конфигуратора,
+ * где у процедуры «P()», а у функции «F(x)». Рисуется теми же средствами,
+ * что и остальные значки отчёта: подпись в цветной плашке, без картинок,
+ * чтобы отчёт оставался одним самодостаточным файлом.
+ */
+function routineMark(kind) {
+  const known = kind === 'function' || kind === 'procedure';
+  const cls = known ? kind : 'unknown';
+  const label = { function: 'F(x)', procedure: 'P()', unknown: '?' }[cls];
+  const title = { function: 'функция', procedure: 'процедура', unknown: 'процедура или функция' }[cls];
+  return `<span class="rt-mark rt-mark--${cls}" title="${title}">${label}</span>`;
 }
 
 /**
@@ -387,10 +491,10 @@ function renderCommitFragment(fragment) {
         ещё ${plural(fragment.truncated, 'строка', 'строки', 'строк')} — в JSON-выгрузке результата проверки.</p>`
     : '';
 
+  // Имя процедуры здесь не повторяется: оно стоит заголовком группы выше.
   return `
     <div class="dt__fragment">
-      <div class="dt__fragment-head">строки ${fragment.startLine}–${fragment.endLine}${
-  fragment.routine ? ` · процедура «${esc(fragment.routine)}»` : ''}</div>
+      <div class="dt__fragment-head">строки ${fragment.startLine}–${fragment.endLine}</div>
       ${codeBlock(fragment.lines.join('\n'))}
       ${tail}
     </div>`;

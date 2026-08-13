@@ -70,6 +70,9 @@ const LIGHT_VARS = `
   --mark-modified-ink: #8a5b00; --mark-modified-bg: #f6e7bd;
   --mark-added-ink: #14603c;    --mark-added-bg: #cbe9d8;
   --mark-removed-ink: #8d2020;  --mark-removed-bg: #f6cfcf;
+  /* Процедура и функция: как в конфигураторе — красная «P()», синяя «F(x)». */
+  --rt-proc-ink: #9c2b3f;  --rt-proc-bg: #fbe9ec;  --rt-proc-bd: #f0cdd4;
+  --rt-func-ink: #274ea8;  --rt-func-bg: #e9eefb;  --rt-func-bd: #ccd8f4;
 
   /* Подсветка синтаксиса 1С — как в конфигураторе: комментарий зелёным,
      ключевые слова синим, строки нейтральным цветом текста (ink-soft). */
@@ -130,6 +133,8 @@ const DARK_VARS = `
   --mark-modified-ink: #e2c072; --mark-modified-bg: #3a3120;
   --mark-added-ink: #7fd0a3;    --mark-added-bg: #1c3a2a;
   --mark-removed-ink: #f28a84;  --mark-removed-bg: #3c2020;
+  --rt-proc-ink: #f0929f;  --rt-proc-bg: #33191e;  --rt-proc-bd: #542932;
+  --rt-func-ink: #8fb0f5;  --rt-func-bg: #19203a;  --rt-func-bd: #2a355c;
 
   --code-comment: #6fc57e;
   --code-keyword: #79a6ff;
@@ -422,6 +427,40 @@ details.collapsible--group > .collapsible__body { padding: 12px 0 2px 14px; bord
 .tree-mark--modified { color: var(--mark-modified-ink); background: var(--mark-modified-bg); }
 .tree-mark--added    { color: var(--mark-added-ink);    background: var(--mark-added-bg); }
 .tree-mark--removed  { color: var(--mark-removed-ink);  background: var(--mark-removed-bg); }
+/*
+ * Значок процедуры и функции — как в дереве конфигуратора, где у процедуры
+ * «P()», а у функции «F(x)». Подпись, а не картинка: отчёт остаётся одним
+ * файлом без внешних ресурсов, а прочитать значок можно и без легенды.
+ */
+.rt-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0;
+  flex-shrink: 0;
+}
+.rt-mark--procedure { color: var(--rt-proc-ink); background: var(--rt-proc-bg); border-color: var(--rt-proc-bd); }
+.rt-mark--function  { color: var(--rt-func-ink); background: var(--rt-func-bg); border-color: var(--rt-func-bd); }
+.rt-mark--unknown   { color: var(--ink-faint);   background: var(--bg-soft);    border-color: var(--line); }
+/* Уровень процедуры в дереве помещений: мельче объекта, но со своим отступом. */
+.dt--routine > summary { padding-left: 26px; }
+.dt--routine > .dt__body { padding-left: 26px; }
+.dt__routine-plain { padding: 4px 0 4px 26px; }
+.dt__routine-head {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
 .tree-legend {
   display: flex;
   flex-wrap: wrap;
