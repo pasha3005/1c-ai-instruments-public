@@ -17,7 +17,7 @@ import { renderFindingsBlock, FINDINGS_SCRIPT, FINDINGS_STYLES } from './finding
 import {
   esc, plural, signature, collapsible, formatDate, formatDateTime, authorBadge,
 } from './ui.js';
-import { codeBlock } from './bslHighlight.js';
+import { codeBlock, highlightBsl } from './bslHighlight.js';
 import { formatNumber } from '../analyze/dataVolume.js';
 import { APP } from '../config.js';
 
@@ -447,6 +447,10 @@ function renderRoutineGroups(diff) {
         // прежними версиями, подписи нет — тогда остаётся имя.
         signature: fragment.routineSignature || fragment.routine || '',
         kind: fragment.routineKind || null,
+        // Состояние процедуры — таким же значком, как у объекта и модуля
+        // (требование пользователя 13.08.2026). У прогонов прежних версий
+        // его нет — тогда значка не будет, выдумывать состояние нельзя.
+        status: fragment.routineStatus || null,
         fragments: [],
       });
     }
@@ -473,13 +477,27 @@ function renderRoutineGroups(diff) {
     return `
     <details class="dt dt--routine" open>
       <summary>
+        ${group.status ? statusMark(group.status) : ''}
         ${routineMark(group.kind)}
-        <span class="dt__label">${esc(group.signature || group.name)}</span>
+        ${routineSignatureHtml(group.signature || group.name)}
         <span class="dt__stat">${esc(stat)}</span>
       </summary>
       <div class="dt__body">${body}</div>
     </details>`;
   }).join('');
+}
+
+/**
+ * Подпись процедуры — тем же шрифтом и той же подсветкой, что и код ниже
+ * (прямое требование пользователя 13.08.2026).
+ *
+ * Это и есть код: строка объявления из модуля. Набранная шрифтом текста, она
+ * читалась как заголовок раздела, а не как то, что можно найти поиском
+ * в конфигураторе. Подсветка — та же `highlightBsl`, поэтому «Экспорт»
+ * выделяется ключевым словом ровно так же, как в блоке кода под ним.
+ */
+function routineSignatureHtml(signature) {
+  return `<code class="dt__label rt-sig">${highlightBsl(signature)}</code>`;
 }
 
 /**

@@ -77,6 +77,19 @@ export function routineSpans(lines, routines = []) {
   return spans;
 }
 
+/**
+ * Дописана процедура целиком или правлена существующая.
+ *
+ * Сравнение по имени, а не по подписи: правка списка параметров — это всё
+ * та же процедура, изменённая, а не новая. Прежних процедур не знаем
+ * (модуль появился этим помещением, или разбор не удался) — состояние
+ * не выдумываем, значка не будет.
+ */
+function routineStatusOf(before, routine) {
+  if (!before) return null;
+  return before.has(String(routine.name || '').toLowerCase()) ? 'modified' : 'added';
+}
+
 /** Индекс процедуры, которой принадлежит строка; -1 — вне процедур. */
 function ownerOf(spans, line) {
   for (let i = 0; i < spans.length; i += 1) {
@@ -92,14 +105,22 @@ function ownerOf(spans, line) {
  * @param {string} params.source текст модуля ПОСЛЕ помещения
  * @param {number[]} params.addedLines номера добавленных строк (с единицы)
  * @param {import('./structure.js').Routine[]} [params.routines]
+ * @param {import('./structure.js').Routine[]} [params.previousRoutines] процедуры
+ *   модуля ДО помещения — по ним видно, дописана процедура целиком или правлена
+ *   существующая. Не передали — состояние остаётся неизвестным, и значка нет.
  * @returns {{fragments: object[], totalBlocks: number}} блоки с текстом,
  *   границами и процедурой; `totalBlocks` — сколько их нашлось всего, чтобы
  *   отчёт мог честно сказать, что показал не все.
  */
-export function placementFragments({ source, addedLines, routines = [] }) {
+export function placementFragments({
+  source, addedLines, routines = [], previousRoutines = null,
+}) {
   if (!addedLines?.length) return { fragments: [], totalBlocks: 0 };
   const lines = String(source ?? '').split(/\r?\n/);
   const spans = routineSpans(lines, routines);
+  const before = previousRoutines
+    ? new Set(previousRoutines.map((r) => String(r.name || '').toLowerCase()))
+    : null;
 
   const runs = slideRuns(lines, contiguousRuns(lines, addedLines));
 
@@ -138,6 +159,9 @@ export function placementFragments({ source, addedLines, routines = [] }) {
       routine: span?.routine.name || null,
       routineKind: span?.routine.kind || null,
       routineSignature: span ? routineSignature(span.routine) : null,
+      // Состояние процедуры — тем же значком, что у объекта и модуля:
+      // процедуры не было в прежней версии — «добавлена», была — «изменена».
+      routineStatus: span ? routineStatusOf(before, span.routine) : null,
       // Пусто всегда: у помещения нет «кода поставщика на этом месте».
       // Поле оставлено ради единого вида блока с отчётом обследования.
       vendorLines: [],

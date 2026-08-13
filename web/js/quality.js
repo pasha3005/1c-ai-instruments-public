@@ -11,7 +11,7 @@
 import { api, subscribeToQuality } from './api.js';
 import {
   $, $$, setNote, renderStages, formatDuration, formatNumber, createTimer, attachPathHint,
-  escapeHtml, formatDateTime,
+  escapeHtml, formatDateTime, openReportInBrowser,
 } from './ui.js';
 
 const state = {
@@ -41,6 +41,11 @@ export function initQuality() {
     start();
   });
   $('#qCancelBtn').addEventListener('click', () => cancel());
+  $('#qOpenReport').addEventListener('click', (event) => {
+    if (!state.currentId) return;
+    openReportInBrowser(event.currentTarget, () => api.openQualityReport(state.currentId),
+      (message) => setNote('#qFormNote', message, true));
+  });
 
   loadHistory();
 }
@@ -285,6 +290,14 @@ async function loadHistory() {
     }
     container.innerHTML = items.map(renderHistoryItem).join('');
 
+    // Отчёт открывает сервер — в браузере по умолчанию, а не ещё одним окном
+    // приложения без адресной строки.
+    $$('[data-open]', container).forEach((btn) => {
+      btn.addEventListener('click', () => openReportInBrowser(
+        btn, () => api.openQualityReport(btn.dataset.open),
+      ));
+    });
+
     $$('[data-delete]', container).forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить запись об этой проверке вместе с её отчётом?')) return;
@@ -344,7 +357,7 @@ function renderHistoryItem(meta) {
 
     <div class="hist-actions">
       ${meta.status === 'done'
-    ? `<a class="btn" href="api/quality/${meta.id}/report.html" target="_blank" rel="noopener">Отчёт</a>`
+    ? `<button class="btn" type="button" data-open="${meta.id}">Отчёт</button>`
     : ''}
       <button class="btn btn--danger" data-delete="${meta.id}">Удалить</button>
     </div>
@@ -359,7 +372,6 @@ async function onFinished(qualityId) {
   $('#qProgressPercent').textContent = '100%';
   $('#qProgressBar').style.width = '100%';
 
-  $('#qOpenReport').href = `api/quality/${qualityId}/report.html`;
   $('#qResultActions').hidden = false;
   await showStats(qualityId);
   // Список прошлых проверок пополнился только что — перечитываем сразу,

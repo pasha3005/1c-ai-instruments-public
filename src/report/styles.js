@@ -452,6 +452,28 @@ details.collapsible--group > .collapsible__body { padding: 12px 0 2px 14px; bord
 .rt-mark--procedure { color: var(--rt-proc-ink); background: var(--rt-proc-bg); border-color: var(--rt-proc-bd); }
 .rt-mark--function  { color: var(--rt-func-ink); background: var(--rt-func-bg); border-color: var(--rt-func-bd); }
 .rt-mark--unknown   { color: var(--ink-faint);   background: var(--bg-soft);    border-color: var(--line); }
+/*
+ * Подпись процедуры — это код, и выглядеть она обязана как код: тот же
+ * моноширинный шрифт и та же подсветка, что в блоке ниже (требование
+ * пользователя 13.08.2026). Жирности здесь нет — её несёт только ключевое
+ * слово через .tok-keyword, ровно как внутри фрагмента.
+ */
+.rt-sig {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--ink);
+}
+/*
+ * Объекты и модули внутри помещения — спокойнее, чем в дереве отличий
+ * от поставщика. Там объект — единица разбора, и его выделяют; здесь единицей
+ * служит само помещение, а список объектов под ним читают бегло. Полужирный
+ * яркий шрифт превращал раскрытую версию в стену заголовков (замечание
+ * пользователя 13.08.2026).
+ */
+.dt--commit .dt__label { font-weight: 400; color: var(--ink-soft); }
+.dt--commit .rt-sig { color: var(--ink); }
+
 /* Уровень процедуры в дереве помещений: мельче объекта, но со своим отступом. */
 .dt--routine > summary { padding-left: 26px; }
 .dt--routine > .dt__body { padding-left: 26px; }

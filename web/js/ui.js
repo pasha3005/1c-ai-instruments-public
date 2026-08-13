@@ -144,3 +144,33 @@ export function attachPathHint(input, hint, parsePath) {
     }, 350);
   });
 }
+
+/**
+ * Открывает готовый отчёт в браузере по умолчанию.
+ *
+ * Ссылкой с `target="_blank"` этого не добиться: интерфейс сам живёт в окне
+ * `--app` без адресной строки и вкладок, и отчёт открывался таким же окном —
+ * без строки адреса, без «назад», без возможности отправить ссылку. Поэтому
+ * окно открывает СЕРВЕР (`openUrl` с `appWindow: false`) — тем же способом,
+ * которым отчёт открывается сам по завершении прогона. Прямое требование
+ * пользователя (13.08.2026): открытие из интерфейса и открытие по готовности
+ * должны вести себя одинаково.
+ *
+ * @param {HTMLElement} button кнопка, по которой нажали
+ * @param {() => Promise<unknown>} request вызов соответствующего `/open`
+ * @param {(message: string) => void} [onError] куда сказать о неудаче
+ */
+export async function openReportInBrowser(button, request, onError) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Открываем…';
+  try {
+    await request();
+  } catch (err) {
+    // Отчёт цел, не открылось только окно: сообщаем и оставляем кнопку.
+    if (onError) onError(`Не удалось открыть отчёт: ${err.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}

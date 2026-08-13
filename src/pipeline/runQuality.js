@@ -612,8 +612,15 @@ async function buildPlacementDiffs({
         // разрыв в три строки. Для отчёта обследования это удобно, а здесь
         // приводило к двум неправдам сразу — вторая правка в процедуре
         // пропадала, а в блок затягивался давно лежавший в модуле чужой код.
+        // Процедуры прежней версии — чтобы у каждой в дереве стоял значок
+        // состояния: не было раньше — «добавлена», была — «изменена». Модуль,
+        // появившийся этим помещением, сравнивать не с чем: там всё добавлено,
+        // и пустой список прежних процедур это и означает.
         const { fragments, totalBlocks } = placementFragments({
-          source: afterSource, addedLines, routines,
+          source: afterSource,
+          addedLines,
+          routines,
+          previousRoutines: bm ? routinesOf(beforeSource) : [],
         });
 
         diffs.push({

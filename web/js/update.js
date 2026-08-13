@@ -13,7 +13,7 @@
 import { api, subscribeToUpdate } from './api.js';
 import {
   $, $$, escapeHtml, setNote, renderStages, formatDuration, formatNumber,
-  formatDateTime, createTimer, attachPathHint,
+  formatDateTime, createTimer, attachPathHint, openReportInBrowser,
 } from './ui.js';
 
 const state = {
@@ -35,6 +35,11 @@ export function initUpdate() {
   });
 
   $('#uCancelBtn').addEventListener('click', () => cancel());
+  $('#uOpenReport').addEventListener('click', (event) => {
+    if (!state.currentId) return;
+    openReportInBrowser(event.currentTarget, () => api.openUpdateReport(state.currentId),
+      (message) => setSaveNote(message, true));
+  });
   $('#uLoadBtn').addEventListener('click', () => loadIntoBase());
   $('#uAskYes').addEventListener('click', () => answer(true));
   $('#uAskNo').addEventListener('click', () => answer(false));
@@ -248,7 +253,6 @@ async function onFinished(updateId) {
   $('#uProgressPercent').textContent = '100%';
   $('#uProgressBar').style.width = '100%';
 
-  $('#uOpenReport').href = `api/updates/${updateId}/report.html`;
   $('#uDownloadJson').href = `api/updates/${updateId}/result`;
   $('#uResultActions').hidden = false;
 
@@ -421,6 +425,14 @@ async function loadHistory() {
     }
     container.innerHTML = items.map(renderHistoryItem).join('');
 
+    // Отчёт открывает сервер — в браузере по умолчанию, а не ещё одним окном
+    // приложения без адресной строки.
+    $$('[data-open]', container).forEach((btn) => {
+      btn.addEventListener('click', () => openReportInBrowser(
+        btn, () => api.openUpdateReport(btn.dataset.open),
+      ));
+    });
+
     $$('[data-delete]', container).forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить запись об этом объединении? Файлы выгрузки останутся на диске.')) return;
@@ -479,7 +491,7 @@ function renderHistoryItem(meta) {
 
     <div class="hist-actions">
       ${meta.status === 'done'
-    ? `<a class="btn" href="api/updates/${meta.id}/report.html" target="_blank" rel="noopener">Отчёт</a>`
+    ? `<button class="btn" type="button" data-open="${meta.id}">Отчёт</button>`
     : ''}
       <button class="btn btn--danger" data-delete="${meta.id}">Удалить</button>
     </div>

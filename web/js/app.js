@@ -10,7 +10,7 @@ import { initUpdate, showUpdateStages, reloadUpdateHistory } from './update.js';
 import { initQuality, showQualityStages, reloadQualityHistory } from './quality.js';
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
-  formatDuration, formatNumber, formatDateTime, attachPathHint,
+  formatDuration, formatNumber, formatDateTime, attachPathHint, openReportInBrowser,
 } from './ui.js';
 
 const state = {
@@ -23,9 +23,13 @@ const state = {
   cancelling: false,
 };
 
-/** Ссылки внизу карточки прогресса: доступны только по готовому отчёту. */
+/**
+ * Ссылки внизу карточки прогресса: доступны только по готовому отчёту.
+ *
+ * Отчёта здесь нет: его открывает сервер — в браузере по умолчанию, а не
+ * ссылкой из окна приложения (см. `openReportInBrowser`).
+ */
 const RESULT_LINKS = [
-  { id: 'openReport', file: 'report.html' },
   { id: 'downloadMd', file: 'report.md' },
   { id: 'downloadJson', file: 'result' },
 ];
@@ -332,6 +336,12 @@ function initForm() {
   });
 
   $('#restartBtn').addEventListener('click', () => restartAudit());
+
+  $('#openReport').addEventListener('click', (event) => {
+    if (!state.currentAuditId) return;
+    openReportInBrowser(event.currentTarget, () => api.openReport(state.currentAuditId),
+      (message) => setSaveNote(message, true));
+  });
 
   $('#printReport').addEventListener('click', () => {
     if (!state.currentAuditId) return;
@@ -669,6 +679,14 @@ async function loadHistory() {
 
     container.innerHTML = items.map(renderHistoryItem).join('');
 
+    // Отчёт открывает сервер — в браузере по умолчанию, а не ещё одним окном
+    // приложения без адресной строки.
+    $$('[data-open]', container).forEach((btn) => {
+      btn.addEventListener('click', () => openReportInBrowser(
+        btn, () => api.openReport(btn.dataset.open),
+      ));
+    });
+
     $$('[data-delete]', container).forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить этот аудит вместе с отчётом?')) return;
@@ -724,7 +742,7 @@ function renderHistoryItem(meta) {
 
     <div class="hist-actions">
       ${meta.status === 'done'
-    ? `<a class="btn" href="api/audits/${meta.id}/report.html" target="_blank" rel="noopener">Отчёт</a>`
+    ? `<button class="btn" type="button" data-open="${meta.id}">Отчёт</button>`
     : ''}
       <button class="btn btn--danger" data-delete="${meta.id}">Удалить</button>
     </div>

@@ -370,7 +370,7 @@
       </div>
 
       <div class="result-actions" id="resultActions" hidden>
-        <a class="btn btn--success" id="openReport" target="_blank" rel="noopener">Открыть отчёт</a>
+        <button class="btn btn--success" id="openReport" type="button">Открыть отчёт</button>
         <button class="btn" id="saveReport" type="button">Скачать отчёт…</button>
         <a class="btn" id="downloadMd" download>Скачать Markdown</a>
         <a class="btn" id="downloadJson" target="_blank" rel="noopener">Данные JSON</a>
@@ -595,7 +595,7 @@
       </div>
 
       <div class="result-actions" id="uResultActions" hidden>
-        <a class="btn btn--success" id="uOpenReport" target="_blank" rel="noopener">Открыть отчёт</a>
+        <button class="btn btn--success" id="uOpenReport" type="button">Открыть отчёт</button>
         <a class="btn" id="uDownloadJson" target="_blank" rel="noopener">Данные JSON</a>
         <button class="btn btn--danger-solid" id="uLoadBtn" type="button">Загрузить в конфигурацию</button>
       </div>
@@ -818,7 +818,12 @@
       </div>
 
       <div class="result-actions" id="qResultActions" hidden>
-        <a class="btn btn--success" id="qOpenReport" target="_blank" rel="noopener">Открыть отчёт</a>
+        <!--
+          Кнопка, а не ссылка: окно с отчётом открывает сервер — в браузере
+          по умолчанию. Ссылка открыла бы отчёт таким же окном «--app»,
+          в каком живёт сам интерфейс: без адресной строки и без вкладок.
+        -->
+        <button class="btn btn--success" id="qOpenReport" type="button">Открыть отчёт</button>
       </div>
 
       <div class="run-stats" id="qRunStats" hidden></div>
