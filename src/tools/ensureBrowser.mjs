@@ -34,7 +34,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-import { findAppBrowser, BUNDLED_BROWSER_DIR } from '../util/browser.js';
+import { findAppBrowser, findBundledIn, BUNDLED_BROWSER_DIR } from '../util/browser.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -55,15 +55,28 @@ const DOWNLOAD_TIMEOUT_MIN = 30;
 async function main() {
   if (process.platform !== 'win32') return;
 
-  // `--force` — скачать Chromium, даже если браузер на машине есть. Нужно,
-  // чтобы подготовить поставку ЗАРАНЕЕ: если известно, что у заказчика на
-  // сервере один Internet Explorer, браузер кладут в каталог здесь, и там
-  // уже ничего не скачивается — интернета на том сервере может не быть вовсе.
+  // `--force` — скачать Chromium, даже если браузер на машине есть. Так его
+  // кладёт в поставку сборка (`СОБРАТЬ.cmd`): на сервере заказчика интернета
+  // может не быть вовсе, и всё нужное должно приехать туда заранее.
+  // Согласие в этом случае уже дано — человек сам запустил сборку, — поэтому
+  // ни объяснения, ни вопроса здесь нет.
   const force = process.argv.includes('--force');
 
-  const found = force ? null : findAppBrowser();
+  if (force) {
+    await replace();
+    return;
+  }
+
+  const found = findAppBrowser();
   if (found) {
     console.log(`        Браузер найден: ${short(found)}`);
+    // Браузер из поставки приезжает к заказчику архивом или копированием,
+    // а разрешения «для всех пакетов приложений» не переносит ни то, ни другое:
+    // в zip прав нет вовсе, а скопированный файл наследует права каталога
+    // назначения. Выданные при сборке — остались бы на машине сборщика,
+    // и на сервере заказчика Chromium открыл бы пустое окно. Поэтому проверяем
+    // при каждом запуске; когда права на месте, это ничего не стоит.
+    if (found === findBundledIn(BUNDLED_BROWSER_DIR)) await ensureAppPackageAccess();
     return;
   }
 
@@ -107,6 +120,19 @@ async function main() {
     console.log('  Программа найдёт браузер там сама.');
     console.log('');
   }
+}
+
+/**
+ * Кладёт браузер в поставку начисто: сносит прежний и скачивает свежий.
+ *
+ * Именно сносит, а не распаковывает поверх. У Chromium от сборки к сборке
+ * меняется состав файлов, и распаковка «с заменой» оставила бы вперемешку
+ * куски двух версий — браузер после такого запускается через раз, и понять
+ * причину на сервере заказчика будет нечем.
+ */
+async function replace() {
+  await fs.rm(BUNDLED_BROWSER_DIR, { recursive: true, force: true });
+  await install();
 }
 
 /** Скачивает и распаковывает Chromium в `runtime\browser\`. */
@@ -153,8 +179,11 @@ async function install() {
   await grantAppPackageAccess();
 
   // Проверяем не «команда отработала», а что браузер действительно найден
-  // тем же кодом, которым его будет искать программа.
-  const browser = findAppBrowser();
+  // тем же кодом, которым его будет искать программа. Смотрим именно
+  // в каталог поставки, а не общим `findAppBrowser`: тот при неудачной
+  // распаковке вернул бы установленный в системе Edge, и сборка отчиталась
+  // бы об успехе, положив в поставку пустую папку.
+  const browser = findBundledIn(BUNDLED_BROWSER_DIR);
   if (!browser) throw new Error('архив распакован, но chrome.exe в нём не найден');
 
   console.log('');
@@ -184,11 +213,41 @@ async function install() {
  * и пустое окно, после — ни одной ошибки.
  */
 async function grantAppPackageAccess() {
+  await powershell(`${grantCommand()}`, 10 * 60 * 1000);
+}
+
+function grantCommand() {
   const rights = '(OI)(CI)(RX)';
-  await powershell(
-    `icacls '${BUNDLED_BROWSER_DIR}' /grant '*S-1-15-2-1:${rights}' '*S-1-15-2-2:${rights}' /T /Q`,
-    10 * 60 * 1000,
-  );
+  return `icacls '${BUNDLED_BROWSER_DIR}' `
+    + `/grant '*S-1-15-2-1:${rights}' '*S-1-15-2-2:${rights}' /T /Q`;
+}
+
+/**
+ * Те же права, но при запуске: проверяем и выдаём, только если их нет.
+ *
+ * Проверка и выдача — одной командой PowerShell, чтобы в обычном случае
+ * (права на месте) запуск не удлинялся вторым запуском процесса. Смотрим
+ * в SDDL: у нужной группы там короткое обозначение `AC`, а имена в русской
+ * Windows переведены, и сравнивать по ним нельзя.
+ *
+ * Сбой здесь не должен мешать запуску: без прав браузер работать не будет,
+ * но решать это пользователю, а не файлу запуска.
+ */
+async function ensureAppPackageAccess() {
+  const exe = findBundledIn(BUNDLED_BROWSER_DIR);
+  if (!exe) return;
+
+  try {
+    const out = await powershell(
+      `if ((Get-Acl -LiteralPath '${exe}').Sddl -notmatch ';AC\\)') { ${grantCommand()}; 'выдано' }`,
+      10 * 60 * 1000,
+    );
+    if (out.includes('выдано')) {
+      console.log('        Браузеру выданы права для песочницы (после копирования они теряются)');
+    }
+  } catch (err) {
+    console.log(`        Права браузера проверить не удалось: ${err.message}`);
+  }
 }
 
 /**
@@ -320,6 +379,18 @@ function short(file) {
 }
 
 main().catch((err) => {
-  // Этот шаг не имеет права мешать запуску программы: не вышло — идём дальше.
+  if (process.argv.includes('--force')) {
+    // А вот здесь сбой обязан быть громким и заметным по коду возврата:
+    // это сборка поставки для машины без интернета, и поставка без браузера
+    // бесполезна. Собрать её молча неполной — значит узнать об этом уже
+    // на сервере заказчика.
+    console.log('');
+    console.log(`  [ОШИБКА] Браузер в поставку не положен: ${err.message}`);
+    console.log('');
+    process.exitCode = 1;
+    return;
+  }
+  // При обычном запуске наоборот: этот шаг не имеет права мешать программе
+  // стартовать — не вышло, идём дальше.
   console.log(`  Проверка браузера не выполнена: ${err.message}`);
 });

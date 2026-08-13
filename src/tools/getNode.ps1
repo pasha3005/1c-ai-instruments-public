@@ -39,19 +39,25 @@ try {
     [Net.WebRequest]::DefaultWebProxy.Credentials = [Net.CredentialCache]::DefaultNetworkCredentials
 } catch { }
 
-Write-Host ''
-Write-Line 'Node.js на этом компьютере не найден.'
-Write-Line 'Он нужен программе как интерпретатор — сама она написана на нём.'
-Write-Line ''
-Write-Line 'Можно скачать переносной Node.js и положить рядом с программой,'
-Write-Line 'в папку runtime\. В систему он не устанавливается: ни в PATH,'
-Write-Line 'ни в реестр, ни ярлыков — чтобы убрать, достаточно удалить папку.'
-Write-Line ''
-Write-Line 'Размер загрузки — около 36 МБ, на диске займёт около 120 МБ.'
-Write-Line 'Источник: официальные сборки nodejs.org (OpenJS Foundation).'
-Write-Host ''
+if ($Yes) {
+    # Согласие уже дано — объяснять и спрашивать не о чем. Так сценарий
+    # зовёт сборка поставки: там интерпретатор кладут намеренно, для машины
+    # заказчика без интернета, а не потому, что его тут не нашлось.
+    Write-Host ''
+    Write-Line 'Кладу в поставку переносной Node.js (около 36 МБ загрузки).'
+} else {
+    Write-Host ''
+    Write-Line 'Node.js на этом компьютере не найден.'
+    Write-Line 'Он нужен программе как интерпретатор — сама она написана на нём.'
+    Write-Line ''
+    Write-Line 'Можно скачать переносной Node.js и положить рядом с программой,'
+    Write-Line 'в папку runtime\. В систему он не устанавливается: ни в PATH,'
+    Write-Line 'ни в реестр, ни ярлыков — чтобы убрать, достаточно удалить папку.'
+    Write-Line ''
+    Write-Line 'Размер загрузки — около 36 МБ, на диске займёт около 120 МБ.'
+    Write-Line 'Источник: официальные сборки nodejs.org (OpenJS Foundation).'
+    Write-Host ''
 
-if (-not $Yes) {
     $answer = Read-Host '  Скачать Node.js сейчас? [д/н]'
     $answer = $answer.Trim().ToLower()
     if ($answer -ne 'д' -and $answer -ne 'да' -and $answer -ne 'y' -and $answer -ne 'yes') {
