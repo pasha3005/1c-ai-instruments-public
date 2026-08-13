@@ -85,7 +85,11 @@ try {
     if (Test-Path $zip) { Remove-Item $zip -Force }
 
     Write-Line 'Скачиваем… (окно закрывать нельзя)'
-    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    # Способы загрузки и порядок их перебора — в download.ps1: на сервере
+    # заказчика прокси, политики и режим языка PowerShell бывают такими,
+    # что работает только один из трёх.
+    & (Join-Path $PSScriptRoot 'download.ps1') -Url $url -OutFile $zip
+    if ($LASTEXITCODE -ne 0) { throw 'файл не скачался' }
 
     $size = (Get-Item $zip).Length
     if ($size -lt 10MB) { throw "скачано всего $([math]::Round($size/1MB)) МБ — это не архив Node.js" }

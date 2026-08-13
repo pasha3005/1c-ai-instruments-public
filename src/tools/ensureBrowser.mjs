@@ -128,9 +128,13 @@ async function install() {
 
   console.log('  Скачиваем… (это надолго, окно закрывать нельзя)');
   const url = `${SNAPSHOTS}/${revision}/chrome-win.zip`;
-  await withProgress(zip, () => powershell(
-    `Invoke-WebRequest -Uri '${url}' -OutFile '${zip}' -UseBasicParsing`,
-    DOWNLOAD_TIMEOUT_MIN * 60 * 1000,
+  // Качает `download.ps1` — тот же, которым добывается интерпретатор.
+  // Он перебирает три способа: BITS, WebClient и Invoke-WebRequest.
+  // Последний в PowerShell 5.1 держит ответ в памяти целиком, и на 340 МБ
+  // в сеансе терминального сервера это заметно — потому он и последний.
+  const downloader = path.join(path.dirname(fileURLToPath(import.meta.url)), 'download.ps1');
+  await withProgress(zip, () => powershellFile(
+    downloader, ['-Url', url, '-OutFile', zip], DOWNLOAD_TIMEOUT_MIN * 60 * 1000,
   ));
 
   const { size } = await fs.stat(zip);
@@ -230,9 +234,36 @@ function powershell(command, timeoutMs = 60_000) {
     + 'try { [Net.WebRequest]::DefaultWebProxy.Credentials = '
     + '[Net.CredentialCache]::DefaultNetworkCredentials } catch { }; ';
 
+  return runPowershell(['-Command', prelude + command], timeoutMs);
+}
+
+/**
+ * То же, но выполняет файл сценария: у него свои параметры и свой вывод.
+ *
+ * Вызываем через `-Command`, а не `-File`, ради одной строки впереди —
+ * `[Console]::OutputEncoding`. Без неё PowerShell пишет в канал в кодировке
+ * консоли (в русской Windows это 866), а Node читает как UTF-8, и русский
+ * текст приходит крякозябрами. Заметно это стало ровно там, где важнее всего:
+ * сценарий загрузки объясняет, ПОЧЕМУ не скачалось, и объяснение оказалось
+ * нечитаемым.
+ */
+function powershellFile(file, args, timeoutMs = 60_000) {
+  // Кавычки только у ЗНАЧЕНИЙ. Закавыченное имя параметра PowerShell считает
+  // позиционным значением и отвечает «не удаётся найти позиционный параметр».
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+  const tail = args.map((arg) => (String(arg).startsWith('-') ? arg : quote(arg))).join(' ');
+  // `$LASTEXITCODE = 1` перед вызовом — чтобы сбой ДО запуска сценария
+  // (не нашёлся файл, не сошлись параметры) не выглядел успехом: переменная
+  // осталась бы от прошлой команды либо пустой, и наверх ушёл бы код 0.
+  const command = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; $LASTEXITCODE = 1; '
+    + `& ${quote(file)} ${tail}; exit $LASTEXITCODE`;
+  return runPowershell(['-Command', command], timeoutMs, true);
+}
+
+function runPowershell(tail, timeoutMs, showOutput = false) {
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', prelude + command,
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', ...tail,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let out = '';
@@ -249,8 +280,11 @@ function powershell(command, timeoutMs = 60_000) {
     child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timer);
+      // Сценарий загрузки сам объясняет, что и почему не вышло: его вывод
+      // пользователю нужнее нашего «не удалось скачать».
+      if (showOutput && out.trim()) process.stdout.write(`${out.trimEnd()}\n`);
       if (code === 0) resolve(out);
-      else reject(new Error(firstLine(err) || `PowerShell завершился с кодом ${code}`));
+      else reject(new Error(firstLine(err) || firstLine(out) || `PowerShell завершился с кодом ${code}`));
     });
   });
 }

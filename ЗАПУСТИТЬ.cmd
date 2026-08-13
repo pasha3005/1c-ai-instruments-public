@@ -46,25 +46,27 @@ REM  Vopros zadayot i skachivaet PowerShell, a ne sama programma - inache
 REM  poluchilas by kuritsa s yaytsom: interpretatora yeshchyo net, i vypolnit
 REM  im nechego. PowerShell zhe est v lyuboy Windows.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0src\tools\getNode.ps1" -RuntimeDir "%~dp0runtime"
-if !errorlevel! neq 0 (
-    echo.
-    echo   Windows Server 2012 / 2012 R2: Node.js 18+ na nih ne zapuskaetsya
-    echo   voobshche, i obhoda net. Zapuskayte programmu na rabochey stancii
-    echo   Windows 10/11 - servernaya baza ukazyvaetsya po seti
-    echo   (srv-1c:1541\Base). Podrobnee - razdel "Windows Server 2012
-    echo   ne podderzhivaetsya" v README.md.
-    echo.
-    pause
-    exit /b 1
-)
+if !errorlevel! neq 0 goto :node_failed
 
 if exist "%~dp0runtime\node.exe" (
     set "NODE_EXE=%~dp0runtime\node.exe"
     goto :found
 )
 
+:node_failed
 echo.
-echo   [OSHIBKA] Node.js tak i ne poyavilsya. Podrobnee - v README.md.
+echo   [OSHIBKA] Node.js tak i ne poyavilsya.
+echo.
+echo   Chto mozhno sdelat:
+echo     1. Ustanovit Node.js 20 ili novee s https://nodejs.org
+echo     2. Libo skachat "Windows Binary .zip" na drugom kompyutere,
+echo        dostat iz nego node.exe i polozhit v papku runtime\ ryadom
+echo        s etim faylom.
+echo.
+echo   Windows Server 2012 / 2012 R2: Node.js 18+ na nih ne zapuskaetsya
+echo   voobshche, i obhoda net. Zapuskayte programmu na rabochey stancii
+echo   Windows 10/11 - servernaya baza ukazyvaetsya po seti
+echo   vida srv-1c:1541\Base. Podrobnee - v README.md.
 echo.
 pause
 exit /b 1
