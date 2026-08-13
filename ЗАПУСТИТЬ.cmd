@@ -41,18 +41,30 @@ if %errorlevel% equ 0 (
     )
 )
 
+REM --- Node.js ne nayden: predlagaem skachat perenosnoy ----------------------
+REM  Vopros zadayot i skachivaet PowerShell, a ne sama programma - inache
+REM  poluchilas by kuritsa s yaytsom: interpretatora yeshchyo net, i vypolnit
+REM  im nechego. PowerShell zhe est v lyuboy Windows.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0src\tools\getNode.ps1" -RuntimeDir "%~dp0runtime"
+if !errorlevel! neq 0 (
+    echo.
+    echo   Windows Server 2012 / 2012 R2: Node.js 18+ na nih ne zapuskaetsya
+    echo   voobshche, i obhoda net. Zapuskayte programmu na rabochey stancii
+    echo   Windows 10/11 - servernaya baza ukazyvaetsya po seti
+    echo   (srv-1c:1541\Base). Podrobnee - razdel "Windows Server 2012
+    echo   ne podderzhivaetsya" v README.md.
+    echo.
+    pause
+    exit /b 1
+)
+
+if exist "%~dp0runtime\node.exe" (
+    set "NODE_EXE=%~dp0runtime\node.exe"
+    goto :found
+)
+
 echo.
-echo   [OSHIBKA] Node.js ne nayden.
-echo.
-echo   Varianty resheniya:
-echo     1. Polozhite portativnyy Node.js v papku runtime\ ryadom s etim faylom
-echo        (nuzhen tolko node.exe, nodejs.org - "Windows Binary .zip").
-echo     2. Libo ustanovite Node.js LTS s https://nodejs.org
-echo.
-echo   Windows Server 2012 / 2012 R2: Node.js 18+ na nih ne zapuskaetsya,
-echo   i obhoda net. Zapuskayte programmu na rabochey stancii Windows 10/11 -
-echo   servernaya baza ukazyvaetsya po seti (srv-1c:1541\Base). Podrobnee -
-echo   razdel "Windows Server 2012 ne podderzhivaetsya" v README.md.
+echo   [OSHIBKA] Node.js tak i ne poyavilsya. Podrobnee - v README.md.
 echo.
 pause
 exit /b 1
