@@ -752,9 +752,17 @@ export function buildRouter() {
     }
 
     const source = body.source === 'repository' ? 'repository' : 'infobase';
-    const required = source === 'repository'
-      ? [['repositoryPath', 'Не указан каталог с хранилищами конфигурации']]
-      : [['infobasePath', 'Не указан путь к информационной базе']];
+    // Хранилище лежит либо каталогом на диске, либо на сервере хранилищ —
+    // тогда вместо пути указывается адрес вида tcp://сервер/хранилище.
+    const repositoryKind = body.repositoryKind === 'address' ? 'address' : 'path';
+    const required = [];
+    if (source === 'repository') {
+      required.push(repositoryKind === 'address'
+        ? ['repositoryAddress', 'Не указан сетевой адрес хранилища конфигурации']
+        : ['repositoryPath', 'Не указан каталог с хранилищами конфигурации']);
+    } else {
+      required.push(['infobasePath', 'Не указан путь к информационной базе']);
+    }
     required.push(['workDir', 'Не указан рабочий каталог']);
 
     for (const [field, message] of required) {
@@ -768,7 +776,9 @@ export function buildRouter() {
     const input = {
       source,
       infobasePath: String(body.infobasePath || '').trim(),
+      repositoryKind,
       repositoryPath: String(body.repositoryPath || '').trim(),
+      repositoryAddress: String(body.repositoryAddress || '').trim(),
       repositoryUser: String(body.repositoryUser || '').trim(),
       repositoryPassword: typeof body.repositoryPassword === 'string' ? body.repositoryPassword : '',
       periodFrom: String(body.periodFrom || '').trim(),

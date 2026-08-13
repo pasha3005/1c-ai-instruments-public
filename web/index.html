@@ -698,20 +698,65 @@
 
       <!-- ---------- Источник: хранилище конфигурации ---------- -->
       <div data-source="repository" hidden>
+        <!--
+          Хранилище лежит не всегда каталогом на диске: у сервера хранилищ
+          свой адрес, и в крупных внедрениях доступ дают только так —
+          файловой шары к хранилищу может не быть вовсе. Поэтому здесь второй
+          выбор, вложенный в первый.
+        -->
         <div class="field">
-          <label for="qRepo">Каталог с хранилищами конфигурации <span class="req">*</span></label>
-          <div class="picker">
-            <input type="text" id="qRepo" name="qRepo"
-                   placeholder="D:\Хранилища   — внутри и основная конфигурация, и расширения"
-                   spellcheck="false">
-            <button type="button" class="btn btn--pick" data-pick="folder"
-                    data-target="qRepo"
-                    data-title="Выберите каталог, в котором лежат хранилища конфигурации">Каталог…</button>
+          <label>Где лежит хранилище</label>
+          <div class="switch switch--compact" id="qRepoKind">
+            <label class="switch__item">
+              <input type="radio" name="qRepoKind" value="path" checked>
+              <span class="switch__title">Каталог на диске</span>
+              <span class="switch__text">
+                Программа сама найдёт в нём все хранилища — и основной
+                конфигурации, и расширений.
+              </span>
+            </label>
+            <label class="switch__item">
+              <input type="radio" name="qRepoKind" value="address">
+              <span class="switch__title">Сетевой адрес</span>
+              <span class="switch__text">
+                Сервер хранилищ: <span class="mono">tcp://сервер/хранилище</span>.
+                Каждое хранилище указывается своим адресом.
+              </span>
+            </label>
           </div>
-          <div class="hint">
-            Можно указать и сам каталог хранилища, и каталог, где их несколько:
-            программа найдёт все — и основной конфигурации, и расширений
-            (опознаются по файлу <span class="mono">cfgrepo.conf</span>).
+        </div>
+
+        <div data-repo-kind="path">
+          <div class="field">
+            <label for="qRepo">Каталог с хранилищами конфигурации <span class="req">*</span></label>
+            <div class="picker">
+              <input type="text" id="qRepo" name="qRepo"
+                     placeholder="D:\Хранилища   — внутри и основная конфигурация, и расширения"
+                     spellcheck="false">
+              <button type="button" class="btn btn--pick" data-pick="folder"
+                      data-target="qRepo"
+                      data-title="Выберите каталог, в котором лежат хранилища конфигурации">Каталог…</button>
+            </div>
+            <div class="hint">
+              Можно указать и сам каталог хранилища, и каталог, где их несколько:
+              программа найдёт все — и основной конфигурации, и расширений
+              (опознаются по файлу <span class="mono">cfgrepo.conf</span>).
+            </div>
+          </div>
+        </div>
+
+        <div data-repo-kind="address" hidden>
+          <div class="field">
+            <label for="qRepoAddress">Сетевой адрес хранилища <span class="req">*</span></label>
+            <textarea id="qRepoAddress" name="qRepoAddress" rows="2" spellcheck="false"
+                      placeholder="tcp://сервер-хранилищ/erp/основная"></textarea>
+            <div class="hint" id="qRepoAddressHint">
+              Адрес сервера хранилищ: <span class="mono">tcp://сервер/хранилище</span>
+              (годится и <span class="mono">http://</span>, если доступ через веб-сервер).
+              <b>Список хранилищ сервер не отдаёт</b> — в отличие от каталога,
+              перебрать их нечем, поэтому у расширений адреса указываются
+              отдельно: по одному в строке.
+            </div>
           </div>
         </div>
 

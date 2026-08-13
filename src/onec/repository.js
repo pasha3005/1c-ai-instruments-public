@@ -83,6 +83,62 @@ const MARKER = 'cfgrepo.conf';
 const SEARCH_DEPTH = 2;
 
 /**
+ * Сетевой адрес хранилища: `tcp://сервер[:порт]/хранилище`, а также `http://`
+ * и `https://` для доступа через веб-сервер.
+ *
+ * Хранилище живёт не только каталогом на диске: у сервера хранилищ
+ * (`crserver`) свой адрес, и в крупных внедрениях доступ к хранилищу дают
+ * только так — файловой шары к нему может не быть вовсе.
+ */
+const NETWORK_ADDRESS = /^(?:tcp|https?):\/\/[^\s/]+(?:\/[^\s]*)?$/i;
+
+/** Похоже ли указанное на сетевой адрес хранилища, а не на путь к каталогу. */
+export function isNetworkRepository(value) {
+  return NETWORK_ADDRESS.test(String(value || '').trim());
+}
+
+/**
+ * Разбирает поле «Сетевой адрес хранилища» в перечень хранилищ.
+ *
+ * Адресов может быть несколько — по одному на строку или через точку с запятой:
+ * у основной конфигурации и у каждого расширения хранилище своё, и живут они
+ * на одном сервере разными адресами. Каталог на диске программа обходит сама
+ * и находит их все (`findRepositories`), а сетевой адрес перечислить нечем:
+ * список хранилищ сервер не отдаёт, спросить можно только конкретное.
+ *
+ * Имя хранилища для отчёта — последний сегмент адреса. Совпали у разных
+ * адресов — берём два последних сегмента: в таблице помещений имя хранилища
+ * служит заголовком, и два одинаковых заголовка читались бы как одно
+ * хранилище.
+ *
+ * @param {string} value
+ * @returns {{name: string, dir: string}[]}
+ */
+export function parseRepositoryAddresses(value) {
+  const addresses = String(value || '')
+    .split(/[\n;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const segments = (address) => address
+    .replace(/^[a-z]+:\/\//i, '')
+    .split('/')
+    .filter(Boolean);
+
+  const names = addresses.map((address) => segments(address).slice(-1)[0] || address);
+  return addresses.map((address, i) => {
+    const own = names[i];
+    const duplicated = names.filter((name) => name === own).length > 1;
+    const parts = segments(address);
+    return {
+      name: duplicated ? parts.slice(-2).join('/') || address : own,
+      dir: address,
+      isNetwork: true,
+    };
+  });
+}
+
+/**
  * Ищет хранилища конфигурации в каталоге.
  *
  * Пользователь указывает один каталог, а в нём обычно лежат и хранилище
@@ -473,8 +529,20 @@ export function authorsByObject(commits) {
   return byObject;
 }
 
+/**
+ * Имя файла журнала и выгрузки по расположению хранилища.
+ *
+ * У каталога берётся его имя, у сетевого адреса — адрес целиком без схемы:
+ * `path.basename('tcp://сервер/erp/основная')` дал бы «основная», и два
+ * хранилища с одинаковым последним сегментом на разных серверах писали бы
+ * в один и тот же файл, затирая отчёт друг друга.
+ */
 function safeName(dir) {
-  return path.basename(String(dir)).replace(/[^\wа-яёА-ЯЁ-]+/g, '_').slice(0, 40) || 'repo';
+  const value = String(dir);
+  const base = isNetworkRepository(value)
+    ? value.replace(/^[a-z]+:\/\//i, '')
+    : path.basename(value);
+  return base.replace(/[^\wа-яёА-ЯЁ-]+/g, '_').slice(0, 60) || 'repo';
 }
 
 async function readSafe(file) {

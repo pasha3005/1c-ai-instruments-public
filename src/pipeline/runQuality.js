@@ -28,8 +28,9 @@ import { resolvePlatform } from '../onec/platform.js';
 import { parseConnection, validateConnection } from '../onec/connection.js';
 import { exportConfiguration, exportExtensions } from '../onec/collector.js';
 import {
-  findRepositories, repositoryHistory, repositoryDumpCfg, filterByPeriod, authorsByObject,
-  createContextInfobase, ensureContextExtension, expandExtensionCf, isExtensionRepositoryRefusal,
+  findRepositories, parseRepositoryAddresses, repositoryHistory, repositoryDumpCfg,
+  filterByPeriod, authorsByObject, createContextInfobase, ensureContextExtension,
+  expandExtensionCf, isExtensionRepositoryRefusal,
 } from '../onec/repository.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
@@ -285,13 +286,24 @@ async function fromInfobase({ input, platform, workRoot, progress, warnings }) {
 // --- Источник: хранилище конфигурации ----------------------------------------
 
 async function fromRepository({ input, platform, workRoot, progress, warnings }) {
-  startOrThrow(progress, 'source', 'Поиск хранилищ конфигурации');
-  const repositories = await findRepositories(input.repositoryPath);
+  const byAddress = input.repositoryKind === 'address';
+  startOrThrow(progress, 'source', byAddress
+    ? 'Проверка сетевого адреса хранилища'
+    : 'Поиск хранилищ конфигурации');
+
+  // Каталог программа обходит сама и находит в нём все хранилища; сетевые
+  // адреса перечислить нечем — сервер хранилищ списка не отдаёт, — поэтому
+  // там разбирается ровно то, что указал пользователь.
+  const repositories = byAddress
+    ? parseRepositoryAddresses(input.repositoryAddress)
+    : await findRepositories(input.repositoryPath);
+
   if (!repositories.length) {
-    throw new Error(
-      `В каталоге ${input.repositoryPath} не найдено хранилищ конфигурации 1С. Каталог хранилища `
-      + 'опознаётся по файлу cfgrepo.conf; укажите каталог, где лежат хранилища.',
-    );
+    throw new Error(byAddress
+      ? 'Не указан ни один сетевой адрес хранилища. Адрес выглядит так: '
+        + 'tcp://сервер/хранилище; несколько адресов пишутся по одному в строке.'
+      : `В каталоге ${input.repositoryPath} не найдено хранилищ конфигурации 1С. Каталог хранилища `
+        + 'опознаётся по файлу cfgrepo.conf; укажите каталог, где лежат хранилища.');
   }
   progress.done('source', `хранилищ: ${repositories.length} (${repositories.map((r) => r.name).join(', ')})`);
 
@@ -403,9 +415,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   }
 
   if (!mainDir) {
+    // Что проверять в первую очередь — зависит от того, как задано хранилище:
+    // у каталога это почти всегда доступ, у адреса — сам адрес и доступность
+    // сервера хранилищ, и отсылать пользователя к паролю было бы вредным
+    // советом.
     throw new Error(
-      'Ни из одного хранилища не удалось получить конфигурацию. Проверьте имя пользователя '
-      + 'и пароль хранилища: ' + (warnings[warnings.length - 1] || 'причина не определена'),
+      'Ни из одного хранилища не удалось получить конфигурацию. '
+      + (byAddress
+        ? 'Проверьте адрес хранилища, доступность сервера хранилищ, имя пользователя и пароль: '
+        : 'Проверьте имя пользователя и пароль хранилища: ')
+      + (warnings[warnings.length - 1] || 'причина не определена'),
     );
   }
 

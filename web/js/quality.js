@@ -34,6 +34,14 @@ export function initQuality() {
   // а не угадывается по пометкам в коде. Отмечено оно и в разметке —
   // здесь просто показываем соответствующие поля.
   applySource(currentSource());
+
+  // Второй, вложенный выбор: хранилище лежит каталогом на диске либо
+  // на сервере хранилищ, доступном по адресу.
+  $$('#qRepoKind input[name="qRepoKind"]').forEach((radio) => {
+    radio.addEventListener('change', () => applyRepoKind(radio.value));
+  });
+  applyRepoKind(currentRepoKind());
+
   initPeriodDialog();
 
   $('#qualityForm').addEventListener('submit', (event) => {
@@ -136,13 +144,26 @@ function applySource(source) {
     : 'Проверить качество кода';
 }
 
+function currentRepoKind() {
+  return $('#qRepoKind input[name="qRepoKind"]:checked')?.value || 'path';
+}
+
+/** Каталог на диске или сетевой адрес — показываем поля выбранного варианта. */
+function applyRepoKind(kind) {
+  $$('[data-repo-kind]').forEach((block) => {
+    block.hidden = block.dataset.repoKind !== kind;
+  });
+}
+
 function collectInput() {
   return {
     source: currentSource(),
     infobasePath: $('#qPath').value.trim(),
     user: $('#qUser').value.trim(),
     password: $('#qPassword').value,
+    repositoryKind: currentRepoKind(),
     repositoryPath: $('#qRepo').value.trim(),
+    repositoryAddress: $('#qRepoAddress').value.trim(),
     repositoryUser: $('#qRepoUser').value.trim(),
     repositoryPassword: $('#qRepoPassword').value,
     periodFrom: $('#qFrom').value,
@@ -160,7 +181,9 @@ async function start() {
 
   const checks = input.source === 'repository'
     ? [
-      [input.repositoryPath, 'Укажите каталог с хранилищами конфигурации', '#qRepo'],
+      input.repositoryKind === 'address'
+        ? [input.repositoryAddress, 'Укажите сетевой адрес хранилища', '#qRepoAddress']
+        : [input.repositoryPath, 'Укажите каталог с хранилищами конфигурации', '#qRepo'],
       [input.repositoryUser, 'Укажите пользователя хранилища', '#qRepoUser'],
     ]
     : [[input.infobasePath, 'Укажите путь к информационной базе', '#qPath']];
@@ -211,7 +234,7 @@ function setBusy(busy) {
   btn.disabled = busy;
   const form = $('#qualityForm');
   form.classList.toggle('is-locked', busy);
-  $$('input, select, button', form).forEach((el) => {
+  $$('input, select, button, textarea', form).forEach((el) => {
     if (el.id === 'qStartBtn') return;
     el.disabled = busy;
   });
@@ -320,7 +343,9 @@ function renderHistoryItem(meta) {
   // Заголовок — то, по чему проверку узнаёшь: имя конфигурации, а пока его нет
   // (прогон не дошёл до разбора) — источник, который указывали в форме.
   const title = s.configName
-    || (fromRepo ? meta.input?.repositoryPath : meta.input?.infobasePath)
+    || (fromRepo
+      ? (meta.input?.repositoryAddress || meta.input?.repositoryPath)
+      : meta.input?.infobasePath)
     || 'Проверка качества';
   const period = [s.periodFrom, s.periodTo].filter(Boolean).join(' — ');
 

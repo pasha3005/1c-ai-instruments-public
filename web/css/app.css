@@ -276,6 +276,7 @@ body {
 .field input[type=text],
 .field input[type=password],
 .field input[type=number],
+.field textarea,
 .field select {
   width: 100%;
   padding: 11px 13px;
@@ -288,7 +289,10 @@ body {
   transition: border-color .15s, box-shadow .15s;
 }
 .field select { cursor: pointer; height: 43px; }
+/* Несколько адресов хранилищ — по одному в строке, поэтому поле растяжимое. */
+.field textarea { resize: vertical; min-height: 46px; line-height: 1.5; }
 .field input:focus,
+.field textarea:focus,
 .field select:focus {
   outline: none;
   border-color: var(--accent);
@@ -845,3 +849,8 @@ body {
 }
 .switch__title { font-weight: 600; }
 .switch__text { color: var(--ink-muted); font-size: 13px; line-height: 1.45; }
+/* Вложенный выбор (где лежит хранилище) — мельче внешнего: он уточняет
+   уже сделанный выбор, а не спорит с ним за внимание. */
+.switch--compact .switch__item { padding: 9px 12px; }
+.switch--compact .switch__title { font-weight: 560; font-size: 14px; }
+.switch--compact .switch__text { font-size: 12.5px; }
