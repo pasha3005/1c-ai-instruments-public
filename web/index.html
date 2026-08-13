@@ -49,6 +49,58 @@
 </script>
 
 <!--
+  Проверка возможностей браузера.
+
+  На сервере заказчика браузером по умолчанию оказался Internet Explorer,
+  и программа открылась в нём: страница без оформления, «Проверка окружения…»
+  навсегда, ни одна кнопка не работает (замечание пользователя 13.08.2026
+  со скриншотом). Так и должно было быть — интерфейс собран на модулях ES,
+  fetch и переменных CSS, ничего этого в IE нет, — но выглядело как поломка
+  программы, а не как «нужен другой браузер».
+
+  Скрипт намеренно написан на ES5 и без внешних стилей: он обязан выполниться
+  ровно в том браузере, который всё остальное не понимает. По той же причине
+  сообщение оформлено атрибутом style — файл app.css держится на переменных,
+  и в IE оно осталось бы белым текстом на белом фоне.
+-->
+<script>
+  (function () {
+    var ok = true;
+    // Модули ES — на них собран весь интерфейс.
+    try {
+      if (!('noModule' in document.createElement('script'))) ok = false;
+    } catch (e) { ok = false; }
+    // fetch — им идёт каждый запрос к серверу приложения.
+    if (typeof window.fetch !== 'function') ok = false;
+    // Переменные CSS — на них держится всё оформление, включая цвета тем.
+    try {
+      if (!window.CSS || !window.CSS.supports || !window.CSS.supports('--a', '0')) ok = false;
+    } catch (e) { ok = false; }
+    if (ok) return;
+
+    var box = document.createElement('div');
+    box.setAttribute('style', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;'
+      + 'background:#1a1d24;color:#e9ecf1;overflow:auto;'
+      + 'font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:16px;line-height:1.6;');
+    box.innerHTML = '<div style="max-width:640px;margin:0 auto;padding:56px 24px">'
+      + '<h1 style="font-size:26px;margin:0 0 18px;color:#fff">Нужен другой браузер</h1>'
+      + '<p style="margin:0 0 14px">Программа открылась в браузере, который не может'
+      + ' показать её интерфейс. Скорее всего это <b>Internet Explorer</b>:'
+      + ' он не поддерживает ни модули JavaScript, ни современные стили,'
+      + ' поэтому страница выглядит сломанной и кнопки не работают.</p>'
+      + '<p style="margin:0 0 14px">Откройте этот же адрес в <b>Microsoft Edge</b>'
+      + ' или <b>Google Chrome</b>:</p>'
+      + '<p style="margin:0 0 22px;padding:12px 14px;background:#12141a;border:1px solid #2d323d;'
+      + 'border-radius:8px;font-family:Consolas,monospace;font-size:15px">'
+      + String(location.href).replace(/</g, '&lt;') + '</p>'
+      + '<p style="margin:0;color:#a8b0bd;font-size:14px">Сама программа при этом работает:'
+      + ' она ждёт подключения по этому адресу. Закрывать окно запуска не нужно.</p>'
+      + '</div>';
+    document.body.appendChild(box);
+  })();
+</script>
+
+<!--
   Ключ спрашивается до всего остального и перекрывает интерфейс целиком:
   без действующего ключа сервер всё равно отвечает 403 на любой запрос,
   и показывать форму аудита под замком было бы обманом.

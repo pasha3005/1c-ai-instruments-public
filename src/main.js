@@ -19,7 +19,7 @@ import { SERVER, DATA_DIR, AUDITS_DIR, LOG_DIR, DEFAULT_WORK_DIR, APP } from './
 import { ensureDir } from './util/fsx.js';
 import { discoverPlatforms } from './onec/platform.js';
 import { createLogger } from './util/logger.js';
-import { openUrl } from './util/browser.js';
+import { openUrl, NO_BROWSER_HINT } from './util/browser.js';
 import os from 'node:os';
 
 const log = createLogger('main');
@@ -180,7 +180,18 @@ async function waitForPortRelease(url, attempts = 30) {
  * Сама механика и её ловушки — в `util/browser.js`.
  */
 function openBrowser(url) {
-  openUrl(url, { appWindow: SERVER.appWindow });
+  const opened = openUrl(url, { appWindow: SERVER.appWindow });
+  // Подходящего браузера на машине нет: страница, скорее всего, открылась
+  // в Internet Explorer и там не работает. Молчать об этом нельзя — именно
+  // так пользователь и получил «страшное оформление» на сервере заказчика
+  // (13.08.2026). То же самое напишет и сама страница.
+  if (opened === 'none') {
+    console.log('');
+    console.log(`  ${NO_BROWSER_HINT.split('\n').join('\n  ')}`);
+    console.log(`  Адрес программы: ${url}`);
+    console.log('');
+    log.warn('Не найден браузер на движке Chromium: интерфейс может не открыться');
+  }
 }
 
 main().catch((err) => {

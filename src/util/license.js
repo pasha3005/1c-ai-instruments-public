@@ -91,15 +91,31 @@ export function isValidKey(key) {
 }
 
 /**
+ * Действует ли отметка о вводе на указанный момент.
+ *
+ * Вынесено отдельной чистой функцией ради теста: раньше срок проверялся прямо
+ * в `licenseStatus()`, а та читает файл в `data/` — проверить её в тестах,
+ * не затирая настоящую отметку на машине владельца, было нечем. Из-за этого
+ * на срок действия не было ни одного теста: проверялась только константа
+ * «сутки», а не то, что по её истечении доступ действительно закрывается.
+ *
+ * @param {number} activatedAt отметка времени ввода ключа
+ * @param {number} [now]
+ */
+export function isActiveAt(activatedAt, now = Date.now()) {
+  if (!Number.isFinite(activatedAt)) return false;
+  return activatedAt + LICENSE_TTL_MS > now;
+}
+
+/**
  * Состояние допуска: активен ли ключ и сколько ему осталось.
  * @returns {Promise<{active: boolean, expiresAt: string|null, ttlMs: number}>}
  */
 export async function licenseStatus() {
   const state = await readState();
-  if (!state) return { active: false, expiresAt: null, ttlMs: LICENSE_TTL_MS };
-
-  const left = state.activatedAt + LICENSE_TTL_MS - Date.now();
-  if (left <= 0) return { active: false, expiresAt: null, ttlMs: LICENSE_TTL_MS };
+  if (!state || !isActiveAt(state.activatedAt)) {
+    return { active: false, expiresAt: null, ttlMs: LICENSE_TTL_MS };
+  }
 
   return {
     active: true,
