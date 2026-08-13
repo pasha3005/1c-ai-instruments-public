@@ -288,56 +288,79 @@ async function fromInfobase({ input, platform, workRoot, progress, warnings }) {
 // --- Источник: хранилище конфигурации ----------------------------------------
 
 /**
- * Что считать хранилищем: каталог на диске или адрес сервера хранилищ.
+ * Разбирает поле «Хранилище конфигурации» на источники.
  *
- * Переключатель в форме — не единственное основание, и это исправление
- * по живому случаю (13.08.2026, сервер заказчика). Адрес
- * `tcp://сервер/erp25/хранилище` был вставлен в поле «Каталог с хранилищами»,
- * переключатель остался на «Каталог на диске» — и программа честно пошла
- * искать в этом «каталоге» файл `cfgrepo.conf`, а не найдя, обвинила
- * пользователя: «укажите каталог, где лежат хранилища». Между тем строка
- * вида `tcp://…` ни на какой каталог не похожа и толкуется однозначно.
+ * Поле одно на оба вида хранилища, и переключателя «каталог или адрес» больше
+ * нет — он был вложен в переключатель источника и замечался не сразу. Живой
+ * случай 13.08.2026 на сервере заказчика: адрес `tcp://сервер/erp25/хранилище`
+ * ввели в поле каталога, переключатель остался на «Каталог на диске», и
+ * программа честно пошла искать в этом «каталоге» файл `cfgrepo.conf`, а не
+ * найдя, обвинила пользователя. Спрашивать было не о чем: строка вида `tcp://`
+ * ни на какой каталог не похожа и толкуется однозначно.
  *
- * Поэтому адрес узнаётся по себе самому, где бы его ни ввели. Переключатель
- * остаётся — он решает, какое поле показывать, — но ошибиться им больше
- * не значит получить отказ.
+ * Строк может быть сколько угодно и вперемешку: у основной конфигурации и
+ * у каждого расширения хранилище своё, каталог с ними бывает не один, а часть
+ * может лежать на сервере хранилищ. Точка с запятой разделяет только адреса —
+ * в пути к каталогу она встречается редко, но встречается, и рвать по ней путь
+ * было бы хуже, чем не поддержать привычную запись адресов в строку.
+ *
+ * @returns {{byAddress: boolean, value: string}[]}
  */
-export function repositorySource(input) {
-  const address = String(input.repositoryAddress || '').trim();
-  const dir = String(input.repositoryPath || '').trim();
+export function repositorySources(input) {
+  // `repositoryAddress` — поле прежних версий формы: у сохранённых прогонов
+  // адрес лежит в нём, и повторный запуск из истории не должен уходить пустым.
+  const raw = [input.repositoryPath, input.repositoryAddress]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join('\n');
 
-  if (input.repositoryKind === 'address' && address) return { byAddress: true, value: address };
-  // Похоже на адрес — значит адрес, независимо от положения переключателя.
-  if (looksLikeAddresses(dir)) return { byAddress: true, value: dir };
-  if (!dir && address) return { byAddress: true, value: address };
-  return { byAddress: false, value: dir };
-}
-
-/** Все ли строки значения — сетевые адреса. Каталог не бывает вперемешку с ними. */
-function looksLikeAddresses(value) {
-  const lines = String(value || '').split(/[\n;]+/).map((line) => line.trim()).filter(Boolean);
-  return lines.length > 0 && lines.every(isNetworkRepository);
+  const sources = [];
+  for (const line of raw.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    const parts = line.split(';').map((item) => item.trim()).filter(Boolean);
+    if (parts.length > 1 && parts.every(isNetworkRepository)) {
+      for (const part of parts) sources.push({ byAddress: true, value: part });
+    } else {
+      sources.push({ byAddress: isNetworkRepository(line), value: line });
+    }
+  }
+  return sources;
 }
 
 async function fromRepository({ input, platform, workRoot, progress, warnings }) {
-  const { byAddress, value } = repositorySource(input);
+  const sources = repositorySources(input);
+  // Только адреса — значит и говорить надо про адреса; хоть один каталог —
+  // работа начинается с его обхода, и это тоже надо сказать честно.
+  const byAddress = sources.length > 0 && sources.every((s) => s.byAddress);
+  const anyAddress = sources.some((s) => s.byAddress);
   startOrThrow(progress, 'source', byAddress
-    ? 'Проверка сетевого адреса хранилища'
+    ? 'Проверка сетевых адресов хранилищ'
     : 'Поиск хранилищ конфигурации');
 
   // Каталог программа обходит сама и находит в нём все хранилища; сетевые
   // адреса перечислить нечем — сервер хранилищ списка не отдаёт, — поэтому
-  // там разбирается ровно то, что указал пользователь.
-  const repositories = byAddress
-    ? parseRepositoryAddresses(value)
-    : await findRepositories(value);
+  // там разбирается ровно то, что указал пользователь. Адреса разбираются
+  // все разом: имена хранилищ для отчёта уточняются при совпадении, а для
+  // этого их нужно видеть вместе.
+  const addresses = sources.filter((s) => s.byAddress).map((s) => s.value);
+  const repositories = addresses.length ? parseRepositoryAddresses(addresses.join('\n')) : [];
+  for (const source of sources) {
+    if (source.byAddress) continue;
+    const found = await findRepositories(source.value);
+    // Один и тот же каталог легко указать дважды — сам и вместе с родителем.
+    for (const repo of found) {
+      if (!repositories.some((known) => known.dir === repo.dir)) repositories.push(repo);
+    }
+  }
 
   if (!repositories.length) {
+    const dirs = sources.filter((s) => !s.byAddress).map((s) => s.value);
     throw new Error(byAddress
       ? 'Не указан ни один сетевой адрес хранилища. Адрес выглядит так: '
         + 'tcp://сервер/хранилище; несколько адресов пишутся по одному в строке.'
-      : `В каталоге ${value} не найдено хранилищ конфигурации 1С. Каталог хранилища `
-        + 'опознаётся по файлу cfgrepo.conf; укажите каталог, где лежат хранилища.');
+      : `Хранилищ конфигурации 1С не найдено: ${dirs.join(', ') || 'хранилище не указано'}. `
+        + 'Каталог хранилища опознаётся по файлу cfgrepo.conf; укажите сам каталог '
+        + 'хранилища, каталог, где их несколько, или сетевой адрес вида '
+        + 'tcp://сервер/хранилище.');
   }
   progress.done('source', `хранилищ: ${repositories.length} (${repositories.map((r) => r.name).join(', ')})`);
 
@@ -348,10 +371,11 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   // об этом через минуту работы обидно.
   if (input.serviceBase) await validateConnection(parseConnection(input.serviceBase));
 
-  // «Только чтение» — режим по умолчанию, когда база указана: чужую базу
-  // разработчика менять нельзя, и это требование пользователя (13.08.2026),
-  // а не осторожность. Своей временной базе запрещать нечего — она наша.
-  const readOnly = Boolean(input.serviceBase) && input.allowBaseWrite !== true;
+  // Указана служебная база — в неё не пишется ничего, ни при каких условиях
+  // (13.08.2026, прямое требование пользователя: у разработчика на сервере
+  // заказчика есть только его рабочая база). Флага, снимающего этот запрет,
+  // нет и не должно быть. Своей временной базе запрещать нечего — она наша.
+  const readOnly = Boolean(input.serviceBase);
 
   // База, из которой конфигуратор говорит с хранилищем. Своя временная —
   // либо служебная, указанная пользователем: на терминальном сервере без
@@ -514,7 +538,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     // советом.
     throw new Error(
       'Ни из одного хранилища не удалось получить конфигурацию. '
-      + (byAddress
+      + (anyAddress
         ? 'Проверьте адрес хранилища, доступность сервера хранилищ, имя пользователя и пароль: '
         : 'Проверьте имя пользователя и пароль хранилища: ')
       + (warnings[warnings.length - 1] || 'причина не определена'),
@@ -1040,8 +1064,17 @@ function safeFileName(name) {
 }
 
 function sanitize(input) {
-  const { password, repositoryPassword, ...rest } = input || {};
-  return { ...rest, hasPassword: Boolean(password), hasRepositoryPassword: Boolean(repositoryPassword) };
+  // Пароль служебной базы вычищается наравне с остальными: прогон сохраняется
+  // в data/quality/*.json, и хранить там пароль от чужой базы нельзя.
+  const {
+    password, repositoryPassword, serviceBasePassword, ...rest
+  } = input || {};
+  return {
+    ...rest,
+    hasPassword: Boolean(password),
+    hasRepositoryPassword: Boolean(repositoryPassword),
+    hasServiceBasePassword: Boolean(serviceBasePassword),
+  };
 }
 
 /** Существует ли путь — для проверок входных данных в маршруте. */

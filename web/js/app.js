@@ -238,6 +238,12 @@ function fillPlatformLists(platforms) {
  * Диалог выбора показывает сервер: браузер отдаёт странице только имя файла,
  * а конвейеру нужен полный путь. Сервер работает на этой же машине.
  */
+/** Последняя непустая строка значения — для однострочных полей это оно само. */
+function lastLine(value) {
+  const lines = String(value || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  return lines[lines.length - 1] || '';
+}
+
 function initPickers() {
   $$('.btn--pick').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -250,10 +256,19 @@ function initPickers() {
           mode: btn.dataset.pick,
           title: btn.dataset.title || '',
           filter: btn.dataset.filter || '',
-          initial: target.value.trim(),
+          // Многострочному полю в качестве «текущего» отдаём последнюю строку:
+          // диалог откроется там, где человек был в прошлый раз, а не
+          // на всём списке целиком, который путём не является.
+          initial: lastLine(target.value),
         });
         if (path) {
-          target.value = path;
+          // Многострочное поле (хранилища конфигурации) — список, и выбор
+          // каталога его дополняет, а не затирает: рядом с каталогом там же
+          // пишутся сетевые адреса, и терять их при нажатии «Каталог…» нельзя.
+          const existing = target.value.trim();
+          target.value = target.tagName === 'TEXTAREA' && existing
+            ? `${existing}\n${path}`
+            : path;
           target.dispatchEvent(new Event('input', { bubbles: true }));
         }
       } catch (err) {

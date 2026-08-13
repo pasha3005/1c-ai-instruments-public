@@ -21,6 +21,10 @@ const state = {
   cancelling: false,
   timer: null,
   periodApplied: { from: '', to: '' },
+  // Незавершённый выбор в календаре: `anchor` — первая нажатая дата, пока
+  // не нажата вторая; `hover` — дата под указателем, ради предварительной
+  // подсветки диапазона. Наружу это не попадает до кнопки «Применить».
+  picker: { from: '', to: '', anchor: '', hover: '', year: 0, month: 0 },
 };
 
 export function initQuality() {
@@ -34,31 +38,6 @@ export function initQuality() {
   // а не угадывается по пометкам в коде. Отмечено оно и в разметке —
   // здесь просто показываем соответствующие поля.
   applySource(currentSource());
-
-  // Второй, вложенный выбор: хранилище лежит каталогом на диске либо
-  // на сервере хранилищ, доступном по адресу.
-  $$('#qRepoKind input[name="qRepoKind"]').forEach((radio) => {
-    radio.addEventListener('change', () => applyRepoKind(radio.value));
-  });
-  applyRepoKind(currentRepoKind());
-
-  // Адрес, вставленный в поле каталога, переключает вид сам. Живой случай
-  // 13.08.2026: на сервере заказчика `tcp://сервер/erp25/хранилище` попал
-  // в «Каталог с хранилищами» — переключатель остался на «Каталог на диске»,
-  // и программа пошла искать в этом «каталоге» файл cfgrepo.conf. Заметить
-  // второй переключатель мешает то, что он вложен в первый и виден не сразу.
-  // Событие `change`, а не `input`: по `input` переключение сработало бы
-  // на середине набора («tcp://» уже похоже на адрес), поле каталога тут же
-  // спряталось бы, и человек дописывал бы адрес в невидимое поле.
-  $('#qRepo').addEventListener('change', () => {
-    const value = $('#qRepo').value.trim();
-    if (!/^(?:tcp|https?):\/\//i.test(value)) return;
-    $('#qRepoAddress').value = value;
-    $('#qRepo').value = '';
-    $('#qRepoKind input[value="address"]').checked = true;
-    applyRepoKind('address');
-    setNote('#qFormNote', 'Это сетевой адрес — переключил на «Сетевой адрес».', false);
-  });
 
   initPeriodDialog();
 
@@ -81,62 +60,202 @@ export function reloadQualityHistory() {
   loadHistory();
 }
 
+const MONTH_NAMES = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+];
+// Неделя начинается с понедельника: в 1С и вообще в русской деловой практике
+// воскресенье — конец недели, а не начало.
+const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
 /**
- * Период помещений — отдельное окно вместо двух дат прямо в форме.
+ * Период помещений — отдельное окно с календарём на три месяца.
  *
- * Поле «Период» показывает уже применённый выбор и само не редактируется;
- * даты меняются только внутри диалога и попадают наружу по кнопке
- * «Применить». Так «Отмена» и закрытие по Esc гарантированно ничего
- * не портят: `#qFrom`/`#qTo` — это и есть значения, которые читает
- * collectInput(), поэтому при отмене их нужно вернуть к последним
- * применённым, а не оставить недосохранённый ввод.
+ * Как в 1С: щелчок по дате начала, щелчок по дате конца, выбранный диапазон
+ * закрашивается целиком. Открыты сразу текущий месяц и два предыдущих —
+ * обычный вопрос «что помещали за квартал» решается без листания. Прежние
+ * два поля `input[type=date]` были формально верны и неудобны: браузерный
+ * календарь раскрывался дважды и каждый раз начинался с текущего месяца.
+ *
+ * Поле «Период» в форме показывает уже применённый выбор и само
+ * не редактируется; наружу (в `#qFrom`/`#qTo`, которые читает collectInput)
+ * даты попадают только по кнопке «Применить». Поэтому «Отмена» и Esc
+ * ничего не портят: незавершённый выбор живёт в `state.picker`.
  */
 function initPeriodDialog() {
   const dialog = $('#qPeriodDialog');
+  const months = $('#qCalMonths');
 
   $('#qPeriodPick').addEventListener('click', () => {
-    $('#qFrom').value = state.periodApplied.from;
-    $('#qTo').value = state.periodApplied.to;
+    const { from, to } = state.periodApplied;
+    // Окно календаря заканчивается месяцем уже выбранной даты «по», а без
+    // выбора — текущим: показывать три месяца вокруг января, когда человек
+    // проверяет вчерашние помещения, было бы бессмысленно.
+    const anchorDate = parseIso(to) || parseIso(from) || new Date();
+    state.picker = {
+      from, to, anchor: '', hover: '',
+      year: anchorDate.getFullYear(), month: anchorDate.getMonth(),
+    };
+    renderCalendar();
     dialog.showModal();
   });
 
+  $('#qCalPrev').addEventListener('click', () => shiftMonths(-1));
+  $('#qCalNext').addEventListener('click', () => shiftMonths(1));
+
+  months.addEventListener('click', (event) => {
+    const cell = event.target.closest('.cal__day[data-date]');
+    if (!cell) return;
+    pickDate(cell.dataset.date);
+  });
+
+  // Предварительная подсветка: пока вторая дата не нажата, диапазон тянется
+  // за указателем — видно, что именно будет выбрано, ещё до щелчка.
+  months.addEventListener('mouseover', (event) => {
+    if (!state.picker.anchor) return;
+    const cell = event.target.closest('.cal__day[data-date]');
+    if (!cell || cell.dataset.date === state.picker.hover) return;
+    state.picker.hover = cell.dataset.date;
+    paintCalendar();
+  });
+  months.addEventListener('mouseleave', () => {
+    if (!state.picker.hover) return;
+    state.picker.hover = '';
+    paintCalendar();
+  });
+
   $('#qPeriodReset').addEventListener('click', () => {
-    $('#qFrom').value = '';
-    $('#qTo').value = '';
+    state.picker = { ...state.picker, from: '', to: '', anchor: '', hover: '' };
+    paintCalendar();
   });
 
-  // Откат несохранённого ввода делается явно в каждом пути закрытия, а не
-  // через событие `close` диалога: в проверке живьём оно не сработало после
-  // программного `close()` — значения из диалога утекали наружу молча.
-  const revert = () => {
-    $('#qFrom').value = state.periodApplied.from;
-    $('#qTo').value = state.periodApplied.to;
-  };
-
-  $('#qPeriodCancel').addEventListener('click', () => {
-    revert();
-    dialog.close();
-  });
+  $('#qPeriodCancel').addEventListener('click', () => dialog.close());
 
   $('#qPeriodApply').addEventListener('click', () => {
-    state.periodApplied = { from: $('#qFrom').value, to: $('#qTo').value };
+    const { from, to } = selectedRange();
+    state.periodApplied = { from, to };
+    $('#qFrom').value = from;
+    $('#qTo').value = to;
     updatePeriodLabel();
     dialog.close();
   });
 
-  // Esc — тот же «отказ», что кнопка «Отмена»: событие `cancel` (в отличие
-  // от `close`) в проверке сработало надёжно.
-  dialog.addEventListener('cancel', revert);
-
   updatePeriodLabel();
+}
+
+/** Что выбрано сейчас: готовый диапазон либо тянущийся за указателем. */
+function selectedRange() {
+  const { from, to, anchor, hover } = state.picker;
+  if (!anchor) return { from, to };
+  const other = hover || anchor;
+  return anchor <= other ? { from: anchor, to: other } : { from: other, to: anchor };
+}
+
+/**
+ * Щелчок по дате. Первый задаёт начало, второй — конец; если второй раньше
+ * первого, границы меняются местами (человек мог начать с правого края).
+ * Третий щелчок начинает выбор заново — это привычное поведение календарей
+ * с диапазоном, и объяснять его не приходится.
+ */
+function pickDate(iso) {
+  const p = state.picker;
+  if (!p.anchor) {
+    p.anchor = iso;
+    p.from = iso;
+    p.to = iso;
+  } else {
+    p.from = iso < p.anchor ? iso : p.anchor;
+    p.to = iso < p.anchor ? p.anchor : iso;
+    p.anchor = '';
+  }
+  p.hover = '';
+  paintCalendar();
+}
+
+function shiftMonths(delta) {
+  const shifted = new Date(state.picker.year, state.picker.month + delta, 1);
+  state.picker.year = shifted.getFullYear();
+  state.picker.month = shifted.getMonth();
+  renderCalendar();
+}
+
+/** Три месяца: текущий в окне — последний, слева от него два предыдущих. */
+function renderCalendar() {
+  const { year, month } = state.picker;
+  const html = [];
+  for (let back = 2; back >= 0; back -= 1) {
+    const first = new Date(year, month - back, 1);
+    html.push(renderMonth(first.getFullYear(), first.getMonth()));
+  }
+  $('#qCalMonths').innerHTML = html.join('');
+  paintCalendar();
+}
+
+function renderMonth(year, month) {
+  const first = new Date(year, month, 1);
+  // getDay(): 0 — воскресенье. Сдвигаем к «понедельник — нулевой день».
+  const shift = (first.getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+
+  const cells = WEEKDAYS.map((name) => `<span class="cal__dow">${name}</span>`);
+  for (let i = 0; i < shift; i += 1) cells.push('<span class="cal__day cal__day--empty"></span>');
+  for (let day = 1; day <= days; day += 1) {
+    const iso = isoOf(year, month, day);
+    const weekend = (shift + day - 1) % 7 >= 5;
+    cells.push(
+      `<button type="button" class="cal__day${weekend ? ' is-weekend' : ''}" `
+      + `data-date="${iso}">${day}</button>`,
+    );
+  }
+
+  return `<div class="cal__month">
+    <div class="cal__caption">${MONTH_NAMES[month]} ${year}</div>
+    <div class="cal__grid">${cells.join('')}</div>
+  </div>`;
+}
+
+/**
+ * Подсветка выбора — переключением классов у уже нарисованных ячеек, а не
+ * перерисовкой: подсветка меняется на каждое движение мыши, и собирать ради
+ * этого три месяца заново значило бы гасить ячейку прямо под указателем.
+ */
+function paintCalendar() {
+  const { from, to } = selectedRange();
+  const today = isoOf(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+
+  $$('#qCalMonths .cal__day[data-date]').forEach((cell) => {
+    const iso = cell.dataset.date;
+    const edge = Boolean(from) && (iso === from || iso === to);
+    cell.classList.toggle('is-today', iso === today);
+    cell.classList.toggle('is-edge', edge);
+    cell.classList.toggle('is-in', Boolean(from && to) && iso > from && iso < to);
+  });
+
+  const label = from && to
+    ? `${ru(from)} — ${ru(to)}`
+    : 'Весь период';
+  $('#qCalChosen').textContent = state.picker.anchor
+    ? `${ru(from)} — укажите дату конца`
+    : label;
+}
+
+function isoOf(year, month, day) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
+}
+
+function parseIso(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+function ru(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
 }
 
 function updatePeriodLabel() {
   const { from, to } = state.periodApplied;
-  const ru = (iso) => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
-    return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
-  };
   const field = $('#qPeriod');
   if (from && to) field.value = `${ru(from)} — ${ru(to)}`;
   else if (from) field.value = `с ${ru(from)}`;
@@ -162,26 +281,15 @@ function applySource(source) {
     : 'Проверить качество кода';
 }
 
-function currentRepoKind() {
-  return $('#qRepoKind input[name="qRepoKind"]:checked')?.value || 'path';
-}
-
-/** Каталог на диске или сетевой адрес — показываем поля выбранного варианта. */
-function applyRepoKind(kind) {
-  $$('[data-repo-kind]').forEach((block) => {
-    block.hidden = block.dataset.repoKind !== kind;
-  });
-}
-
 function collectInput() {
   return {
     source: currentSource(),
     infobasePath: $('#qPath').value.trim(),
     user: $('#qUser').value.trim(),
     password: $('#qPassword').value,
-    repositoryKind: currentRepoKind(),
+    // Одно поле на каталог и на сетевой адрес: что именно введено, программа
+    // разбирает сама (`repositorySources` в конвейере).
     repositoryPath: $('#qRepo').value.trim(),
-    repositoryAddress: $('#qRepoAddress').value.trim(),
     repositoryUser: $('#qRepoUser').value.trim(),
     repositoryPassword: $('#qRepoPassword').value,
     serviceBase: $('#qServiceBase').value.trim(),
@@ -202,9 +310,7 @@ async function start() {
 
   const checks = input.source === 'repository'
     ? [
-      input.repositoryKind === 'address'
-        ? [input.repositoryAddress, 'Укажите сетевой адрес хранилища', '#qRepoAddress']
-        : [input.repositoryPath, 'Укажите каталог с хранилищами конфигурации', '#qRepo'],
+      [input.repositoryPath, 'Укажите хранилище: каталог на диске или сетевой адрес', '#qRepo'],
       [input.repositoryUser, 'Укажите пользователя хранилища', '#qRepoUser'],
     ]
     : [[input.infobasePath, 'Укажите путь к информационной базе', '#qPath']];

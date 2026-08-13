@@ -310,9 +310,23 @@ body {
   font-size: 13.5px;
   flex-shrink: 0;
 }
+/*
+ * Многострочный вариант: поле хранилищ — список, в нём вперемешку каталоги
+ * и адреса. Кнопка прижата к верху, иначе она болтается по центру трёх строк
+ * и связь с полем читается хуже.
+ */
+.picker--multiline { align-items: flex-start; }
+.picker--multiline textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+}
 @media (max-width: 680px) {
   .picker { flex-wrap: wrap; }
-  .picker input { flex-basis: 100%; }
+  .picker input,
+  .picker--multiline textarea { flex-basis: 100%; }
 }
 .field input::placeholder { color: var(--ink-faint); }
 .hint { font-size: 12.5px; color: var(--ink-faint); margin-top: 5px; line-height: 1.45; }
@@ -341,6 +355,85 @@ body {
   gap: 10px;
   margin-top: 6px;
 }
+
+/*
+ * Календарь выбора периода — три месяца в ряд, как в форме выбора периода 1С.
+ * Ширина окна считается от них: три колонки по 210 px плюс отступы. На узком
+ * экране месяцы переносятся друг под друга — обрезать календарь нельзя,
+ * последний месяц как раз текущий, с ним и работают чаще всего.
+ */
+.dialog--period { width: min(760px, calc(100vw - 32px)); }
+.cal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.cal__chosen {
+  flex: 1;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+.cal__nav {
+  padding: 4px 12px;
+  font-size: 17px;
+  line-height: 1.2;
+}
+.cal__months {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+@media (max-width: 640px) { .cal__months { grid-template-columns: 1fr; } }
+.cal__caption {
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-mid);
+  margin-bottom: 6px;
+}
+.cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  /*
+   * Ячейки диапазона смыкаются в сплошную полосу: разрывы между днями одной
+   * недели превращали закрашенный период в пунктир и читались как несколько
+   * отдельных выборов. Отделены только строки — по неделям.
+   */
+  gap: 2px 0;
+}
+.cal__dow {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-faint);
+  padding-bottom: 4px;
+}
+.cal__day {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-mid);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 0;
+  cursor: pointer;
+  border-radius: 0;
+}
+.cal__day--empty { cursor: default; }
+.cal__day.is-weekend { color: var(--ink-faint); }
+.cal__day:not(.cal__day--empty):hover { background: var(--surface-2); }
+.cal__day.is-today { box-shadow: inset 0 -2px 0 var(--ink-faint); }
+.cal__day.is-in {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.cal__day.is-edge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius-sm);
+}
+.cal__day.is-edge.is-today { box-shadow: none; }
 
 /*
  * Свёрнутого раздела «Дополнительные параметры» больше нет: пользователь

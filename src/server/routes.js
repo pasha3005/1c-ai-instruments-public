@@ -776,14 +776,15 @@ export function buildRouter() {
     }
 
     const source = body.source === 'repository' ? 'repository' : 'infobase';
-    // Хранилище лежит либо каталогом на диске, либо на сервере хранилищ —
-    // тогда вместо пути указывается адрес вида tcp://сервер/хранилище.
-    const repositoryKind = body.repositoryKind === 'address' ? 'address' : 'path';
     const required = [];
     if (source === 'repository') {
-      required.push(repositoryKind === 'address'
-        ? ['repositoryAddress', 'Не указан сетевой адрес хранилища конфигурации']
-        : ['repositoryPath', 'Не указан каталог с хранилищами конфигурации']);
+      // Поле одно на каталог и на сетевой адрес: что именно введено, разбирает
+      // конвейер (`repositorySources`). Прежнее поле адреса продолжаем
+      // принимать — из него приходят повторные запуски сохранённых прогонов.
+      if (!String(body.repositoryPath || body.repositoryAddress || '').trim()) {
+        sendError(res, 400, 'Не указано хранилище конфигурации: каталог на диске или сетевой адрес');
+        return;
+      }
     } else {
       required.push(['infobasePath', 'Не указан путь к информационной базе']);
     }
@@ -800,7 +801,6 @@ export function buildRouter() {
     const input = {
       source,
       infobasePath: String(body.infobasePath || '').trim(),
-      repositoryKind,
       repositoryPath: String(body.repositoryPath || '').trim(),
       repositoryAddress: String(body.repositoryAddress || '').trim(),
       repositoryUser: String(body.repositoryUser || '').trim(),
@@ -808,12 +808,11 @@ export function buildRouter() {
       // Служебная база: конфигуратору нужна лицензия, а файловой базе на
       // терминальном сервере её взять неоткуда — сервер 1С выдаёт лицензию
       // только для серверных баз. Пусто — работаем своей временной базой.
+      // В указанную базу не пишется ничего и ни при каких условиях, поэтому
+      // флага, разрешающего запись, здесь нет.
       serviceBase: String(body.serviceBase || '').trim(),
       serviceBaseUser: String(body.serviceBaseUser || '').trim(),
       serviceBasePassword: typeof body.serviceBasePassword === 'string' ? body.serviceBasePassword : '',
-      // Указанную базу по умолчанию НЕ меняем: у разработчика на сервере
-      // заказчика есть только его рабочая база. Запись — отдельное согласие.
-      allowBaseWrite: body.allowBaseWrite === true,
       periodFrom: String(body.periodFrom || '').trim(),
       periodTo: String(body.periodTo || '').trim(),
       platformVersion: String(body.platformVersion || '').trim(),

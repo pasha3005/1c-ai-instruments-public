@@ -25,13 +25,20 @@ function runDir(id) {
   return path.join(QUALITY_DIR, id);
 }
 
-/** Пароли на диск не пишутся — только признак того, что они были заданы. */
+/**
+ * Пароли на диск не пишутся — только признак того, что они были заданы.
+ * Пароль служебной базы в том же ряду: база чужая, рабочая, и её пароль
+ * не должен оседать в `data/quality/*.json` вместе с историей прогонов.
+ */
 function sanitizeInput(input) {
-  const { password, repositoryPassword, ...rest } = input || {};
+  const {
+    password, repositoryPassword, serviceBasePassword, ...rest
+  } = input || {};
   return {
     ...rest,
     hasPassword: Boolean(password),
     hasRepositoryPassword: Boolean(repositoryPassword),
+    hasServiceBasePassword: Boolean(serviceBasePassword),
   };
 }
 
