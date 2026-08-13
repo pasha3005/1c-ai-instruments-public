@@ -805,6 +805,12 @@ export function buildRouter() {
       repositoryAddress: String(body.repositoryAddress || '').trim(),
       repositoryUser: String(body.repositoryUser || '').trim(),
       repositoryPassword: typeof body.repositoryPassword === 'string' ? body.repositoryPassword : '',
+      // Служебная база: конфигуратору нужна лицензия, а файловой базе на
+      // терминальном сервере её взять неоткуда — сервер 1С выдаёт лицензию
+      // только для серверных баз. Пусто — работаем своей временной базой.
+      serviceBase: String(body.serviceBase || '').trim(),
+      serviceBaseUser: String(body.serviceBaseUser || '').trim(),
+      serviceBasePassword: typeof body.serviceBasePassword === 'string' ? body.serviceBasePassword : '',
       periodFrom: String(body.periodFrom || '').trim(),
       periodTo: String(body.periodTo || '').trim(),
       platformVersion: String(body.platformVersion || '').trim(),

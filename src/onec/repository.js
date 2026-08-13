@@ -42,7 +42,7 @@ import { TIMEOUTS } from '../config.js';
 import { ensureDir, pathExists, readText, rmrf } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
 import { rethrowIfCancelled } from '../util/cancel.js';
-import { parseConnection } from './connection.js';
+import { parseConnection, toClientArgs } from './connection.js';
 import { listExtensions, createExtension } from './ibcmd.js';
 import {
   loadCfg, dumpConfigToFiles, createInfobase, createExtensionByDesigner,
@@ -187,9 +187,17 @@ export async function findRepositories(dir) {
  *
  * @returns {Promise<string>} путь к базе
  */
-export async function createContextInfobase({ platform, workDir, name = 'repo-context' }) {
+export async function createContextInfobase({
+  platform, workDir, name = 'repo-context', serviceBase = '', user = '', password = '',
+}) {
+  // Своя база нужна не всегда: пользователь может указать служебную —
+  // и на терминальном сервере без лицензий на файловые базы это
+  // единственный способ вообще запустить конфигуратор. Подробности —
+  // в докблоке `serviceContext`.
+  if (serviceBase) return serviceContext(serviceBase, user, password);
+
   const dir = path.join(workDir, name);
-  if (await pathExists(path.join(dir, '1Cv8.1CD'))) return dir;
+  if (await pathExists(path.join(dir, '1Cv8.1CD'))) return { base: dir, user: '', password: '' };
 
   await rmrf(dir).catch(() => {});
   await ensureDir(dir);
@@ -209,7 +217,51 @@ export async function createContextInfobase({ platform, workDir, name = 'repo-co
   }
 
   log.info(`Создана временная база-контекст для хранилища: ${dir}`);
-  return dir;
+  return { base: dir, user: '', password: '' };
+}
+
+/**
+ * Служебная база, указанная пользователем, вместо временной.
+ *
+ * Зачем (13.08.2026, сервер заказчика). Конфигуратору нужна **лицензия**,
+ * и берётся она по-разному: для СЕРВЕРНОЙ базы её выдаёт сервер 1С, а для
+ * файловой нужен местный ключ защиты или программная лицензия на этой машине.
+ * На терминальном сервере заказчика местных лицензий нет вовсе — люди работают
+ * в серверной базе и получают лицензию с сервера. Поэтому наша временная
+ * файловая база честно создавалась, а конфигуратор на ней падал:
+ * «Не найдена лицензия. Не обнаружен ключ защиты программы или полученная
+ * программная лицензия!» Указанная серверная база лицензию получает — и всё
+ * работает.
+ *
+ * Отсюда же ограничение, о котором сказано в интерфейсе прямо: база
+ * СЛУЖЕБНАЯ. Разворачивание конфигурации хранилища в XML идёт загрузкой
+ * в базу (`/LoadCfg`), то есть её конфигурация перезаписывается. Рабочую базу
+ * указывать нельзя, и решать это за пользователя мы не можем — только сказать.
+ */
+function serviceContext(serviceBase, user, password) {
+  const conn = parseConnection(serviceBase);
+  log.info(`Работа с хранилищем идёт через служебную базу: ${conn.display}`);
+  return { base: serviceBase, user: user || '', password: password || '', service: true };
+}
+
+/** Аргументы запуска конфигуратора на базе-контексте — файловой или серверной. */
+function contextArgs(context) {
+  const { base, user, password } = normalizeContext(context);
+  const args = [...toClientArgs(parseConnection(base))];
+  if (user) args.push(`/N${user}`);
+  if (password) args.push(`/P${password}`);
+  return args;
+}
+
+/**
+ * Прежде база-контекст была просто путём, теперь это `{base, user, password}`.
+ * Строку тоже принимаем: так вызывают тесты и старый код, и ломать их
+ * ради формы аргумента незачем.
+ */
+function normalizeContext(context) {
+  return typeof context === 'string'
+    ? { base: context, user: '', password: '' }
+    : { base: context?.base || '', user: context?.user || '', password: context?.password || '' };
 }
 
 /**
@@ -224,6 +276,35 @@ export async function createContextInfobase({ platform, workDir, name = 'repo-co
  * проводником, ни браузером, — не признак неисправности: они этого протокола
  * и не знают.
  */
+/**
+ * Отказ по лицензии — не про хранилище, и подсказка нужна совсем другая.
+ *
+ * Конфигуратор берёт лицензию по-разному: для СЕРВЕРНОЙ базы её выдаёт сервер
+ * 1С, для файловой нужен ключ защиты или программная лицензия на этой самой
+ * машине. На терминальном сервере заказчика местных лицензий нет — люди
+ * работают в серверной базе и получают лицензию с сервера, — и наша временная
+ * файловая база упиралась в «Не найдена лицензия». Гадать при таком ответе
+ * про адрес хранилища и пароли бессмысленно: до хранилища дело не дошло.
+ */
+/**
+ * Что дописать к отказу платформы, чтобы человеку было с чем работать.
+ *
+ * Лицензия отменяет все прочие советы: до хранилища дело не дошло, и говорить
+ * про адреса и пароли значило бы посылать по ложному следу.
+ */
+export function repositoryHint(text, dir) {
+  return licenseHint(text) || networkHint(dir);
+}
+
+function licenseHint(text) {
+  if (!/лицензи|ключ защиты/i.test(String(text || ''))) return '';
+  return '\nЭто отказ ПЛАТФОРМЫ в лицензии, а не отказ хранилища — до хранилища '
+    + 'дело не дошло. Конфигуратор получает лицензию с сервера 1С только когда '
+    + 'работает с серверной базой; временной файловой базе нужна лицензия '
+    + 'на этой машине, а её может не быть. Укажите в форме служебную базу '
+    + '1С (лучше серверную) — программа будет работать с хранилищем через неё.';
+}
+
 function networkHint(dir) {
   if (!isNetworkRepository(dir)) return '';
   return `\nАдрес передан платформе как есть: ${dir}. Проверьте три вещи: `
@@ -252,24 +333,32 @@ function extensionArgs(extension) {
  *
  * @returns {Promise<{ok: boolean, name?: string, reason?: string}>}
  */
-export async function ensureContextExtension({ platform, contextBase, name = CONTEXT_EXTENSION }) {
-  const conn = parseConnection(contextBase);
+export async function ensureContextExtension({
+  platform, contextBase, workDir = '', name = CONTEXT_EXTENSION,
+}) {
+  const context = normalizeContext(contextBase);
+  const conn = parseConnection(context.base);
 
   // Без ibcmd (клиентская установка платформы) расширение заводит конфигуратор —
   // окольным путём, зато проверенным на четырёх сборках. Подробности и причина,
   // почему путь именно такой, — в `createExtensionByDesigner`.
   if (!platform.ibcmd) {
     const made = await createExtensionByDesigner({
-      platform, conn, name, workDir: path.dirname(contextBase),
+      platform, conn, name,
+      workDir: workDir || path.dirname(context.base),
+      user: context.user, password: context.password,
     });
     return made.ok ? { ok: true, name } : made;
   }
 
-  const existing = await listExtensions({ platform, conn });
+  const existing = await listExtensions({
+    platform, conn, user: context.user, password: context.password,
+  });
   if (existing.includes(name)) return { ok: true, name };
 
   const created = await createExtension({
     platform, conn, name, prefix: CONTEXT_EXTENSION_PREFIX,
+    user: context.user, password: context.password,
   });
   if (!created.ok) return { ok: false, reason: created.reason };
   return { ok: true, name };
@@ -301,7 +390,7 @@ export async function repositoryHistory({
 
   try {
     await run(platform.client, [
-      'DESIGNER', `/F${contextBase}`,
+      'DESIGNER', ...contextArgs(contextBase),
       ...repositoryArgs({ dir, user, password }),
       '/ConfigurationRepositoryReport', reportFile,
       ...extensionArgs(extension),
@@ -320,7 +409,8 @@ export async function repositoryHistory({
       commits: [],
       reason: (text
         ? `конфигуратор не построил отчёт по истории: ${text.slice(0, 300)}`
-        : 'конфигуратор не построил отчёт по истории хранилища') + networkHint(dir),
+        : 'конфигуратор не построил отчёт по истории хранилища')
+        + repositoryHint(text, dir),
     };
   }
 
@@ -344,7 +434,7 @@ export async function repositoryDumpCfg({
 
   try {
     await run(platform.client, [
-      'DESIGNER', `/F${contextBase}`,
+      'DESIGNER', ...contextArgs(contextBase),
       ...repositoryArgs({ dir, user, password }),
       '/ConfigurationRepositoryDumpCfg', cfFile,
       ...(version ? ['-v', String(version)] : []),
@@ -386,15 +476,17 @@ export async function expandExtensionCf({
   platform, contextBase, cfFile, workDir, name, extension,
 }) {
   const outDir = path.join(workDir, name);
-  const conn = parseConnection(contextBase);
+  const context = normalizeContext(contextBase);
+  const conn = parseConnection(context.base);
+  const auth = { user: context.user, password: context.password };
   await rmrf(outDir).catch(() => {});
   try {
     await loadCfg({
-      platform, conn, cfFile, extension,
+      platform, conn, cfFile, extension, ...auth,
       logFile: path.join(workDir, 'repo', `loadcfe-${safeName(name)}.log`),
     });
     await dumpConfigToFiles({
-      platform, conn, outDir, extension,
+      platform, conn, outDir, extension, ...auth,
       logFile: path.join(workDir, 'repo', `dumpcfe-${safeName(name)}.log`),
     });
   } catch (err) {

@@ -823,6 +823,52 @@
           </div>
         </div>
 
+        <!--
+          Служебная база. Конфигуратору для любой работы нужна ЛИЦЕНЗИЯ, и берёт
+          он её по-разному: для серверной базы её выдаёт сервер 1С, а файловой
+          нужен ключ защиты или программная лицензия на этой машине. На
+          терминальном сервере местных лицензий может не быть вовсе — тогда
+          временная база, которую программа заводит сама, не работает, и нужна
+          готовая. Про перезапись конфигурации сказано прямо: развернуть код
+          хранилища в XML иначе нечем.
+        -->
+        <div class="field">
+          <label for="qServiceBase">Служебная база 1С</label>
+          <div class="picker">
+            <input type="text" id="qServiceBase" name="qServiceBase" spellcheck="false"
+                   placeholder="Пусто — программа заведёт временную базу сама">
+            <button type="button" class="btn btn--pick" data-pick="folder"
+                    data-target="qServiceBase" data-title="Выберите каталог файловой базы 1С">База…</button>
+          </div>
+          <div class="hint">
+            Через неё конфигуратор говорит с хранилищем. Нужна там, где своя
+            временная база не запускается: <b>файловой базе требуется лицензия
+            на этой машине</b>, а на терминальном сервере лицензию обычно выдаёт
+            сервер 1С и только для серверных баз — отсюда ответ «Не найдена
+            лицензия». Серверная база пишется как
+            <span class="mono">Srvr="сервер";Ref="база";</span>, файловая — путём
+            к каталогу.
+            <br>
+            <b>Конфигурация этой базы будет перезаписана</b> содержимым хранилища:
+            иначе развернуть его код в XML нечем. Данные базы не трогаются
+            (обновление конфигурации базы данных не выполняется), но указывать
+            нужно служебную или тестовую базу, а не рабочую.
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="qServiceBaseUser">Пользователь служебной базы</label>
+            <input type="text" id="qServiceBaseUser" name="qServiceBaseUser"
+                   spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="qServiceBasePassword">Пароль служебной базы</label>
+            <input type="password" id="qServiceBasePassword" name="qServiceBasePassword"
+                   autocomplete="new-password">
+          </div>
+        </div>
+
         <div class="field">
           <label for="qPeriod">Период помещений</label>
           <div class="picker">

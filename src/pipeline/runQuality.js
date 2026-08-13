@@ -342,7 +342,22 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   startOrThrow(progress, 'export', 'Чтение истории и выгрузка конфигурации из хранилища');
   // Командам хранилища нужна база-контекст, но привязывать её к хранилищу
   // не требуется — проверено. Поэтому создаём пустую временную.
-  const contextBase = await createContextInfobase({ platform, workDir: workRoot });
+  // Служебную базу проверяем сразу: ошибиться в строке соединения легко,
+  // а узнать об этом через минуту работы обидно.
+  if (input.serviceBase) await validateConnection(parseConnection(input.serviceBase));
+
+  // База, из которой конфигуратор говорит с хранилищем. Своя временная —
+  // либо служебная, указанная пользователем: на терминальном сервере без
+  // лицензий на файловые базы своя не заводится вовсе.
+  const contextBase = await createContextInfobase({
+    platform, workDir: workRoot,
+    serviceBase: input.serviceBase,
+    user: input.serviceBaseUser,
+    password: input.serviceBasePassword,
+  });
+  if (contextBase.service) {
+    progress.update('export', `работаем через служебную базу ${input.serviceBase}`);
+  }
 
   const period = { from: input.periodFrom || '', to: input.periodTo || '' };
   const commits = [];
@@ -367,7 +382,9 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     // (проверено), поэтому одного хватает на все хранилища расширений.
     if (!history.ok && isExtensionRepositoryRefusal(history.reason)) {
       progress.update('export', `хранилище «${repo.name}»: это хранилище расширений`);
-      const context = await ensureContextExtension({ platform, contextBase });
+      const context = await ensureContextExtension({
+        platform, contextBase, workDir: workRoot,
+      });
       if (context.ok) {
         repo.extension = context.name;
         history = await repositoryHistory({
@@ -541,7 +558,12 @@ async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoo
       platform, contextBase, cfFile, workDir: workRoot, name, extension: repo.extension,
     });
   }
-  return exportCfToXml({ cfFile, platform, workDir: workRoot, name, onProgress });
+  // Указана служебная база — разворачиваем в ней: своя временная там,
+  // где её нельзя создать, и была причиной обращения к служебной.
+  return exportCfToXml({
+    cfFile, platform, workDir: workRoot, name, onProgress,
+    serviceBase: contextBase?.service ? contextBase : null,
+  });
 }
 
 /**
