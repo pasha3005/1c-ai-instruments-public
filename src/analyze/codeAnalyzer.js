@@ -8,14 +8,16 @@
  * межмодульную статистику: дубли кода, сводные метрики, распределение находок.
  */
 
-import { tokenize } from './bsl/lexer.js';
+import { tokenize, TOKEN } from './bsl/lexer.js';
 import { analyzeStructure, findRoutineAtLine } from './bsl/structure.js';
+import { routineSignature } from './bsl/placementFragments.js';
 import { extractQueries } from './bsl/query.js';
 import { createRuleContext, SEVERITY, CATEGORY, SEVERITY_ORDER } from './rules/context.js';
 import * as performanceRules from './rules/performance.js';
 import * as architectureRules from './rules/architecture.js';
 import * as securityRules from './rules/security.js';
 import * as standardsRules from './rules/standards.js';
+import * as itsRules from './rules/its.js';
 import { shouldAnalyzeModule, isAddedModule, dumpInfoKeyForModule } from './vendorConfig.js';
 import { findAuthoredRegions, authoredLineCount } from './bsl/authorship.js';
 import { diffModule, diffModuleAligned, attachVendorLines, keepOnlyRegions, toRegions } from './bsl/moduleDiff.js';
@@ -31,7 +33,9 @@ import { createLogger } from '../util/logger.js';
 
 const log = createLogger('analyze:code');
 
-const RULE_SETS = [performanceRules, architectureRules, securityRules, standardsRules];
+const RULE_SETS = [
+  performanceRules, architectureRules, securityRules, standardsRules, itsRules,
+];
 
 /**
  * @param {import('../parse/modules.js').ModuleRef[]} modules
@@ -175,7 +179,14 @@ export async function analyzeCode(modules, configuration, options = {}) {
     if (!source.trim()) continue;
     metrics.modulesWithCode += 1;
 
-    const { tokens, stats } = tokenize(source);
+    // Комментарии лексер по умолчанию выбрасывает, а правилу
+    // «закомментированный код» (ИТС 456) они и есть предмет разбора. Просим
+    // их один раз и тут же раскладываем на два массива: правила по-прежнему
+    // получают поток БЕЗ комментариев — они опираются на соседство токенов
+    // («имя, а следом скобка»), и вклиненный комментарий его бы разорвал.
+    const { tokens: lexed, stats } = tokenize(source, { keepComments: true });
+    const comments = lexed.filter((t) => t.type === TOKEN.COMMENT);
+    const tokens = comments.length ? lexed.filter((t) => t.type !== TOKEN.COMMENT) : lexed;
     const structure = analyzeStructure(tokens);
     const queries = extractQueries(tokens);
 
@@ -260,7 +271,7 @@ export async function analyzeCode(modules, configuration, options = {}) {
     // со счётчиком к первому вхождению — то есть к строке ВЕНДОРА.
     const ctx = diff
       ? runRuleSets({ module, source: keepOnlyRegions(source, diff.regions), configuration })
-      : runRuleSets({ module, source, tokens, stats, structure, queries, configuration });
+      : runRuleSets({ module, source, tokens, stats, structure, queries, comments, configuration });
 
     if (diff) {
       // Правила здесь видят текст с вычищенными типовыми строками (включая
@@ -406,12 +417,19 @@ function recordModuleChange(moduleChanges, module, change, routines = []) {
   // модуле не отвечает на вопрос «в какой процедуре что».
   const regions = (change.regions || [])
     .slice(0, REGIONS_PER_MODULE)
-    .map((r) => ({
-      startLine: r.startLine,
-      endLine: r.endLine,
-      routine: findRoutineAtLine(routines, r.startLine)?.name || null,
-      ...(r.vendorLines?.length ? { vendorLines: r.vendorLines } : {}),
-    }));
+    .map((r) => {
+      const found = findRoutineAtLine(routines, r.startLine);
+      return {
+        startLine: r.startLine,
+        endLine: r.endLine,
+        routine: found?.name || null,
+        // Подпись целиком — имя, все параметры и «Экспорт»: по одному имени
+        // процедуру в конфигураторе не найдёшь, а перегруженных имён вроде
+        // «ПриЗаписи» в конфигурации десятки.
+        routineSignature: found ? routineSignature(found) : null,
+        ...(r.vendorLines?.length ? { vendorLines: r.vendorLines } : {}),
+      };
+    });
 
   moduleChanges.push({
     key,
@@ -503,11 +521,16 @@ export function takeFragments(source, regions, routines = []) {
     seen.add(dedupeKey);
     // Вид процедуры нужен отчёту: правки группируются по процедурам
     // и функциям, и у каждой стоит свой значок.
-    selected.push({ region, routine, routineKind: found?.kind || null });
+    selected.push({
+      region,
+      routine,
+      routineKind: found?.kind || null,
+      routineSignature: found ? routineSignature(found) : null,
+    });
     if (selected.length >= FRAGMENTS_PER_MODULE) break;
   }
 
-  return selected.map(({ region, routine, routineKind }) => {
+  return selected.map(({ region, routine, routineKind, routineSignature: signature }) => {
     const from = Math.max(1, region.startLine);
     const to = Math.min(lines.length, region.endLine);
     // Дальше конца участка не берём. Раньше фрагмент всегда тянул
@@ -523,6 +546,7 @@ export function takeFragments(source, regions, routines = []) {
         .map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line)),
       routine,
       routineKind,
+      routineSignature: signature,
       // Код поставщика на этом же месте — для двустороннего показа отличий.
       // Пуст для чистой вставки: у поставщика здесь ничего не было.
       vendorLines: region.vendorLines || [],
@@ -671,15 +695,20 @@ async function readVendorModule(vendorDir, module) {
  * модуля правила читают не исходный текст, а очищенный от типовых строк,
  * и разбирать приходится заново.
  */
-function runRuleSets({ module, source, tokens, stats, structure, queries, configuration }) {
-  let parsed = { tokens, stats, structure, queries };
+function runRuleSets({
+  module, source, tokens, stats, structure, queries, comments, configuration,
+}) {
+  let parsed = { tokens, stats, structure, queries, comments };
   if (!parsed.tokens) {
-    const lexed = tokenize(source);
+    const lexed = tokenize(source, { keepComments: true });
+    const own = lexed.tokens.filter((t) => t.type === TOKEN.COMMENT);
+    const code = own.length ? lexed.tokens.filter((t) => t.type !== TOKEN.COMMENT) : lexed.tokens;
     parsed = {
-      tokens: lexed.tokens,
+      tokens: code,
       stats: lexed.stats,
-      structure: analyzeStructure(lexed.tokens),
-      queries: extractQueries(lexed.tokens),
+      structure: analyzeStructure(code),
+      queries: extractQueries(code),
+      comments: own,
     };
   }
 

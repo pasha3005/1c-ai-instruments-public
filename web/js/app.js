@@ -7,7 +7,7 @@
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
 import { initUpdate, showUpdateStages, reloadUpdateHistory } from './update.js';
-import { initQuality, showQualityStages } from './quality.js';
+import { initQuality, showQualityStages, reloadQualityHistory } from './quality.js';
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
   formatDuration, formatNumber, formatDateTime, attachPathHint,
@@ -51,12 +51,10 @@ const SECTIONS = {
     main: 'update',
     history: 'update-history',
   },
-  // У проверки качества истории нет: её результат — отчёт, который открывается
-  // сразу, а держать третий список прогонов пользователь не просил.
   quality: {
     title: 'Проверка качества кода',
     main: 'quality',
-    history: null,
+    history: 'quality-history',
   },
 };
 
@@ -67,6 +65,7 @@ const VIEW_SECTION = {
   update: 'update',
   'update-history': 'update',
   quality: 'quality',
+  'quality-history': 'quality',
 };
 
 /** Раздел, в котором мы находимся: нужен, чтобы «О программе» не сбрасывала шапку. */
@@ -110,6 +109,7 @@ function switchView(name) {
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === name));
   if (name === 'history') loadHistory();
   if (name === 'update-history') reloadUpdateHistory();
+  if (name === 'quality-history') reloadQualityHistory();
   if (name === 'about') loadAbout();
 
   renderTopNav(name);

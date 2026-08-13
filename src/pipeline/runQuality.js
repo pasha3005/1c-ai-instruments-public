@@ -39,10 +39,10 @@ import {
   prepareVendorConfig, buildChangeSet, summarizeVendorComparison, exportCfToXml,
 } from '../analyze/vendorConfig.js';
 import { diffModule } from '../analyze/bsl/moduleDiff.js';
+import { placementFragments } from '../analyze/bsl/placementFragments.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
 import { analyzeStructure } from '../analyze/bsl/structure.js';
 import { runAnalysis } from '../analyze/index.js';
-import { takeFragments } from '../analyze/codeAnalyzer.js';
 import { tagByRu } from '../parse/metadataKinds.js';
 import { renderQualityReport } from '../report/qualityReport.js';
 import * as store from '../store/qualityStore.js';
@@ -593,10 +593,28 @@ async function buildPlacementDiffs({
         // (`diffModuleAligned` + `attachVendorLines`).
         const diff = diffModule(beforeSource, afterSource);
 
+        // Модуль появился этим помещением — значит, добавлены все его строки,
+        // и спрашивать об этом диф незачем. Более того, вредно: пустой текст
+        // «до» — это одна пустая строка, диф находит ей пару среди пустых строк
+        // модуля, и новый модуль разваливался на два блока с провалом
+        // на случайной пустой строке (видно на живом хранилище 13.08.2026).
+        const addedLines = bm
+          ? diff.lines
+          : afterSource.split(/\r?\n/).map((_, i) => i + 1);
+
         // Разбор структуры нужен ради группировки правок по процедурам
-        // и функциям: без списка процедур `takeFragments` не знает, в какой
-        // из них лежит участок, и отчёт показывал безымянные «строки 12–18».
+        // и функциям: без списка процедур блоки правки остались бы безымянными
+        // «строками 12–18».
         const routines = routinesOf(afterSource);
+
+        // Блоки строит `placementFragments`, а не `takeFragments`: второй
+        // оставляет по одному участку на процедуру и склеивает участки через
+        // разрыв в три строки. Для отчёта обследования это удобно, а здесь
+        // приводило к двум неправдам сразу — вторая правка в процедуре
+        // пропадала, а в блок затягивался давно лежавший в модуле чужой код.
+        const { fragments, totalBlocks } = placementFragments({
+          source: afterSource, addedLines, routines,
+        });
 
         diffs.push({
           object: russian,
@@ -605,9 +623,10 @@ async function buildPlacementDiffs({
           moduleTypeRu: am.moduleTypeRu,
           formName: am.formName || null,
           isNew: !bm,
-          addedLines: diff.addedLines,
-          regionCount: diff.regions.length,
-          fragments: takeFragments(afterSource, diff.regions, routines),
+          addedLines: addedLines.length,
+          regionCount: totalBlocks,
+          hiddenBlocks: Math.max(0, totalBlocks - fragments.length),
+          fragments,
         });
       }
     }

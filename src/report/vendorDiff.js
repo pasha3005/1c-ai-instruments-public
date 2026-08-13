@@ -274,7 +274,7 @@ function renderDiffModuleBody(diff) {
     return `
     <details class="dt dt--routine">
       <summary>
-        <span class="dt__label">${g.routine ? `Процедура «${esc(g.routine)}»` : 'Вне процедур'}</span>
+        <span class="dt__label">${g.routine ? `Процедура «${esc(g.signature || g.routine)}»` : 'Вне процедур'}</span>
         <span class="dt__stat">${plural(g.items.length, 'участок', 'участка', 'участков')}</span>
       </summary>
       <div class="dt__body">${own.length ? renderFragmentList(own, diff.method) : noFragmentsNote()}</div>
@@ -301,16 +301,28 @@ function noFragmentsNote() {
   </p>`;
 }
 
-/** Группирует участки/фрагменты по имени процедуры, сохраняя порядок первого появления. */
+/**
+ * Группирует участки/фрагменты по имени процедуры, сохраняя порядок первого
+ * появления.
+ *
+ * В заголовке группы показывается подпись целиком — имя, все параметры
+ * и «Экспорт» (`routineSignature`), а группируется всё равно по имени:
+ * подпись может не сохраниться у прогонов, сделанных прежними версиями,
+ * и тогда группа осталась бы без заголовка.
+ */
 function groupByRoutine(items) {
   const order = [];
   const map = new Map();
+  const signatures = new Map();
   for (const item of items) {
     const key = item.routine || null;
     if (!map.has(key)) { map.set(key, []); order.push(key); }
     map.get(key).push(item);
+    if (item.routineSignature && !signatures.has(key)) signatures.set(key, item.routineSignature);
   }
-  return order.map((routine) => ({ routine, items: map.get(routine) }));
+  return order.map((routine) => ({
+    routine, signature: signatures.get(routine) || null, items: map.get(routine),
+  }));
 }
 
 /**

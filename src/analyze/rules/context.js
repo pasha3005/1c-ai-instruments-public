@@ -75,7 +75,9 @@ export const DEPRECATED_METHODS = new Map([
  * Создаёт контекст для набора правил.
  * @param {object} params
  */
-export function createRuleContext({ module, source, tokens, stats, structure, queries, configuration }) {
+export function createRuleContext({
+  module, source, tokens, stats, structure, queries, comments = [], configuration,
+}) {
   /** @type {object[]} */
   const findings = [];
   const perRuleCount = new Map();
@@ -87,6 +89,10 @@ export function createRuleContext({ module, source, tokens, stats, structure, qu
     stats,
     structure,
     queries,
+    // Комментарии лежат отдельным списком, а не в потоке токенов: правила
+    // опираются на соседство токенов, и вклиненный комментарий его бы разорвал.
+    // Нужны они одному правилу — «закомментированный код» (ИТС 456).
+    comments,
     configuration,
     findings,
 

@@ -11,7 +11,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { DATA_DIR } from '../config.js';
-import { ensureDir, readJson, writeJson, pathExists } from '../util/fsx.js';
+import { ensureDir, readJson, writeJson, pathExists, rmrf } from '../util/fsx.js';
 
 export const QUALITY_DIR = path.join(DATA_DIR, 'quality');
 
@@ -104,6 +104,17 @@ export async function markCancelled(id, durationMs = null, message = 'Прове
     durationMs,
     error: message,
   });
+}
+
+/**
+ * Удаление записи о проверке.
+ *
+ * Удаляется только сама запись (отчёт, результат, сводка) — выгрузка
+ * в рабочем каталоге не трогается: её каталог задаёт пользователь, и там
+ * могут лежать его собственные файлы.
+ */
+export async function deleteRun(id) {
+  await rmrf(runDir(id));
 }
 
 export async function listRuns({ limit = 50 } = {}) {

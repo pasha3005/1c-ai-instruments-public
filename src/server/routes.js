@@ -855,6 +855,11 @@ export function buildRouter() {
     sendJson(res, 200, { ok: true });
   });
 
+  router.delete('/api/quality/:id', async (req, res, { params }) => {
+    await qualityStore.deleteRun(params.id);
+    sendJson(res, 200, { ok: true });
+  });
+
   // --- Управление приложением ---
 
   /**

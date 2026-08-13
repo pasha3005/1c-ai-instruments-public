@@ -322,7 +322,7 @@ function renderCommit(commit) {
 
   const body = objects.length
     ? objects.map((object) => renderCommitObject(
-      object, diffs.filter((d) => d.object === object.name), commit,
+      object, diffs.filter((d) => d.object === object.name),
     )).join('')
     : '<p class="dt__note">Помещение не перечисляет объектов.</p>';
 
@@ -364,7 +364,7 @@ function statusMark(status) {
 }
 
 /** Объект помещения; если есть правки модулей — раскрывается до них. */
-function renderCommitObject(object, diffs, commit) {
+function renderCommitObject(object, diffs) {
   const title = `
     ${statusMark(object.status)}
     <span class="dt__label">${esc(object.name)}</span>`;
@@ -374,7 +374,7 @@ function renderCommitObject(object, diffs, commit) {
   return `
   <details class="dt dt--object">
     <summary>${title}<span class="dt__stat">${plural(diffs.length, 'модуль', 'модуля', 'модулей')}</span></summary>
-    <div class="dt__body">${diffs.map((d) => renderCommitModule(d, commit)).join('')}</div>
+    <div class="dt__body">${diffs.map((d) => renderCommitModule(d)).join('')}</div>
   </details>`;
 }
 
@@ -394,7 +394,7 @@ function moduleLabel(diff) {
 }
 
 /** Модуль объекта: правки, внесённые именно этим помещением. */
-function renderCommitModule(diff, commit) {
+function renderCommitModule(diff) {
   const stat = [
     diff.addedLines ? `+${formatNumber(diff.addedLines)}` : '',
     plural(diff.regionCount || 0, 'участок', 'участка', 'участков'),
@@ -409,16 +409,15 @@ function renderCommitModule(diff, commit) {
     return `<div class="dt dt--leaf">${title}<span class="dt__stat">${esc(stat)}</span></div>`;
   }
 
+  const hidden = diff.hiddenBlocks
+    ? `<p class="dt__note">Показаны первые ${formatNumber(fragments.length)} блоков правки,
+        ещё ${formatNumber(diff.hiddenBlocks)} — в JSON-выгрузке результата проверки.</p>`
+    : '';
+
   return `
   <details class="dt dt--module">
     <summary>${title}<span class="dt__stat">${esc(stat)}</span></summary>
-    <div class="dt__body">
-      <p class="dt__note">
-        Код, внесённый помещением версии ${esc(String(commit.version))}, — а не всё,
-        что накопилось в модуле за период.
-      </p>
-      ${renderRoutineGroups(diff)}
-    </div>
+    <div class="dt__body">${hidden}${renderRoutineGroups(diff)}</div>
   </details>`;
 }
 
@@ -429,13 +428,27 @@ function renderCommitModule(diff, commit) {
  * процедуры — это единица работы разработчика. Участки, не попавшие ни в одну
  * процедуру (код в теле модуля, объявления переменных), идут отдельной группой:
  * приписывать их соседней процедуре было бы неправдой.
+ *
+ * Блоков внутри процедуры может быть несколько — по одному на каждую внесённую
+ * правку. Раньше их схлопывало в один `takeFragments`, и вторая правка
+ * в процедуре в отчёт не попадала вовсе.
  */
 function renderRoutineGroups(diff) {
   const groups = new Map();
   for (const fragment of diff.fragments || []) {
     const key = fragment.routine || '';
     if (!groups.has(key)) {
-      groups.set(key, { name: fragment.routine || '', kind: fragment.routineKind || null, fragments: [] });
+      groups.set(key, {
+        name: fragment.routine || '',
+        // Подпись целиком — имя, все параметры и «Экспорт»: по одному имени
+        // процедуру в конфигураторе не найти, а экспортность определяет,
+        // часть это программного интерфейса или внутренняя кухня.
+        // Прямое требование пользователя (13.08.2026). У прогонов, сохранённых
+        // прежними версиями, подписи нет — тогда остаётся имя.
+        signature: fragment.routineSignature || fragment.routine || '',
+        kind: fragment.routineKind || null,
+        fragments: [],
+      });
     }
     groups.get(key).fragments.push(fragment);
   }
@@ -451,12 +464,18 @@ function renderRoutineGroups(diff) {
       </div>`;
     }
     const lines = group.fragments.reduce((sum, f) => sum + (f.lines?.length || 0), 0);
+    const stat = [
+      group.fragments.length > 1
+        ? plural(group.fragments.length, 'правка', 'правки', 'правок')
+        : '',
+      plural(lines, 'строка', 'строки', 'строк'),
+    ].filter(Boolean).join(' · ');
     return `
     <details class="dt dt--routine" open>
       <summary>
         ${routineMark(group.kind)}
-        <span class="dt__label">${esc(group.name)}</span>
-        <span class="dt__stat">${plural(lines, 'строка', 'строки', 'строк')}</span>
+        <span class="dt__label">${esc(group.signature || group.name)}</span>
+        <span class="dt__stat">${esc(stat)}</span>
       </summary>
       <div class="dt__body">${body}</div>
     </details>`;

@@ -11,6 +11,7 @@
 import { api, subscribeToQuality } from './api.js';
 import {
   $, $$, setNote, renderStages, formatDuration, formatNumber, createTimer, attachPathHint,
+  escapeHtml, formatDateTime,
 } from './ui.js';
 
 const state = {
@@ -40,6 +41,13 @@ export function initQuality() {
     start();
   });
   $('#qCancelBtn').addEventListener('click', () => cancel());
+
+  loadHistory();
+}
+
+/** Перечитать список прошлых проверок — раздел «История» этого режима. */
+export function reloadQualityHistory() {
+  loadHistory();
 }
 
 /**
@@ -255,6 +263,94 @@ function applySnapshot(snapshot) {
   }
 }
 
+// ------------------------------------------------------------------ История
+
+/**
+ * Прошлые проверки — своим списком, как у обследования и обновления.
+ *
+ * Раздел долго обходился без истории: считалось, что отчёт открывается сразу
+ * и хранить его незачем. На деле проверок за день делается несколько, а сравнить
+ * их между собой — обычное дело, и искать прежний отчёт приходилось в каталоге
+ * данных руками. Прогоны и так сохранялись все — не хватало только страницы.
+ */
+async function loadHistory() {
+  const container = $('#qHistoryList');
+  if (!container) return;
+  container.innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    const { items } = await api.listQuality();
+    if (!items.length) {
+      container.innerHTML = '<div class="empty">Проверки качества ещё не выполнялись.</div>';
+      return;
+    }
+    container.innerHTML = items.map(renderHistoryItem).join('');
+
+    $$('[data-delete]', container).forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить запись об этой проверке вместе с её отчётом?')) return;
+        await api.deleteQuality(btn.dataset.delete);
+        loadHistory();
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<div class="empty">Не удалось загрузить список: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderHistoryItem(meta) {
+  const s = meta.summary || {};
+  const statusRu = {
+    done: 'Выполнено', failed: 'Ошибка', running: 'Выполняется', cancelled: 'Прервано',
+  }[meta.status] || meta.status;
+
+  const fromRepo = s.source === 'repository';
+  // Заголовок — то, по чему проверку узнаёшь: имя конфигурации, а пока его нет
+  // (прогон не дошёл до разбора) — источник, который указывали в форме.
+  const title = s.configName
+    || (fromRepo ? meta.input?.repositoryPath : meta.input?.infobasePath)
+    || 'Проверка качества';
+  const period = [s.periodFrom, s.periodTo].filter(Boolean).join(' — ');
+
+  return `
+  <div class="hist-item">
+    <div class="hist-main">
+      <div class="hist-title">
+        ${escapeHtml(title)}
+        <span class="hist-meta">${fromRepo ? 'хранилище конфигурации' : 'информационная база'}</span>
+      </div>
+      <div class="hist-meta">
+        <span class="status-pill is-${meta.status}">${statusRu}</span>
+        · ${formatDateTime(meta.createdAt)}
+        ${meta.durationMs ? ` · время: ${formatDuration(meta.durationMs)}` : ''}
+        ${fromRepo && s.repositories != null ? ` · хранилищ: ${formatNumber(s.repositories)}` : ''}
+        ${period ? ` · период: ${escapeHtml(period)}` : ''}
+        ${s.analyzedModules != null ? ` · модулей: ${formatNumber(s.analyzedModules)}` : ''}
+        ${s.authors ? ` · разработчиков: ${formatNumber(s.authors)}` : ''}
+      </div>
+      ${meta.error ? `<div class="hist-meta" style="color:var(--danger)">${escapeHtml(meta.error)}</div>` : ''}
+    </div>
+
+    ${meta.status === 'done' ? `
+    <div class="hist-scores">
+      <div class="hist-score">
+        <div class="hist-score__val ${s.findings ? 'grade-warn' : 'grade-good'}">${formatNumber(s.findings || 0)}</div>
+        <div class="hist-score__lbl">Замечаний</div>
+      </div>
+      <div class="hist-score">
+        <div class="hist-score__val ${s.critical ? 'grade-bad' : 'grade-good'}">${formatNumber(s.critical || 0)}</div>
+        <div class="hist-score__lbl">Критичных</div>
+      </div>
+    </div>` : ''}
+
+    <div class="hist-actions">
+      ${meta.status === 'done'
+    ? `<a class="btn" href="api/quality/${meta.id}/report.html" target="_blank" rel="noopener">Отчёт</a>`
+    : ''}
+      <button class="btn btn--danger" data-delete="${meta.id}">Удалить</button>
+    </div>
+  </div>`;
+}
+
 async function onFinished(qualityId) {
   setBusy(false);
   setRunning(false);
@@ -266,6 +362,9 @@ async function onFinished(qualityId) {
   $('#qOpenReport').href = `api/quality/${qualityId}/report.html`;
   $('#qResultActions').hidden = false;
   await showStats(qualityId);
+  // Список прошлых проверок пополнился только что — перечитываем сразу,
+  // чтобы «История» не показывала вчерашнее состояние.
+  loadHistory();
 
   // Отчёт открывается сам, как и в обследовании: за ним и запускали.
   try {

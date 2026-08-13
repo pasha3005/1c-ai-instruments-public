@@ -99,6 +99,8 @@ export const api = {
   listQuality: () => request('api/quality'),
 
   openQualityReport: (id) => request(`api/quality/${id}/open`, { method: 'POST' }),
+
+  deleteQuality: (id) => request(`api/quality/${id}`, { method: 'DELETE' }),
 };
 
 /**

@@ -26,9 +26,14 @@ const MAX_EDITS = 20_000;
  *
  * @param {string} vendorSource текст модуля из конфигурации поставщика
  * @param {string} clientSource текст модуля из проверяемой конфигурации
- * @returns {{regions: {startLine: number, endLine: number}[], addedLines: number, exact: boolean}}
+ * @returns {{regions: {startLine: number, endLine: number}[], addedLines: number,
+ *   lines: number[], exact: boolean}}
  *   `exact: false` — сравнение не сошлось в отведённых пределах, различия
  *   определены грубее (по вхождению строки в модуль поставщика).
+ *   `lines` — номера добавленных строк россыпью, ДО склейки в участки:
+ *   участки `toRegions` соединяет через разрыв до трёх строк, и для показа
+ *   правки помещения это недопустимо — в блок попал бы чужой код
+ *   (`bsl/placementFragments.js`).
  */
 export function diffModule(vendorSource, clientSource) {
   const vendor = normalizeLines(vendorSource);
@@ -48,7 +53,7 @@ export function diffModule(vendorSource, clientSource) {
   const vendorMid = vendor.slice(head, vendor.length - tail);
   const clientMid = client.slice(head, client.length - tail);
 
-  if (!clientMid.length) return { regions: [], addedLines: 0, exact: true };
+  if (!clientMid.length) return { regions: [], addedLines: 0, lines: [], exact: true };
 
   const added = myersAdded(vendorMid, clientMid);
   const result = added
@@ -57,7 +62,9 @@ export function diffModule(vendorSource, clientSource) {
 
   // Возвращаем номера строк в координатах клиентского файла (с единицы).
   const lines = result.lines.map((i) => head + i + 1);
-  return { regions: toRegions(lines), addedLines: lines.length, exact: result.exact };
+  return {
+    regions: toRegions(lines), addedLines: lines.length, lines, exact: result.exact,
+  };
 }
 
 /**
