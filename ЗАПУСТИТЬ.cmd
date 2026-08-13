@@ -24,7 +24,7 @@ echo   ============================================
 echo.
 
 REM --- Shag 1: poisk Node.js -------------------------------------------------
-echo   [1/3] Poisk Node.js...
+echo   [1/4] Poisk Node.js...
 
 set "NODE_EXE="
 
@@ -76,43 +76,24 @@ echo         Node.js !NODE_MAJOR!.x nayden.
 REM --- Proverka brauzera -----------------------------------------------------
 REM  Interfeys - eto stranica v brauzere, i emu nuzhen sovremennyy dvizhok:
 REM  moduli JS, fetch, peremennye CSS. Internet Explorer nichego etogo ne umeet.
-REM  Na servere zakazchika IE okazalsya brauzerom po umolchaniyu, i programma
-REM  otkrylas v nyom: stranica bez oformleniya, knopki ne rabotayut.
 REM
-REM  Predupredit nado imenno zdes: server zapuskaetsya skrytym oknom
-REM  (Start-Process -WindowStyle Hidden), i ego soobshcheniya nikto ne uvidit.
-REM  Zapusku eto ne meshaet - programma vsyo ravno zapustitsya, prosto skazhem
-REM  zaranee, chto otkryvat eyo nado v Edge ili Chrome.
-set "PF86=%ProgramFiles(x86)%"
-set "PF64=%ProgramFiles%"
-set "BROWSER_OK="
-if exist "!PF86!\Microsoft\Edge\Application\msedge.exe" set "BROWSER_OK=1"
-if exist "!PF64!\Microsoft\Edge\Application\msedge.exe" set "BROWSER_OK=1"
-if exist "!PF86!\Google\Chrome\Application\chrome.exe" set "BROWSER_OK=1"
-if exist "!PF64!\Google\Chrome\Application\chrome.exe" set "BROWSER_OK=1"
-if exist "!LOCALAPPDATA!\Google\Chrome\Application\chrome.exe" set "BROWSER_OK=1"
-if not defined BROWSER_OK (
-    echo.
-    echo   [VNIMANIE] Ne nayden Microsoft Edge ili Google Chrome.
-    echo   Interfeys programmy - stranica v brauzere, i Internet Explorer
-    echo   pokazat eyo ne smozhet: budet stranica bez oformleniya,
-    echo   i knopki rabotat ne budut.
-    echo   Ustanovite Edge ili Chrome libo otkroyte adres programmy
-    echo   na drugom kompyutere.
-    echo.
-)
+REM  Proverka i vopros pro zagruzku Chromium zhivut imenno zdes, a ne v samoy
+REM  programme: server zapuskaetsya skrytym oknom (Start-Process -WindowStyle
+REM  Hidden), sprosit ottuda nechego i otvetit nekuda. Vidimoe okno odno - eto.
+echo   [2/4] Proverka brauzera...
+"!NODE_EXE!" "%~dp0src\tools\ensureBrowser.mjs"
 
-REM --- Shag 2: zapusk servera otdelnym protsessom ----------------------------
+REM --- Shag 3: zapusk servera otdelnym protsessom ----------------------------
 REM  Start-Process -WindowStyle Hidden otvyazyvaet server ot etoy konsoli.
 REM  "start /b" ne podoshel: takoy protsess ostayotsya privyazan k oknu konsoli
 REM  i mozhet byt snyat vmeste s nim. Zhurnal servera pishetsya v data\logs.
-echo   [2/3] Zapusk servera...
+echo   [3/4] Zapusk servera...
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Start-Process -FilePath '!NODE_EXE!' -ArgumentList '\"%~dp0src\main.js\"' -WindowStyle Hidden"
 
-REM --- Shag 3: zhdyom gotovnosti i zakryvaem okno -----------------------------
-echo   [3/3] Ozhidanie gotovnosti prilozheniya...
+REM --- Shag 4: zhdyom gotovnosti i zakryvaem okno -----------------------------
+echo   [4/4] Ozhidanie gotovnosti prilozheniya...
 
 "!NODE_EXE!" "%~dp0src\tools\waitReady.mjs"
 if !errorlevel! neq 0 (

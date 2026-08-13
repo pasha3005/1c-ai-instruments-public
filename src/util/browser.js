@@ -41,28 +41,32 @@ const CHROMIUM_EXE = ['chrome.exe', 'msedge.exe', 'chromium.exe', 'thorium.exe',
  * Ищем и в самом каталоге, и на уровень глубже: переносные сборки распаковывают
  * то плоско, то папкой вида `chrome-win\`.
  */
-function bundledBrowser() {
-  if (!existsSync(BUNDLED_BROWSER_DIR)) return null;
+export function findBundledIn(dir) {
+  if (!existsSync(dir)) return null;
 
   for (const exe of CHROMIUM_EXE) {
-    const direct = path.join(BUNDLED_BROWSER_DIR, exe);
+    const direct = path.join(dir, exe);
     if (existsSync(direct)) return direct;
   }
 
   let entries = [];
   try {
-    entries = readdirSync(BUNDLED_BROWSER_DIR, { withFileTypes: true });
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return null;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     for (const exe of CHROMIUM_EXE) {
-      const nested = path.join(BUNDLED_BROWSER_DIR, entry.name, exe);
+      const nested = path.join(dir, entry.name, exe);
       if (existsSync(nested)) return nested;
     }
   }
   return null;
+}
+
+function bundledBrowser() {
+  return findBundledIn(BUNDLED_BROWSER_DIR);
 }
 
 /**
@@ -155,12 +159,9 @@ export const NO_BROWSER_HINT = [
   'Не найден Microsoft Edge или Google Chrome.',
   'Интерфейс программы живёт в браузере и требует современного движка:',
   'Internet Explorer его не откроет — покажет страницу без оформления,',
-  'и работать в ней будет нельзя. Есть три выхода:',
-  '  1. открыть интерфейс с другого компьютера — запустите',
-  '     ЗАПУСТИТЬ-ПО-СЕТИ.cmd, он напечатает адрес;',
-  '  2. положить переносную сборку Chromium в runtime\\browser\\',
-  '     рядом с программой — она найдётся сама;',
-  '  3. установить на этой машине Edge или Chrome.',
+  'и работать в ней будет нельзя.',
+  'Запустите ЗАПУСТИТЬ.cmd ещё раз: он предложит скачать переносной',
+  'Chromium в runtime\\browser\\ — программа будет открываться в нём.',
 ].join('\n');
 
 /**
