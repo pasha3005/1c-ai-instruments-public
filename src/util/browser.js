@@ -18,7 +18,52 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Куда класть переносной браузер, чтобы программа его нашла. */
+export const BUNDLED_BROWSER_DIR = path.join(ROOT, 'runtime', 'browser');
+
+/** Имена исполняемых файлов у сборок Chromium, которые встречаются на практике. */
+const CHROMIUM_EXE = ['chrome.exe', 'msedge.exe', 'chromium.exe', 'thorium.exe', 'brave.exe'];
+
+/**
+ * Браузер, положенный рядом с программой.
+ *
+ * Нужен там, где на машине только Internet Explorer: интерфейс ему не по зубам,
+ * а ставить браузер на сервер заказчика можно не всегда. Тогда в поставку
+ * кладут переносную сборку Chromium — программа находит её сама и открывает
+ * интерфейс ею, ничего не устанавливая.
+ *
+ * Ищем и в самом каталоге, и на уровень глубже: переносные сборки распаковывают
+ * то плоско, то папкой вида `chrome-win\`.
+ */
+function bundledBrowser() {
+  if (!existsSync(BUNDLED_BROWSER_DIR)) return null;
+
+  for (const exe of CHROMIUM_EXE) {
+    const direct = path.join(BUNDLED_BROWSER_DIR, exe);
+    if (existsSync(direct)) return direct;
+  }
+
+  let entries = [];
+  try {
+    entries = readdirSync(BUNDLED_BROWSER_DIR, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    for (const exe of CHROMIUM_EXE) {
+      const nested = path.join(BUNDLED_BROWSER_DIR, entry.name, exe);
+      if (existsSync(nested)) return nested;
+    }
+  }
+  return null;
+}
 
 /**
  * Пути к браузерам, умеющим режим отдельного окна (--app=).
@@ -50,6 +95,11 @@ function appWindowBrowsers() {
   ];
 
   const candidates = [];
+  // Браузер из поставки — первым: его положили сюда именно затем, чтобы
+  // пользоваться им, а не тем, что найдётся на машине.
+  const bundled = bundledBrowser();
+  if (bundled) candidates.push(bundled);
+
   for (const base of bases) {
     for (const rel of relative) candidates.push(pathJoin(base, rel));
   }
@@ -105,8 +155,12 @@ export const NO_BROWSER_HINT = [
   'Не найден Microsoft Edge или Google Chrome.',
   'Интерфейс программы живёт в браузере и требует современного движка:',
   'Internet Explorer его не откроет — покажет страницу без оформления,',
-  'и работать в ней будет нельзя.',
-  'Установите Edge или Chrome либо откройте адрес на другом компьютере.',
+  'и работать в ней будет нельзя. Есть три выхода:',
+  '  1. открыть интерфейс с другого компьютера — запустите',
+  '     ЗАПУСТИТЬ-ПО-СЕТИ.cmd, он напечатает адрес;',
+  '  2. положить переносную сборку Chromium в runtime\\browser\\',
+  '     рядом с программой — она найдётся сама;',
+  '  3. установить на этой машине Edge или Chrome.',
 ].join('\n');
 
 /**

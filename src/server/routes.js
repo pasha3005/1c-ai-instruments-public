@@ -148,6 +148,38 @@ function guardRouter(router) {
   return router;
 }
 
+/**
+ * Сидит ли пользователь за этой же машиной.
+ *
+ * От этого зависит, кто открывает отчёт. Пока программа работает на компьютере
+ * пользователя, окно открывает сервер — иначе браузер счёл бы его всплывающим
+ * и заблокировал. Но в сетевом режиме (`ЗАПУСТИТЬ-ПО-СЕТИ.cmd`) программа
+ * работает на сервере, а человек сидит за другим компьютером: открывать окно
+ * НА СЕРВЕРЕ там бессмысленно вдвойне — пользователь его не увидит, а на
+ * сервере может не быть браузера, способного показать отчёт.
+ */
+export function isLocalRequest(req) {
+  const address = req.socket?.remoteAddress || '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+/**
+ * Открывает отчёт тем способом, который годится в текущем режиме работы.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {string} relative адрес отчёта относительно корня приложения
+ * @returns {{ok: boolean, remote?: boolean, url?: string}} `remote` — сервер
+ *   окно не открывал, это должна сделать сама страница по щелчку пользователя.
+ */
+function openReportFor(req, relative) {
+  if (!isLocalRequest(req)) return { ok: false, remote: true, url: relative };
+  openUrl(`http://${SERVER.host === '0.0.0.0' ? '127.0.0.1' : SERVER.host}:${SERVER.port}/${relative}`, {
+    appWindow: false,
+    maximized: true,
+  });
+  return { ok: true };
+}
+
 export function buildRouter() {
   const router = new Router();
 
@@ -479,11 +511,7 @@ export function buildRouter() {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
     }
-    openUrl(`http://${SERVER.host}:${SERVER.port}/api/audits/${params.id}/report.html`, {
-      appWindow: false,
-      maximized: true,
-    });
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, openReportFor(req, `api/audits/${params.id}/report.html`));
   });
 
   /**
@@ -688,11 +716,7 @@ export function buildRouter() {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
     }
-    openUrl(`http://${SERVER.host}:${SERVER.port}/api/updates/${params.id}/report.html`, {
-      appWindow: false,
-      maximized: true,
-    });
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, openReportFor(req, `api/updates/${params.id}/report.html`));
   });
 
   /**
@@ -858,11 +882,7 @@ export function buildRouter() {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
     }
-    openUrl(`http://${SERVER.host}:${SERVER.port}/api/quality/${params.id}/report.html`, {
-      appWindow: false,
-      maximized: true,
-    });
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, openReportFor(req, `api/quality/${params.id}/report.html`));
   });
 
   router.delete('/api/quality/:id', async (req, res, { params }) => {

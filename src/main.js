@@ -125,7 +125,11 @@ async function printBanner(url) {
   console.log('');
   console.log(`  ${APP.name} v${APP.version}`);
   console.log(`  ${'─'.repeat(52)}`);
-  console.log(`  Интерфейс:        ${url}`);
+  const remote = networkUrls();
+  console.log(`  Интерфейс:        ${remote.length ? localUrl() : url}`);
+  for (const address of remote) {
+    console.log(`  С другого ПК:     ${address}`);
+  }
   console.log(`  Данные:           ${DATA_DIR}`);
   if (platforms.length) {
     console.log(`  Платформа 1С:     ${platforms.map((p) => p.version).join(', ')}`);
@@ -133,8 +137,47 @@ async function printBanner(url) {
     console.log('  Платформа 1С:     НЕ НАЙДЕНА — аудит будет недоступен');
   }
   console.log(`  ${'─'.repeat(52)}`);
+  if (remote.length) {
+    // Слушать сеть мало: на сервере входящие обычно закрыты брандмауэром,
+    // и с рабочей станции адрес просто не откроется. Правило добавляет
+    // администратор — программа не имеет на это прав и лезть туда не должна,
+    // но команду обязана назвать: иначе «не открывается» выглядит как её сбой.
+    console.log('  Если с другого ПК адрес не открывается, порт закрыт');
+    console.log('  брандмауэром. Открыть — в командной строке администратора:');
+    console.log('');
+    console.log(`  netsh advfirewall firewall add rule name="1C AI instrumenty" ^`);
+    console.log(`      dir=in action=allow protocol=TCP localport=${SERVER.port}`);
+    console.log('');
+    console.log(`  ${'─'.repeat(52)}`);
+  }
   console.log('  Для остановки нажмите Ctrl+C');
   console.log('');
+}
+
+/** Адрес для браузера на этой же машине — даже когда слушаем всю сеть. */
+function localUrl() {
+  return `http://127.0.0.1:${SERVER.port}`;
+}
+
+/**
+ * Адреса, по которым программа доступна с других компьютеров.
+ *
+ * Пусто, пока сервер слушает только 127.0.0.1 — тогда извне к нему не
+ * подключиться, и печатать нечего. Сетевой режим включается явно
+ * (`ONEC_AUDIT_HOST=0.0.0.0`, файл запуска `ЗАПУСТИТЬ-ПО-СЕТИ.cmd`): он нужен
+ * там, где на сервере только Internet Explorer, а работать надо в нормальном
+ * браузере с рабочей станции.
+ */
+function networkUrls() {
+  if (SERVER.host !== '0.0.0.0' && SERVER.host !== '::') return [];
+  const urls = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const iface of list || []) {
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      urls.push(`http://${iface.address}:${SERVER.port}`);
+    }
+  }
+  return urls;
 }
 
 /** Отвечает ли по адресу наше приложение (а не что-то постороннее). */

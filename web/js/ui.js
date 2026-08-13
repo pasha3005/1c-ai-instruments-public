@@ -165,7 +165,12 @@ export async function openReportInBrowser(button, request, onError) {
   button.disabled = true;
   button.textContent = 'Открываем…';
   try {
-    await request();
+    const result = await request();
+    // Программа работает на другом компьютере (сетевой режим): окно там
+    // открывать бессмысленно — его никто не увидит. Открываем сами. Это
+    // происходит по нажатию кнопки, поэтому блокировщик всплывающих окон
+    // такое пропускает.
+    if (result?.remote && result.url) window.open(result.url, '_blank', 'noopener');
   } catch (err) {
     // Отчёт цел, не открылось только окно: сообщаем и оставляем кнопку.
     if (onError) onError(`Не удалось открыть отчёт: ${err.message}`);
