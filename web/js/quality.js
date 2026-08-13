@@ -42,6 +42,24 @@ export function initQuality() {
   });
   applyRepoKind(currentRepoKind());
 
+  // Адрес, вставленный в поле каталога, переключает вид сам. Живой случай
+  // 13.08.2026: на сервере заказчика `tcp://сервер/erp25/хранилище` попал
+  // в «Каталог с хранилищами» — переключатель остался на «Каталог на диске»,
+  // и программа пошла искать в этом «каталоге» файл cfgrepo.conf. Заметить
+  // второй переключатель мешает то, что он вложен в первый и виден не сразу.
+  // Событие `change`, а не `input`: по `input` переключение сработало бы
+  // на середине набора («tcp://» уже похоже на адрес), поле каталога тут же
+  // спряталось бы, и человек дописывал бы адрес в невидимое поле.
+  $('#qRepo').addEventListener('change', () => {
+    const value = $('#qRepo').value.trim();
+    if (!/^(?:tcp|https?):\/\//i.test(value)) return;
+    $('#qRepoAddress').value = value;
+    $('#qRepo').value = '';
+    $('#qRepoKind input[value="address"]').checked = true;
+    applyRepoKind('address');
+    setNote('#qFormNote', 'Это сетевой адрес — переключил на «Сетевой адрес».', false);
+  });
+
   initPeriodDialog();
 
   $('#qualityForm').addEventListener('submit', (event) => {

@@ -30,7 +30,7 @@ import { exportConfiguration, exportExtensions } from '../onec/collector.js';
 import {
   findRepositories, parseRepositoryAddresses, repositoryHistory, repositoryDumpCfg,
   filterByPeriod, authorsByObject, createContextInfobase, ensureContextExtension,
-  expandExtensionCf, isExtensionRepositoryRefusal,
+  expandExtensionCf, isExtensionRepositoryRefusal, isNetworkRepository,
 } from '../onec/repository.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
@@ -285,8 +285,40 @@ async function fromInfobase({ input, platform, workRoot, progress, warnings }) {
 
 // --- Источник: хранилище конфигурации ----------------------------------------
 
+/**
+ * Что считать хранилищем: каталог на диске или адрес сервера хранилищ.
+ *
+ * Переключатель в форме — не единственное основание, и это исправление
+ * по живому случаю (13.08.2026, сервер заказчика). Адрес
+ * `tcp://сервер/erp25/хранилище` был вставлен в поле «Каталог с хранилищами»,
+ * переключатель остался на «Каталог на диске» — и программа честно пошла
+ * искать в этом «каталоге» файл `cfgrepo.conf`, а не найдя, обвинила
+ * пользователя: «укажите каталог, где лежат хранилища». Между тем строка
+ * вида `tcp://…` ни на какой каталог не похожа и толкуется однозначно.
+ *
+ * Поэтому адрес узнаётся по себе самому, где бы его ни ввели. Переключатель
+ * остаётся — он решает, какое поле показывать, — но ошибиться им больше
+ * не значит получить отказ.
+ */
+export function repositorySource(input) {
+  const address = String(input.repositoryAddress || '').trim();
+  const dir = String(input.repositoryPath || '').trim();
+
+  if (input.repositoryKind === 'address' && address) return { byAddress: true, value: address };
+  // Похоже на адрес — значит адрес, независимо от положения переключателя.
+  if (looksLikeAddresses(dir)) return { byAddress: true, value: dir };
+  if (!dir && address) return { byAddress: true, value: address };
+  return { byAddress: false, value: dir };
+}
+
+/** Все ли строки значения — сетевые адреса. Каталог не бывает вперемешку с ними. */
+function looksLikeAddresses(value) {
+  const lines = String(value || '').split(/[\n;]+/).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every(isNetworkRepository);
+}
+
 async function fromRepository({ input, platform, workRoot, progress, warnings }) {
-  const byAddress = input.repositoryKind === 'address';
+  const { byAddress, value } = repositorySource(input);
   startOrThrow(progress, 'source', byAddress
     ? 'Проверка сетевого адреса хранилища'
     : 'Поиск хранилищ конфигурации');
@@ -295,14 +327,14 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   // адреса перечислить нечем — сервер хранилищ списка не отдаёт, — поэтому
   // там разбирается ровно то, что указал пользователь.
   const repositories = byAddress
-    ? parseRepositoryAddresses(input.repositoryAddress)
-    : await findRepositories(input.repositoryPath);
+    ? parseRepositoryAddresses(value)
+    : await findRepositories(value);
 
   if (!repositories.length) {
     throw new Error(byAddress
       ? 'Не указан ни один сетевой адрес хранилища. Адрес выглядит так: '
         + 'tcp://сервер/хранилище; несколько адресов пишутся по одному в строке.'
-      : `В каталоге ${input.repositoryPath} не найдено хранилищ конфигурации 1С. Каталог хранилища `
+      : `В каталоге ${value} не найдено хранилищ конфигурации 1С. Каталог хранилища `
         + 'опознаётся по файлу cfgrepo.conf; укажите каталог, где лежат хранилища.');
   }
   progress.done('source', `хранилищ: ${repositories.length} (${repositories.map((r) => r.name).join(', ')})`);
