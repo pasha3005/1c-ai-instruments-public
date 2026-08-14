@@ -196,20 +196,10 @@ function unavailable(reason, flags = {}) {
  * @param {string} [params.name] имя подкаталога выгрузки (по умолчанию `vendor`)
  */
 export async function exportCfToXml({
-  platform, cfFile, workDir, name = 'vendor', onProgress, serviceBase = null,
+  platform, cfFile, workDir, name = 'vendor', onProgress,
 }) {
   const outDir = path.join(workDir, name);
   const tempDbDir = path.join(workDir, `${name}-db`);
-
-  // Служебная база, указанная пользователем, вместо своей временной.
-  // Нужна там, где своя не заводится: конфигуратору на файловой базе требуется
-  // лицензия на этой машине, а на терминальном сервере её может не быть вовсе
-  // (лицензию там выдаёт сервер 1С и только для серверных баз).
-  // Конфигурация служебной базы при этом перезаписывается — о чём сказано
-  // в форме прямо, потому что иначе развернуть .cf нечем.
-  if (serviceBase?.base) {
-    return expandThroughBase({ platform, cfFile, outDir, serviceBase, onProgress });
-  }
 
   try {
     // ibcmd не пишет в непустой каталог — оба чистим перед работой.
@@ -265,41 +255,14 @@ export async function exportCfToXml({
   }
 }
 
-/**
- * То же разворачивание, но в уже существующей базе, указанной пользователем.
- *
- * Своей базы здесь не создаётся вовсе — ни файловой, ни какой ещё: именно
- * в невозможности создать работающую файловую базу и состоит причина.
- * Конфигурация служебной базы перезаписывается содержимым `.cf`; конфигурация
- * базы данных при этом НЕ обновляется (`/UpdateDBCfg` не вызывается), то есть
- * данные базы не трогаются и её работоспособность не меняется.
+/*
+ * Разворачивания «через служебную базу» здесь больше нет и быть не должно
+ * (14.08.2026). Оно загружало `.cf` прямо в базу пользователя (`/LoadCfg`),
+ * то есть переписывало её конфигурацию, — а в служебную базу запрещено писать
+ * при любых условиях. Развернуть выгрузку хранилища есть чем и без этого:
+ * своя временная база, создаваемая `ibcmd` (лицензии не требует). Нет ibcmd —
+ * код для проверки читается выгрузкой самой базы, что операция читающая.
  */
-async function expandThroughBase({ platform, cfFile, outDir, serviceBase, onProgress }) {
-  const conn = parseConnection(serviceBase.base);
-  const auth = { user: serviceBase.user || '', password: serviceBase.password || '' };
-  const logBase = path.join(path.dirname(outDir), `${path.basename(outDir)}-service`);
-
-  try {
-    await rmrf(outDir).catch(() => {});
-    await ensureDir(outDir);
-
-    onProgress?.(`Загрузка .cf в служебную базу ${conn.display} (может занять несколько минут)`);
-    await loadCfg({ platform, conn, cfFile, ...auth, logFile: `${logBase}-loadcfg.log` });
-
-    onProgress?.('Выгрузка конфигурации в XML');
-    await dumpConfigToFiles({ platform, conn, outDir, ...auth, logFile: `${logBase}-dump.log` });
-
-    return { ok: true, dir: outDir };
-  } catch (err) {
-    rethrowIfCancelled(err);
-    log.warn(`Не удалось развернуть .cf через служебную базу: ${err.message}`);
-    return {
-      ok: false,
-      reason: `Не удалось развернуть ${path.basename(cfFile)} через служебную базу `
-        + `${conn.display}: ${err.message}`,
-    };
-  }
-}
 
 /**
  * Читает свойства конфигурации из Configuration.xml.

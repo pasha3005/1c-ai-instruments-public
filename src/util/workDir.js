@@ -157,8 +157,9 @@ export async function removeUpdateOwnEntries(workDir, { keepResult = true } = {}
 
 /**
  * Каталоги проверки качества: к общим добавляются те, что создаёт работа
- * с хранилищем, — база-контекст (`repo-context`), отчёты и выгрузки хранилищ
- * (`repo`, `repo-<имя>`, `repo-<имя>-v<версия>`).
+ * с хранилищем, — база-контекст (`repo-context`), своя база под разворачивание
+ * выгрузок (`repo-expand`), отчёты и выгрузки хранилищ (`repo`, `repo-<имя>`,
+ * `repo-<имя>-v<версия>`).
  */
 const QUALITY_PATTERNS = [/^repo(-|$)/i, /^designer-.*\.log$/i];
 

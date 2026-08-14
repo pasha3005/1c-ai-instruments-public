@@ -138,6 +138,10 @@ async function runPipeline({ qualityId, input, progress }) {
       repositories: prepared.repositories || null,
       period: prepared.period || null,
       commits: prepared.commits || null,
+      // Откуда взят код: из самих хранилищ или (когда развернуть их нечем)
+      // выгрузкой служебной базы. Отчёт обязан говорить об этом прямо —
+      // от этого зависит, что в нём вообще может быть видно.
+      codeSource: prepared.codeSource || null,
       configuration: prepared.parsed.configuration,
       vendorComparison: prepared.vendorComparison,
       findings: analysis.findings,
@@ -390,6 +394,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     progress.update('export', `работаем через служебную базу ${input.serviceBase}`);
   }
 
+  // Куда разворачивать выгрузку хранилища. Служебная база в этом НЕ участвует
+  // никогда: своя временная база, созданная `ibcmd`, лицензии не требует
+  // и принадлежит нам — писать в неё можно сколько угодно. Отсюда правило:
+  // есть ibcmd — код для проверки берётся из САМОГО хранилища; нет (клиентская
+  // установка платформы, где ibcmd не поставляется) — остаётся прежний путь,
+  // выгрузка служебной базы.
+  const expandBase = readOnly
+    ? await ownExpandBase({ platform, workRoot, progress, warnings })
+    : contextBase;
+
   const period = { from: input.periodFrom || '', to: input.periodTo || '' };
   const commits = [];
   let mainDir = null;
@@ -411,7 +425,19 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     // базы-контекста, а не сама база. Заводим пустое и повторяем — имя
     // расширения в базе с именем расширения в хранилище платформа не сверяет
     // (проверено), поэтому одного хватает на все хранилища расширений.
-    if (!history.ok && isExtensionRepositoryRefusal(history.reason)) {
+    if (!history.ok && isExtensionRepositoryRefusal(history.reason) && readOnly) {
+      // Расширение пришлось бы завести в СЛУЖЕБНОЙ базе: команды хранилища
+      // идут через неё (только она получает лицензию), а своя временная база
+      // в этом месте не годится — по той же причине. Создание расширения —
+      // изменение базы, а в служебную не пишется ничего. Значит, честный отказ.
+      history = {
+        ...history,
+        reason: 'это хранилище РАСШИРЕНИЙ. Чтобы его прочитать, конфигуратору нужно расширение '
+          + 'в базе, через которую он работает, — а в служебную базу программа не пишет ничего. '
+          + 'Проверьте это хранилище на машине, где есть лицензия на файловые базы: там '
+          + 'служебная база не нужна и расширение заводится во временной.',
+      };
+    } else if (!history.ok && isExtensionRepositoryRefusal(history.reason)) {
       progress.update('export', `хранилище «${repo.name}»: это хранилище расширений`);
       const context = await ensureContextExtension({
         platform, contextBase, workDir: workRoot,
@@ -463,16 +489,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       continue;
     }
 
-    // В режиме «только чтение» разворачивать выгрузку некуда: разворачивание
-    // идёт загрузкой в базу, а база чужая и менять её нельзя. Код для разбора
-    // берётся из самой базы (её выгрузка — операция читающая), а правки
-    // помещений строит сравнение двух файлов `.cf` средствами платформы.
-    const expanded = readOnly
-      ? { ok: true, dir: null }
-      : await expandRepositoryCf({
-        repo, cfFile: dumped.file, platform, contextBase, workRoot,
+    // Разворачивать выгрузку есть куда только тогда, когда есть СВОЯ база
+    // (`expandBase`). Нет её — код для разбора берётся выгрузкой служебной
+    // базы ниже, а правки помещений строит сравнение двух файлов `.cf`
+    // средствами платформы.
+    const expanded = expandBase
+      ? await expandRepositoryCf({
+        repo, cfFile: dumped.file, platform, contextBase: expandBase, workRoot,
         onProgress: (text) => progress.update('export', `«${repo.name}»: ${text}`),
-      });
+      })
+      : { ok: true, dir: null };
     if (!expanded.ok) {
       warnings.push(`Хранилище «${repo.name}»: конфигурация не развернулась — ${expanded.reason}`);
       repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: expanded.reason });
@@ -485,16 +511,22 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     repoStatus.push({
       name: repo.name, dir: repo.dir, ok: true, isMain, isExtension: Boolean(repo.extension),
     });
-    if (readOnly) continue;
+    if (!expanded.dir) continue;
     if (isMain) mainDir = expanded.dir;
     else extensionDirs.push({ name: repo.name, dir: expanded.dir });
   }
 
-  // Исходники для разбора — выгрузка самой базы. Операция читающая: платформа
-  // выгружает конфигурацию в XML, ничего в базе не меняя. Код в базе тот же,
-  // что в хранилище, пока разработчик обновлён из хранилища; расхождение
-  // возможно и оговаривается в отчёте.
-  if (readOnly) {
+  // Развернуть хранилище было нечем — исходники берутся выгрузкой самой
+  // служебной базы. Операция читающая: платформа выгружает конфигурацию
+  // в XML, ничего в базе не меняя. Код в базе тот же, что в хранилище, пока
+  // разработчик обновлён из хранилища; расхождение возможно и оговаривается
+  // в отчёте.
+  // «Нечем» — это когда из хранилищ не развернулось НИЧЕГО: ни конфигурация,
+  // ни расширения. Каталог с одними хранилищами расширений — законный случай,
+  // и подменять его выгрузкой базы нельзя: код из хранилища уже получен.
+  const nothingExpanded = !mainDir && !extensionDirs.length;
+  const codeSource = nothingExpanded ? 'service-base' : 'repository';
+  if (readOnly && nothingExpanded) {
     progress.update('export', 'выгрузка конфигурации базы в XML (в базу ничего не пишется)');
     const ctx = {
       platform,
@@ -545,13 +577,16 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     );
   }
 
-  const diffStats = readOnly
-    ? await buildPlacementDiffsByCompare({
-      platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
+  // Правки помещений: код из хранилища есть — считаем их по выгрузкам версий,
+  // это тот же путь, что и без служебной базы. Кода из хранилища нет — остаётся
+  // сравнение двух файлов `.cf` средствами платформы с привязкой к тексту базы.
+  const diffStats = codeSource === 'repository'
+    ? await buildPlacementDiffs({
+      platform, contextBase, expandBase, workRoot, progress, commits, repositories,
       user: input.repositoryUser, password: input.repositoryPassword,
     })
-    : await buildPlacementDiffs({
-      platform, contextBase, workRoot, progress, commits, repositories,
+    : await buildPlacementDiffsByCompare({
+      platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
       user: input.repositoryUser, password: input.repositoryPassword,
     });
   if (diffStats.limited) {
@@ -608,8 +643,46 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     repositories: repoStatus,
     period,
     commits,
+    codeSource,
     authorsByObject: byObject,
   };
+}
+
+/**
+ * Своя пустая база — рабочее место для разворачивания выгрузок хранилища.
+ *
+ * Нужна там, где указана служебная база: в неё писать нельзя ни при каких
+ * условиях, а развернуть `.cf` и `.cfe` в XML можно только загрузкой в базу.
+ * Своя временная базе пользователя не мешает и лицензии не требует —
+ * при одном условии: её создаёт и наполняет `ibcmd`, а не конфигуратор.
+ * Конфигуратору лицензия нужна всегда, и на терминальном сервере без местных
+ * лицензий он на файловой базе не работает вовсе — с этого вся служебная база
+ * и началась.
+ *
+ * Нет ibcmd (клиентская установка платформы — там его не поставляют) — базы
+ * не будет, и код для проверки придётся читать выгрузкой служебной базы.
+ * Это честно сказано в отчёте, а не подменено молчанием.
+ */
+async function ownExpandBase({ platform, workRoot, progress, warnings }) {
+  if (!platform.ibcmd) {
+    warnings.push(
+      `В платформе ${platform.version} нет ibcmd (он входит в серверную часть, а не в клиентскую), `
+      + 'поэтому развернуть выгрузку хранилища на этой машине нечем: писать в служебную базу '
+      + 'запрещено, а конфигуратору на своей временной базе нужна лицензия. Код для проверки '
+      + 'взят из служебной базы — она должна быть обновлена из хранилища.',
+    );
+    return null;
+  }
+  try {
+    const base = await createContextInfobase({ platform, workDir: workRoot, name: 'repo-expand' });
+    progress.update('export', 'код будет взят из самого хранилища (своя временная база, ibcmd)');
+    return base;
+  } catch (err) {
+    rethrowIfCancelled(err);
+    warnings.push(`Своя временная база под разбор хранилища не создалась: ${err.message}. `
+      + 'Код для проверки взят из служебной базы.');
+    return null;
+  }
 }
 
 /** Сколько дополнительных выгрузок хранилища допускается ради диффов правок. */
@@ -622,7 +695,12 @@ const MAX_PLACEMENT_DUMPS = 40;
  * Конфигурация приходит файлом `.cf` и разворачивается своей временной базой
  * (ibcmd умеет создать базу сразу из файла). Расширение приходит `.cfe`,
  * и так его не развернуть: расширение живёт внутри базы под именем. Поэтому
- * оно загружается в расширение-заглушку базы-контекста и выгружается оттуда.
+ * оно загружается в расширение-заглушку базы `contextBase` и выгружается
+ * оттуда.
+ *
+ * `contextBase` здесь — всегда НАША база, а не служебная база пользователя:
+ * решение об этом принимает `ownExpandBase`, и в служебную базу не пишется
+ * ничего ни при каких условиях.
  */
 async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoot, onProgress }) {
   const name = `repo-${safeFileName(repo.name)}${repo.suffix || ''}`;
@@ -631,12 +709,7 @@ async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoo
       platform, contextBase, cfFile, workDir: workRoot, name, extension: repo.extension,
     });
   }
-  // Указана служебная база — разворачиваем в ней: своя временная там,
-  // где её нельзя создать, и была причиной обращения к служебной.
-  return exportCfToXml({
-    cfFile, platform, workDir: workRoot, name, onProgress,
-    serviceBase: contextBase?.service ? contextBase : null,
-  });
+  return exportCfToXml({ cfFile, platform, workDir: workRoot, name, onProgress });
 }
 
 /**
@@ -657,7 +730,7 @@ async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoo
  * показано в отчёте предупреждением, а не подменяется тишиной.
  */
 async function buildPlacementDiffs({
-  platform, contextBase, workRoot, progress, commits, repositories, user, password,
+  platform, contextBase, expandBase, workRoot, progress, commits, repositories, user, password,
 }) {
   const withCode = commits.filter((c) => (c.added.length || c.changed.length));
   if (!withCode.length) return { limited: false, dumps: 0 };
@@ -687,9 +760,11 @@ async function buildPlacementDiffs({
         extension: repo.extension || '',
       });
       if (dumped.ok) {
+        // К хранилищу ходим через `contextBase` (там может быть служебная
+        // база — только чтение), а разворачиваем в `expandBase` — своей.
         const expanded = await expandRepositoryCf({
           repo: { ...repo, suffix: `-v${version}` },
-          cfFile: dumped.file, platform, contextBase, workRoot,
+          cfFile: dumped.file, platform, contextBase: expandBase || contextBase, workRoot,
         });
         if (expanded.ok) {
           const modules = await collectModules(expanded.dir);
