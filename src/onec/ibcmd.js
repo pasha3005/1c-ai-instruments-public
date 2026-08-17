@@ -56,6 +56,66 @@ export async function exportConfig({ platform, conn, outDir, user, password, onP
 }
 
 /**
+ * Выгружает в XML ТОЛЬКО перечисленные объекты конфигурации.
+ *
+ * Ради двух изменённых модулей выгружать конфигурацию целиком — самая дорогая
+ * глупость в режиме хранилища: на ERP это ~90 с против секунд. Команда
+ * `config export objects` появилась не вчера и проверена живьём 17.08.2026
+ * (8.3.24.1691): имена принимаются русские, ровно в том виде, в каком их
+ * печатает история хранилища (`Документ.Документ1`), тексты модулей совпадают
+ * с полной выгрузкой байт в байт, файлы ложатся по тем же каноническим путям.
+ *
+ * `recursive` (ключ `-r`) добавляет подчинённые объекты — формы, команды,
+ * макеты. Без него у документа выгрузится только модуль объекта.
+ *
+ * @param {string[]} params.names имена объектов; пустой список — делать нечего
+ */
+export async function exportObjects({
+  platform, conn, names, outDir, recursive = true, extension, user, password, onProgress,
+}) {
+  const list = recursive ? dropDescendants(names) : (names || []).filter(Boolean);
+  if (!list.length) return { outDir, ok: true, skipped: true };
+  await ensureDir(outDir);
+
+  const args = [
+    'infobase', 'config', 'export', 'objects',
+    ...targetArgs(conn, { user, password }),
+    `--out=${outDir}`,
+  ];
+  if (recursive) args.push('--recursive');
+  if (extension) args.push(`--extension=${extension}`);
+  args.push(...list);
+
+  const result = await run(platform.ibcmd, args, {
+    timeout: TIMEOUTS.configExport,
+    allowNonZeroExit: true,
+    onStdout: onProgress,
+  });
+  if (result.code !== 0) {
+    log.warn(`Выборочная выгрузка не удалась (${list.length} объектов): ${result.stderr || result.stdout}`);
+  }
+  return { outDir, ok: result.code === 0, reason: result.stderr || result.stdout };
+}
+
+/**
+ * Убирает из списка объекты, которые и так попадут по рекурсии от родителя.
+ *
+ * История хранилища перечисляет и объект, и его форму:
+ * `Документ.Документ1` и `Документ.Документ1.Форма.ФормаДокумента`. С ключом
+ * `-r` платформа выгружает форму дважды — по рекурсии и по явному имени —
+ * и падает с «Ошибка совместного доступа к файлу» (поймано живьём 17.08.2026
+ * на двух объектах сразу; на одном объекте отказа не было, поэтому дефект
+ * легко было и не заметить).
+ *
+ * Граница проверяется по точке: `Документ.Документ1` не должен считаться
+ * родителем `Документ.Документ10`.
+ */
+export function dropDescendants(names) {
+  const list = [...new Set((names || []).filter(Boolean))];
+  return list.filter((name) => !list.some((other) => other !== name && name.startsWith(`${other}.`)));
+}
+
+/**
  * Список расширений конфигурации.
  * Возвращает массив имён; пустой массив — расширений нет.
  */

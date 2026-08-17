@@ -35,15 +35,30 @@ const COMMON_FLAGS = ['/DisableStartupDialogs', '/DisableStartupMessages'];
 /**
  * Выгружает конфигурацию в XML-файлы.
  *
+ * `listFile` — путь к файлу со списком объектов (по одному в строке,
+ * `Документ.Документ1`, у подчинённых — полный путь
+ * `Документ.Документ1.Форма.ФормаДокумента`). Тогда выгружаются ТОЛЬКО они,
+ * и это единственный способ частичной выгрузки конфигуратором: проверено
+ * 17.08.2026 на 8.3.24.1691 — с `-listFile` вышло 2 файла вместо 23.
+ *
+ * **Ключи `-Objects` и `-Mode Partial`, которые встречаются в чужих скриптах,
+ * платформа МОЛЧА ИГНОРИРУЕТ** — проверено там же: код возврата 0, а выгрузка
+ * полная. Опираться на них нельзя: это тот самый молчаливый отказ, когда
+ * программа думает, что сэкономила время, а на деле выгрузила всё.
+ *
+ * Неизвестное имя в списке — код возврата 1 и пустая выгрузка (тоже проверено),
+ * поэтому объектов, которых в этой версии ещё нет, в список класть нельзя.
+ *
  * @param {object} params
  * @param {import('./platform.js').PlatformInstall} params.platform
  * @param {import('./connection.js').Connection} params.conn
  * @param {string} params.outDir
  * @param {string} [params.extension] имя расширения; без него — основная конфигурация
  * @param {boolean} [params.allExtensions] выгрузить все расширения
+ * @param {string} [params.listFile] файл со списком объектов — частичная выгрузка
  */
 export async function dumpConfigToFiles({
-  platform, conn, outDir, extension, allExtensions, user, password, logFile,
+  platform, conn, outDir, extension, allExtensions, listFile, user, password, logFile,
 }) {
   await ensureDir(outDir);
   const logPath = logFile || path.join(path.dirname(outDir), `designer-${Date.now()}.log`);
@@ -55,6 +70,7 @@ export async function dumpConfigToFiles({
     '/DumpConfigToFiles', outDir,
     '-Format', 'Hierarchical',
   ];
+  if (listFile) args.push('-listFile', listFile);
   if (extension) args.push('-Extension', extension);
   if (allExtensions) args.push('-AllExtensions');
   args.push(...COMMON_FLAGS, '/Out', logPath);
@@ -77,11 +93,19 @@ export async function dumpConfigToFiles({
   }
 
   const designerLog = await readLogSafe(logPath);
-  const produced = await pathExists(path.join(outDir, 'Configuration.xml'));
+  // При частичной выгрузке `Configuration.xml` не создаётся вовсе — в каталоге
+  // лежат только перечисленные объекты. Признаком успеха тогда служит сам факт
+  // появления файлов: неизвестное имя в списке платформа отвергает кодом 1
+  // и пустым каталогом.
+  const produced = listFile
+    ? (await fs.readdir(outDir).catch(() => [])).length > 0
+    : await pathExists(path.join(outDir, 'Configuration.xml'));
 
   if (!produced) {
     throw new Error(
-      'Конфигуратор завершился, но файл Configuration.xml не создан. ' +
+      (listFile
+        ? 'Конфигуратор завершился, но не выгрузил ни одного объекта из списка. '
+        : 'Конфигуратор завершился, но файл Configuration.xml не создан. ') +
       (designerLog ? `Журнал конфигуратора:\n${designerLog}` : `Код возврата: ${procResult.code}.`) +
       '\nВероятные причины: неверные имя пользователя/пароль, база занята другим сеансом ' +
       'или у пользователя нет права «Администрирование».',

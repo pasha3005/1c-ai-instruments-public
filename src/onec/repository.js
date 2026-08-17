@@ -422,14 +422,21 @@ export async function repositoryHistory({
 /**
  * Выгружает конфигурацию хранилища в файл `.cf`.
  *
+ * **Номер версии входит в имя файла**, и это не украшательство. Без него все
+ * версии писались в один путь, а вызывающий получал одно и то же имя: сравнение
+ * версий N и N−1 (`buildPlacementDiffsByCompare`) отдавало платформе два
+ * одинаковых аргумента и сравнивало файл сам с собой. Правки помещений при этом
+ * выходили пустыми при полностью успешном сравнении — дефект найден 17.08.2026.
+ *
  * @returns {Promise<{ok: boolean, file?: string, reason?: string}>}
  */
 export async function repositoryDumpCfg({
   platform, contextBase, dir, workDir, user, password, version = null, extension = '',
 }) {
   const out = await ensureDir(path.join(workDir, 'repo'));
-  const cfFile = path.join(out, `${safeName(dir)}${extension ? '.cfe' : '.cf'}`);
-  const logFile = path.join(out, `dump-${safeName(dir)}.log`);
+  const suffix = version ? `-v${version}` : '';
+  const cfFile = path.join(out, `${safeName(dir)}${suffix}${extension ? '.cfe' : '.cf'}`);
+  const logFile = path.join(out, `dump-${safeName(dir)}${suffix}.log`);
   await rmrf(cfFile).catch(() => {});
 
   try {

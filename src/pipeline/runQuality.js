@@ -591,9 +591,10 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     });
   if (diffStats.limited) {
     warnings.push(
-      `Правки показаны не по всем помещениям периода: выгрузок понадобилось больше `
-      + `${diffStats.dumps}, и дальше отчёт бы собирался слишком долго. Сузьте период, `
-      + 'чтобы увидеть правки остальных помещений.',
+      `Правки показаны не по всем помещениям периода: на выгрузку версий хранилища `
+      + `отведено ${Math.round(PLACEMENT_BUDGET_MS / 60000)} мин, и за это время удалось `
+      + `получить ${diffStats.dumps} версий. Сузьте период, чтобы увидеть правки остальных `
+      + 'помещений.',
     );
   }
 
@@ -686,7 +687,49 @@ async function ownExpandBase({ platform, workRoot, progress, warnings }) {
 }
 
 /** Сколько дополнительных выгрузок хранилища допускается ради диффов правок. */
-const MAX_PLACEMENT_DUMPS = 40;
+const MAX_PLACEMENT_DUMPS = Number(process.env.ONEC_AUDIT_MAX_PLACEMENT_DUMPS || 200);
+
+/**
+ * Сколько времени отводится на выгрузки версий ради правок.
+ *
+ * Прежний предел считался в штуках (40 выгрузок) и был выбран вслепую: на
+ * маленькой конфигурации он обрезал отчёт зря, на ERP сорок выгрузок и так
+ * не уложились бы в разумное время. Пользователь назвал ориентир прямо
+ * (17.08.2026): недельный отчёт по ERP — 20–30 минут. Столько и отводим,
+ * а что не успели — отчёт говорит прямо, как и раньше.
+ */
+const PLACEMENT_BUDGET_MS = Number(process.env.ONEC_AUDIT_PLACEMENT_BUDGET_MS || 25 * 60 * 1000);
+
+/**
+ * Какие объекты нужны на каждой версии хранилища.
+ *
+ * Ради двух изменённых модулей помещения незачем разворачивать конфигурацию
+ * целиком: платформа умеет выгружать выбранные объекты (`config export objects`
+ * у ibcmd, `-listFile` у конфигуратора). Список собирается заранее, потому что
+ * одна и та же версия нужна двум соседним помещениям: версии V — как «после»
+ * своего помещения, и как «до» для следующего.
+ *
+ * Тонкость: на версию V−1 просить объекты из `added` НЕЛЬЗЯ — их там ещё нет,
+ * а неизвестное имя в списке платформа считает ошибкой (код возврата 1
+ * и пустая выгрузка). Поэтому «до» просится только для изменённых.
+ */
+export function neededObjects(commits) {
+  const needed = new Map();
+  const add = (repo, version, names) => {
+    if (version < 1 || !names.length) return;
+    const key = `${repo} ${version}`;
+    if (!needed.has(key)) needed.set(key, new Set());
+    const set = needed.get(key);
+    for (const name of names) set.add(name);
+  };
+  for (const c of commits) {
+    const added = c.added || [];
+    const changed = c.changed || [];
+    add(c.repository, c.version, [...added, ...changed]);
+    add(c.repository, c.version - 1, changed);
+  }
+  return needed;
+}
 
 /**
  * Разворачивает выгрузку хранилища в XML — тем способом, который годится
@@ -702,14 +745,18 @@ const MAX_PLACEMENT_DUMPS = 40;
  * решение об этом принимает `ownExpandBase`, и в служебную базу не пишется
  * ничего ни при каких условиях.
  */
-async function expandRepositoryCf({ repo, cfFile, platform, contextBase, workRoot, onProgress }) {
+async function expandRepositoryCf({
+  repo, cfFile, platform, contextBase, workRoot, onProgress, objects = null,
+}) {
   const name = `repo-${safeFileName(repo.name)}${repo.suffix || ''}`;
   if (repo.extension) {
+    // У расширения выборочная выгрузка не задействована: оно и так небольшое,
+    // а путь к нему идёт через заглушку базы-контекста, а не через ibcmd.
     return expandExtensionCf({
       platform, contextBase, cfFile, workDir: workRoot, name, extension: repo.extension,
     });
   }
-  return exportCfToXml({ cfFile, platform, workDir: workRoot, name, onProgress });
+  return exportCfToXml({ cfFile, platform, workDir: workRoot, name, onProgress, objects });
 }
 
 /**
@@ -737,6 +784,8 @@ async function buildPlacementDiffs({
 
   const repoByName = new Map(repositories.map((r) => [r.name, r]));
   const cache = new Map();
+  const needed = neededObjects(withCode);
+  const startedAt = Date.now();
   let dumps = 0;
   let limited = false;
 
@@ -744,7 +793,11 @@ async function buildPlacementDiffs({
     if (version < 1) return null;
     const key = `${repoName} ${version}`;
     if (cache.has(key)) return cache.get(key);
-    if (dumps >= MAX_PLACEMENT_DUMPS) {
+    // Бюджет времени вместо жёсткого числа выгрузок: дорога сама выгрузка
+    // версии, а сколько она длится, зависит от размера конфигурации — на ERP
+    // это минуты, на маленькой базе секунды. Считать в минутах честнее,
+    // чем в штуках.
+    if (dumps >= MAX_PLACEMENT_DUMPS || Date.now() - startedAt > PLACEMENT_BUDGET_MS) {
       limited = true;
       cache.set(key, null);
       return null;
@@ -752,7 +805,8 @@ async function buildPlacementDiffs({
     const repo = repoByName.get(repoName);
     if (!repo) return null;
     dumps += 1;
-    progress.update('export', `хранилище «${repoName}»: версия ${version} для диффа правок`);
+    const objects = [...(needed.get(key) || [])];
+    progress.update('export', `хранилище «${repoName}»: версия ${version} — объектов ${objects.length}`);
     let entry = null;
     try {
       const dumped = await repositoryDumpCfg({
@@ -765,6 +819,7 @@ async function buildPlacementDiffs({
         const expanded = await expandRepositoryCf({
           repo: { ...repo, suffix: `-v${version}` },
           cfFile: dumped.file, platform, contextBase: expandBase || contextBase, workRoot,
+          objects,
         });
         if (expanded.ok) {
           const modules = await collectModules(expanded.dir);

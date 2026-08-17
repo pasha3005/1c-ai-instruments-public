@@ -41,6 +41,7 @@ import { rethrowIfCancelled } from '../util/cancel.js';
 import { compareWithVendorInBase } from '../onec/vendorCompare.js';
 import { parseConnection } from '../onec/connection.js';
 import { createInfobase, loadCfg, dumpConfigToFiles } from '../onec/designer.js';
+import { exportObjects } from '../onec/ibcmd.js';
 
 const log = createLogger('vendor');
 
@@ -190,16 +191,27 @@ function unavailable(reason, flags = {}) {
  * разворачивает ДВА файла .cf в одном рабочем каталоге — старую поставку
  * и новую, — и общий каталог `vendor` они затирали бы друг другом.
  *
+ * **Частичное разворачивание.** Если передан `objects` — непустой список имён
+ * (`Документ.Документ1`, у подчинённых полный путь), — в XML выгружаются
+ * только они. Это главный рычаг скорости в режиме хранилища: ради двух
+ * изменённых модулей помещения незачем разворачивать конфигурацию целиком.
+ * Проверено 17.08.2026 на 8.3.24.1691: и `ibcmd config export objects -r`,
+ * и `/DumpConfigToFiles -listFile` дают те же файлы по тем же путям и тот же
+ * текст, что полная выгрузка. Загрузку `.cf` во временную базу это не
+ * отменяет — иначе прочитать файл нечем.
+ *
  * @param {object} params
  * @param {string} params.cfFile
  * @param {string} params.workDir
  * @param {string} [params.name] имя подкаталога выгрузки (по умолчанию `vendor`)
+ * @param {string[]} [params.objects] выгрузить только эти объекты
  */
 export async function exportCfToXml({
-  platform, cfFile, workDir, name = 'vendor', onProgress,
+  platform, cfFile, workDir, name = 'vendor', onProgress, objects = null,
 }) {
   const outDir = path.join(workDir, name);
   const tempDbDir = path.join(workDir, `${name}-db`);
+  const partial = Array.isArray(objects) && objects.length > 0;
 
   try {
     // ibcmd не пишет в непустой каталог — оба чистим перед работой.
@@ -217,12 +229,21 @@ export async function exportCfToXml({
         `--load=${cfFile}`,
       ], { timeout: TIMEOUTS.configExport });
 
-      onProgress?.('Выгрузка конфигурации поставщика в XML');
-      await run(platform.ibcmd, [
-        'infobase', 'config', 'export',
-        `--db-path=${tempDbDir}`,
-        outDir,
-      ], { timeout: TIMEOUTS.configExport });
+      onProgress?.(partial
+        ? `Выгрузка в XML: объектов ${objects.length}`
+        : 'Выгрузка конфигурации поставщика в XML');
+      if (partial) {
+        const done = await exportObjects({
+          platform, conn: parseConnection(tempDbDir), names: objects, outDir, onProgress,
+        });
+        if (!done.ok) throw new Error(done.reason || 'выборочная выгрузка не удалась');
+      } else {
+        await run(platform.ibcmd, [
+          'infobase', 'config', 'export',
+          `--db-path=${tempDbDir}`,
+          outDir,
+        ], { timeout: TIMEOUTS.configExport });
+      }
     } else {
       // Клиентская установка платформы: ibcmd в неё не входит. Те же три шага
       // делает сам 1cv8 — создание базы, загрузка .cf, выгрузка в XML.
@@ -232,9 +253,22 @@ export async function exportCfToXml({
       await createInfobase({ platform, dir: tempDbDir, logFile: `${tempDbDir}.log` });
       await loadCfg({ platform, conn, cfFile, logFile: `${tempDbDir}-loadcfg.log` });
 
-      onProgress?.('Выгрузка конфигурации поставщика в XML');
+      // Частичная выгрузка конфигуратором — только через файл со списком.
+      // Ключей `-Objects`/`-Mode Partial` платформа не знает: молча выгружает
+      // всё (проверено 17.08.2026), поэтому их здесь нет и быть не должно.
+      let listFile = null;
+      if (partial) {
+        listFile = path.join(workDir, `${name}-objects.txt`);
+        // BOM обязателен: без него платформа читает список в кодировке консоли
+        // и русские имена объектов до неё не доезжают.
+        await fs.writeFile(listFile, `﻿${objects.join('\n')}\n`, 'utf8');
+      }
+
+      onProgress?.(partial
+        ? `Выгрузка в XML: объектов ${objects.length}`
+        : 'Выгрузка конфигурации поставщика в XML');
       await dumpConfigToFiles({
-        platform, conn, outDir, logFile: `${tempDbDir}-dump.log`,
+        platform, conn, outDir, listFile, logFile: `${tempDbDir}-dump.log`,
       });
     }
 
