@@ -125,20 +125,20 @@ export async function isRepositoryDir(dir) {
  * @param {string} dir каталог хранилища
  * @returns {Promise<RepositoryStore>}
  */
-export async function openRepositoryStore(dir, { extraKinds = null } = {}) {
+export async function openRepositoryStore(dir) {
   const db = await openCd1(path.join(dir, '1cv8ddb.1CD'));
   const objects = await openObjectStore(dir);
-  return new RepositoryStore(dir, db, objects, extraKinds);
+  return new RepositoryStore(dir, db, objects);
 }
 
 export class RepositoryStore {
-  constructor(dir, db, objects, extraKinds = null) {
+  constructor(dir, db, objects) {
     this.dir = dir;
     this.db = db;
     this.objects = objects;
 
-    /** Виды, выясненные на месте: дополняют таблицу, не подменяя её. */
-    this.extraKinds = new Map(extraKinds || []);
+    /** Виды, выясненные инструментом разработчика (см. tools/learnStoreKinds.mjs). */
+    this.extraKinds = new Map();
     this.users = new Map(db.rows('USERS').map((u) => [u.USERID, u.NAME]));
     this.classes = new Map(db.rows('OBJECTS').map((o) => [o.OBJID, o.CLASSID]));
     this.rootId = (db.rows('DEPOT')[0] || {}).ROOTOBJID || '';

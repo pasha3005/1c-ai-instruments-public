@@ -34,7 +34,6 @@ import {
 } from '../onec/repository.js';
 import { readInfobaseBindings, matchRepository, describeBindings } from '../onec/infobaseBinding.js';
 import { openRepositoryStore } from '../onec/store/repositoryStore.js';
-import { loadLearnedKinds, saveLearnedKinds, matchKindsByReport } from '../onec/store/kinds.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -533,44 +532,20 @@ function repositoryChangeSet(parsedData, commits) {
 }
 
 /**
- * Спрашивает у платформы виды объектов, которых нет в таблице.
+ * Помещений за период нет — сказать об этом внятно.
  *
- * Платформа печатает в отчёте по хранилищу полные имена
- * («ОбщийМодуль.Расш1_ОбщийМодуль1»), а имена объектов в хранилище уникальны —
- * значит, соответствие «идентификатор класса → вид» получается точным.
- * Один вызов конфигуратора, и только когда незнакомый вид действительно
- * встретился; выученное сохраняется и дальше работает без платформы.
- *
- * Платформы на машине может не быть вовсе — хранилище-каталог читается и без
- * неё. Тогда просто ничего не выучим: об этом скажет отчёт.
+ * Пустой отчёт читается как «ничего не делали», а причина обычно другая:
+ * период выбран мимо. Поэтому рядом называется то, что в хранилище есть.
  */
-async function learnKindsByPlatform({ repo, store, workRoot, progress, warnings }) {
-  try {
-    progress.update('export', `хранилище «${repo.name}»: уточняем виды объектов у платформы`);
-    const { platform } = await resolvePlatform('');
-    const contextBase = await createContextInfobase({ platform, workDir: workRoot });
-    const history = await repositoryHistory({
-      platform, contextBase, dir: repo.dir, workDir: workRoot,
-    });
-    if (!history.ok) throw new Error(history.reason);
-
-    // Проходов несколько: подчинённый объект опознаётся по владельцу, а вид
-    // владельца может выясниться только что. Пока каждый проход что-то даёт,
-    // повторяем — отчёт уже получен, и стоит это ничего.
-    const learned = new Map();
-    for (let pass = 0; pass < 5; pass += 1) {
-      const found = matchKindsByReport({ store, unknown: store.unknownClasses, commits: history.commits });
-      if (!found.size) break;
-      store.learnKinds(found);
-      for (const [classId, tag] of found) learned.set(classId, tag);
-    }
-    return learned;
-  } catch (err) {
-    rethrowIfCancelled(err);
-    warnings.push(`Виды некоторых объектов хранилища «${repo.name}» уточнить не удалось `
-      + `(${err.message}). Их код в проверку не попадёт.`);
-    return new Map();
+function emptyPeriodNote({ repo, all, warnings }) {
+  if (!all.length) {
+    warnings.push(`Хранилище «${repo.name}»: помещений нет вовсе.`);
+    return;
   }
+  const last = all[all.length - 1];
+  warnings.push(`Хранилище «${repo.name}»: за указанный период помещений нет. `
+    + `Всего в нём версий ${all.length}, последняя — № ${last.version} от ${last.date || 'даты нет'}`
+    + `${last.user ? ` (${last.user})` : ''}.`);
 }
 
 /**
@@ -618,33 +593,31 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
   const unknownClasses = new Set();
   let mainDir = null;
 
-  const learnedKinds = await loadLearnedKinds();
-
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
     try {
-      const store = await openRepositoryStore(repo.dir, { extraKinds: learnedKinds });
+      const store = await openRepositoryStore(repo.dir);
       stores.set(repo.name, store);
 
-      let all = store.history();
-      // Незнакомый вид объекта — не приговор: платформа печатает полные имена
-      // в отчёте по этому же хранилищу, и по ним вид выясняется точно.
-      // Спрашиваем только когда действительно нужно, и запоминаем навсегда.
-      if (store.unknownClasses.size) {
-        const learned = await learnKindsByPlatform({ repo, store, workRoot, progress, warnings });
-        if (learned.size) {
-          store.learnKinds(learned);
-          for (const [id, tag] of learned) learnedKinds.set(id, tag);
-          await saveLearnedKinds(learned);
-          all = store.history();
-        }
-      }
+      const all = store.history();
       const own = filterByPeriod(all, period);
       for (const commit of own) commits.push({ ...commit, repository: repo.name });
 
       const latest = all.reduce((max, commit) => Math.max(max, commit.version), 0);
       const objects = placedObjects(own);
       progress.update('export', `хранилище «${repo.name}»: помещений ${own.length}, объектов ${objects.length}`);
+
+      // Помещений за период нет — раскладывать нечего. Без этой проверки
+      // на диск ушла бы вся конфигурация: пустой список объектов означает
+      // «все», а на ERP это десятки тысяч объектов и минуты работы впустую.
+      if (!objects.length) {
+        emptyPeriodNote({ repo, all, warnings });
+        repoStatus.push({
+          name: repo.name, dir: repo.dir, ok: true, isMain: false, isExtension: false, role: null,
+          boundExtension: null,
+        });
+        continue;
+      }
 
       // Первое хранилище считается основной конфигурацией, остальные —
       // расширениями: по файлам хранилища одно от другого не отличить,
@@ -674,8 +647,13 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
     }
   }
 
-  if (!mainDir) {
+  if (!mainDir && !repoStatus.some((repo) => repo.ok)) {
     throw new Error(`Ни одно хранилище прочитать не удалось. ${warnings[warnings.length - 1] || ''}`);
+  }
+  if (!mainDir) {
+    // Хранилища прочитаны, но за период в них ничего не помещали. Это не
+    // ошибка: отчёт выйдет пустым, а почему — сказано предупреждением.
+    mainDir = await ensureDir(path.join(workRoot, 'store-empty'));
   }
 
   // Правки помещений строятся всегда: версия достаётся из файлов хранилища
@@ -696,9 +674,21 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
   });
 
   if (unknownClasses.size) {
-    warnings.push(`Вид некоторых объектов хранилища программе неизвестен `
-      + `(${[...unknownClasses].join(', ')}) — их код в проверку не попал. `
-      + 'Сообщите об этом: таблица видов пополняется только проверенными значениями.');
+    // Одного идентификатора мало: по нему вид не назовёт никто. Поэтому рядом
+    // печатаются имена объектов — по ним вид виден сразу, и пару можно
+    // добавить в таблицу проверенной, а не угаданной.
+    const lines = [...unknownClasses].map((classId) => {
+      const names = new Set();
+      for (const store of stores.values()) {
+        for (const [objId, item] of store.info) {
+          if (store.classes.get(objId) === classId && names.size < 3) names.add(item.name);
+        }
+      }
+      return `${classId} (${[...names].join(', ') || 'имена не найдены'})`;
+    });
+    warnings.push('Вид некоторых объектов хранилища программе неизвестен — их код в проверку '
+      + `не попал: ${lines.join('; ')}. Пришлите эту строку: по именам объектов вид определяется `
+      + 'однозначно, и пара добавляется в таблицу видов.');
   }
 
   progress.done('export', `помещений за период: ${commits.length}`);
