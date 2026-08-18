@@ -210,12 +210,33 @@ function renderCommits(result) {
     ${plural(commits.length, 'помещение', 'помещения', 'помещений')}.
     Автор каждого замечания взят отсюда: платформа записывает, кто поместил объект.
   </p>
+  ${renderPlacementNotes(result)}
   ${renderAuthorSummary(commits)}
   ${commits.length ? COMMIT_LEGEND : ''}
   ${blocks || `
   <div class="callout callout--warn">
     Ни одного хранилища прочитать не удалось — проверять нечего.
   </div>`}`;
+}
+
+/**
+ * Чего в разделе помещений нет и почему.
+ *
+ * Два случая, и оба надо назвать прямо, иначе пустое место в отчёте читается
+ * как «правок не было»: фрагменты кода не строились (дорого либо так выбрано
+ * в форме) и объекты, которых не нашлось в служебной базе.
+ */
+function renderPlacementNotes(result) {
+  const notes = [];
+  if (result.placementDiffs?.skipped) notes.push(result.placementDiffs.skipped);
+  if ((result.missingObjects || []).length) {
+    notes.push(`Код этих объектов не проверен — в служебной базе их нет: `
+      + `${result.missingObjects.join(', ')}. Так бывает, когда объект поместили `
+      + 'и потом удалили либо база не обновлена из хранилища.');
+  }
+  if (!notes.length) return '';
+  return notes.map((text) => `
+  <div class="callout callout--warn">${esc(text)}</div>`).join('');
 }
 
 /**

@@ -297,6 +297,7 @@ function collectInput() {
     serviceBasePassword: $('#qServiceBasePassword').value,
     periodFrom: $('#qFrom').value,
     periodTo: $('#qTo').value,
+    placementDiffs: $('#qPlacementDiffs').value,
     vendorConfigPath: $('#qVendor').value.trim(),
     platformVersion: $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),

@@ -60,7 +60,12 @@ export async function discoverPlatforms() {
         parts: entry.name.split('.').map(Number),
         binDir,
         client,
-        ibcmd: (await pathExists(ibcmd)) ? ibcmd : null,
+        // `ONEC_AUDIT_NO_IBCMD=1` заставляет работать так, будто ibcmd нет
+        // вовсе. Это не отладочная мелочь: клиентская установка платформы
+        // (терминальный сервер заказчика) именно такая, и путь без ibcmd —
+        // самый тяжёлый, поэтому его нужно уметь воспроизвести на машине,
+        // где ibcmd есть. Годится и как обход, если ibcmd на месте, но сбоит.
+        ibcmd: (!process.env.ONEC_AUDIT_NO_IBCMD && (await pathExists(ibcmd))) ? ibcmd : null,
         hasComConnector: await pathExists(path.join(binDir, 'comcntr.dll')),
       });
     }

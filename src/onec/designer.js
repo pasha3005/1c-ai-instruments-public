@@ -57,6 +57,20 @@ const COMMON_FLAGS = ['/DisableStartupDialogs', '/DisableStartupMessages'];
  * @param {boolean} [params.allExtensions] выгрузить все расширения
  * @param {string} [params.listFile] файл со списком объектов — частичная выгрузка
  */
+/**
+ * Имя объекта, на котором конфигуратор прервал выборочную выгрузку.
+ *
+ * При `-listFile` одно неизвестное имя рвёт выгрузку целиком: код возврата 1
+ * и пустой каталог, ни один объект из списка не выгружен (проверено
+ * 18.08.2026). Такое неизбежно: история хранилища помнит объекты, которые
+ * потом удалили, а служебная база может отставать от хранилища. Конфигуратор
+ * называет в журнале ПЕРВОЕ неподошедшее имя — по нему список и чистится.
+ */
+export function missingObjectFromLog(text) {
+  const m = /Объект метаданных\s+(\S+?)\s+не существует в конфигурации/i.exec(String(text || ''));
+  return m ? m[1] : '';
+}
+
 export async function dumpConfigToFiles({
   platform, conn, outDir, extension, allExtensions, listFile, user, password, logFile,
 }) {

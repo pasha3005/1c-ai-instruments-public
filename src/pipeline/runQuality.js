@@ -26,7 +26,7 @@
 import path from 'node:path';
 import { resolvePlatform } from '../onec/platform.js';
 import { parseConnection, validateConnection } from '../onec/connection.js';
-import { exportConfiguration, exportExtensions } from '../onec/collector.js';
+import { exportConfiguration, exportExtensions, exportObjectsToXml } from '../onec/collector.js';
 import {
   findRepositories, parseRepositoryAddresses, repositoryHistory, repositoryDumpCfg,
   filterByPeriod, authorsByObject, createContextInfobase, ensureContextExtension,
@@ -143,6 +143,8 @@ async function runPipeline({ qualityId, input, progress }) {
       // выгрузкой служебной базы. Отчёт обязан говорить об этом прямо —
       // от этого зависит, что в нём вообще может быть видно.
       codeSource: prepared.codeSource || null,
+      placementDiffs: prepared.placementDiffs || null,
+      missingObjects: prepared.missingObjects || null,
       configuration: prepared.parsed.configuration,
       vendorComparison: prepared.vendorComparison,
       findings: analysis.findings,
@@ -543,6 +545,9 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   // строкой для всего прогона): отчёту нужно показать таблицу помещений
   // при каждом хранилище персонально, включая те, что не прочитались.
   const repoStatus = [];
+  // Объекты, которых в служебной базе не нашлось: их код проверить нечем,
+  // и отчёт обязан назвать их поимённо, а не молчать.
+  const missingObjects = [];
 
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
@@ -555,7 +560,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       history = await repositoryHistory({
         platform, contextBase, dir: repo.dir, workDir: workRoot,
         user: input.repositoryUser, password: input.repositoryPassword,
-        extension,
+        extension, period,
       });
       if (history.ok) {
         repo.extension = extension;
@@ -599,7 +604,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
         history = await repositoryHistory({
           platform, contextBase, dir: repo.dir, workDir: workRoot,
           user: input.repositoryUser, password: input.repositoryPassword,
-          extension: repo.extension,
+          extension: repo.extension, period,
         });
         // Если и через расширение не вышло — сказать об этом прямо. Иначе
         // сообщение слово в слово повторяет первую попытку, и по нему нельзя
@@ -629,12 +634,21 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     for (const commit of own) commits.push({ ...commit, repository: repo.name });
     progress.update('export', `хранилище «${repo.name}»: помещений за период ${own.length}`);
 
-    progress.update('export', `хранилище «${repo.name}»: выгрузка конфигурации`);
-    const dumped = await repositoryDumpCfg({
-      platform, contextBase, dir: repo.dir, workDir: workRoot,
-      user: input.repositoryUser, password: input.repositoryPassword,
-      extension: repo.extension || '',
-    });
+    // Выгрузка `.cf` нужна ровно затем, чтобы развернуть её в XML. Разворачивать
+    // нечем (`expandBase === null`, клиентская установка без ibcmd) — значит,
+    // и выгружать незачем: раньше программа честно скачивала полную
+    // конфигурацию хранилища и тут же её выбрасывала, а на ERP это минуты
+    // впустую в самом начале прогона.
+    const dumped = expandBase
+      ? await (async () => {
+        progress.update('export', `хранилище «${repo.name}»: выгрузка конфигурации`);
+        return repositoryDumpCfg({
+          platform, contextBase, dir: repo.dir, workDir: workRoot,
+          user: input.repositoryUser, password: input.repositoryPassword,
+          extension: repo.extension || '',
+        });
+      })()
+      : { ok: true, file: null };
     if (!dumped.ok) {
       warnings.push(`Хранилище «${repo.name}»: код не получен — ${dumped.reason}`);
       repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: dumped.reason });
@@ -681,32 +695,76 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   // «Нечем» — это когда из хранилищ не развернулось НИЧЕГО: ни конфигурация,
   // ни расширения. Каталог с одними хранилищами расширений — законный случай,
   // и подменять его выгрузкой базы нельзя: код из хранилища уже получен.
+  // Ни одно хранилище не прочиталось — отчёта быть не может. Раньше это
+  // ловилось проверкой `!mainDir` ниже, но выборочная выгрузка даёт каталог
+  // всегда (пусть и пустой), и без этой проверки прогон завершался бы пустым
+  // отчётом, как будто помещений просто не было.
+  if (!repoStatus.some((r) => r.ok)) {
+    throw new Error(
+      'Ни одно хранилище прочитать не удалось. '
+      + (warnings[warnings.length - 1] || 'причина не определена'),
+    );
+  }
+
   const nothingExpanded = !mainDir && !extensionDirs.length;
   const codeSource = nothingExpanded ? 'service-base' : 'repository';
+  // Хранилища расширений — чтобы не просить их объекты у основной конфигурации:
+  // объекта расширения в ней нет, и одно такое имя срывает всю выгрузку.
+  const extensionRepos = new Set(repositories.filter((r) => r.extension).map((r) => r.name));
   if (readOnly && nothingExpanded) {
-    progress.update('export', 'выгрузка конфигурации базы в XML (в базу ничего не пишется)');
     const ctx = {
       platform,
       conn: parseConnection(contextBase.base),
       workDir: workRoot,
       user: contextBase.user,
       password: contextBase.password,
-    };
-    const exported = await exportConfiguration({
-      ...ctx,
       onProgress: (text) => {
         const line = String(text).trim().split('\n').pop();
         if (line) progress.update('export', line.slice(0, 160));
       },
+    };
+
+    // ВЫБОРОЧНАЯ выгрузка: только объекты, помещённые за период. Раньше здесь
+    // выгружалась вся конфигурация целиком и все расширения — на ERP это
+    // десятки минут ради двух-трёх модулей, притом что анализируются всё равно
+    // одни помещения (18.08.2026, замечание пользователя).
+    const mainCommits = commits.filter((c) => !extensionRepos.has(c.repository));
+    const wanted = placedObjects(mainCommits);
+    progress.update('export', `выгрузка объектов базы: ${wanted.length} (в базу ничего не пишется)`);
+    const exported = await exportObjectsToXml({
+      ...ctx, outDir: path.join(workRoot, 'config'), objects: wanted, name: 'config',
     });
     mainDir = exported.dir;
-    try {
-      const ext = await exportExtensions({ ...ctx });
-      extensionDirs = ext.extensions || [];
-    } catch (err) {
-      rethrowIfCancelled(err);
-      warnings.push(`Расширения базы не выгружены: ${err.message} — их код в проверку не попал.`);
+    missingObjects.push(...exported.missing);
+
+    // Расширения — только те, чьи хранилища разбирались, и только их объекты.
+    for (const repo of repositories) {
+      if (!repo.extension) continue;
+      const own = placedObjects(commits.filter((c) => c.repository === repo.name));
+      if (!own.length) continue;
+      progress.update('export', `выгрузка объектов расширения «${repo.extension}»: ${own.length}`);
+      try {
+        const ext = await exportObjectsToXml({
+          ...ctx,
+          outDir: path.join(workRoot, 'extensions', safeFileName(repo.extension)),
+          objects: own,
+          extension: repo.extension,
+          name: `ext-${safeFileName(repo.extension)}`,
+        });
+        if (ext.exported) extensionDirs.push({ name: repo.name, dir: ext.dir });
+        missingObjects.push(...ext.missing);
+      } catch (err) {
+        rethrowIfCancelled(err);
+        warnings.push(`Расширение «${repo.extension}» не выгружено: ${err.message} — `
+          + 'его код в проверку не попал.');
+      }
     }
+  }
+
+  if (missingObjects.length) {
+    warnings.push(`Код этих объектов не проверен — в служебной базе их нет: `
+      + `${[...new Set(missingObjects)].join(', ')}. Так бывает, если объект поместили `
+      + 'и потом удалили либо база не обновлена из хранилища.');
   }
 
   if (!mainDir && extensionDirs.length) {
@@ -737,15 +795,19 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
   // Правки помещений: код из хранилища есть — считаем их по выгрузкам версий,
   // это тот же путь, что и без служебной базы. Кода из хранилища нет — остаётся
   // сравнение двух файлов `.cf` средствами платформы с привязкой к тексту базы.
-  const diffStats = codeSource === 'repository'
-    ? await buildPlacementDiffs({
-      platform, contextBase, expandBase, workRoot, progress, commits, repositories,
-      user: input.repositoryUser, password: input.repositoryPassword,
-    })
-    : await buildPlacementDiffsByCompare({
-      platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
-      user: input.repositoryUser, password: input.repositoryPassword,
-    });
+  const diffs = placementDiffsWanted(input, codeSource);
+  const diffStats = !diffs.wanted
+    ? { limited: false, dumps: 0, skipped: diffs.reason }
+    : codeSource === 'repository'
+      ? await buildPlacementDiffs({
+        platform, contextBase, expandBase, workRoot, progress, commits, repositories,
+        user: input.repositoryUser, password: input.repositoryPassword,
+      })
+      : await buildPlacementDiffsByCompare({
+        platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
+        user: input.repositoryUser, password: input.repositoryPassword,
+      });
+  if (diffStats.skipped) warnings.push(diffStats.skipped);
   if (diffStats.limited) {
     warnings.push(
       `Правки показаны не по всем помещениям периода: на выгрузку версий хранилища `
@@ -757,7 +819,15 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
 
   progress.done('export', `помещений за период: ${commits.length}`);
 
-  const parsedData = await parseAll({ dir: mainDir, extensionDirs, progress });
+  // При выборочной выгрузке `Configuration.xml` не создаётся, и свойства
+  // конфигурации взять неоткуда — кроме самой истории хранилища: версию
+  // конфигурации платформа записывает в каждое помещение.
+  const parsedData = await parseAll({
+    dir: mainDir,
+    extensionDirs,
+    progress,
+    fallbackConfiguration: { version: lastConfigVersion(commits) },
+  });
 
   // Анализируем только то, что помещали за период. История печатает русские
   // имена объектов, а анализ знает их ключами ConfigDumpInfo — переводим сразу,
@@ -803,6 +873,15 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     commits,
     codeSource,
     authorsByObject: byObject,
+    // Что стало с кодом правок и чего в отчёте нет: отчёт обязан сказать это
+    // сам, а не оставить читателя гадать, почему у помещений пусто.
+    placementDiffs: {
+      mode: input.placementDiffs || 'auto',
+      skipped: diffStats.skipped || '',
+      limited: Boolean(diffStats.limited),
+      dumps: diffStats.dumps || 0,
+    },
+    missingObjects: [...new Set(missingObjects)],
   };
 }
 
@@ -883,6 +962,77 @@ export function outOfPlacementBudget({ dumps, startedAt, now = Date.now() }) {
  * а неизвестное имя в списке платформа считает ошибкой (код возврата 1
  * и пустая выгрузка). Поэтому «до» просится только для изменённых.
  */
+/**
+ * Строить ли код правок по каждому помещению.
+ *
+ * Правки стоят одной полной выгрузки `.cf` на версию хранилища, и дешевле
+ * не выйдет: сравнивать версии хранилища напрямую платформа не умеет
+ * (проверено 18.08.2026 — `/CompareCfg` значение `ConfigurationRepository`
+ * не принимает). Когда код разворачивается своей временной базой, на версию
+ * выгружаются только объекты помещения, и это секунды. Когда своей базы нет
+ * (служебная база без ibcmd), выгружается ВСЯ конфигурация версии — на ERP
+ * это десятки минут на одно помещение, и недельный отчёт так не собрать.
+ *
+ * Отсюда три положения переключателя: `auto` (по умолчанию) строит правки
+ * везде, кроме дорогого пути; `on` — всегда; `off` — никогда.
+ */
+export function placementDiffsWanted(input, codeSource) {
+  const mode = input?.placementDiffs || 'auto';
+  if (mode === 'off') {
+    return { wanted: false, reason: 'Код правок по помещениям не строился: так выбрано в форме.' };
+  }
+  if (mode === 'auto' && codeSource === 'service-base') {
+    return {
+      wanted: false,
+      reason: 'Код правок по помещениям не строился: программа работает через служебную базу, '
+        + 'а в этом режиме на каждую версию хранилища платформа выгружает конфигурацию целиком '
+        + '(на больших конфигурациях — десятки минут на одно помещение). Нужны фрагменты кода — '
+        + 'выберите в форме «Всегда» и сузьте период.',
+    };
+  }
+  return { wanted: true };
+}
+
+/**
+ * Объекты, помещённые за период, — списком для ВЫБОРОЧНОЙ выгрузки базы.
+ *
+ * Три правила, каждое снято с живой платформы 18.08.2026 и обязательное:
+ *
+ *  1. только **верхний уровень**: `Документ.Документ4.Форма.ФормаДокумента`
+ *     конфигуратор отвергает («Объект метаданных … не существует
+ *     в конфигурации»), и выгрузка не состоится вовсе. Формы и команды
+ *     выгружаются вместе со своим объектом;
+ *  2. только **известные виды**: незнакомый вид означает, что имя мы толкуем
+ *     неверно, а неверное имя рвёт всю выгрузку;
+ *  3. без **удалённых**: объект, помещённый и затем удалённый, в базе
+ *     отсутствует, и просить его — заведомо сорвать выгрузку.
+ */
+export function placedObjects(commits) {
+  const removed = new Set();
+  for (const commit of commits || []) {
+    for (const name of commit.removed || []) removed.add(topLevelName(name));
+  }
+
+  const wanted = new Set();
+  for (const commit of commits || []) {
+    for (const name of [...(commit.added || []), ...(commit.changed || [])]) {
+      const top = topLevelName(name);
+      if (!top || removed.has(top)) continue;
+      // Вид объекта должен быть нам знаком: `keyFromRussian` возвращает null
+      // на всём, чего мы не понимаем, включая саму «Конфигурацию».
+      if (!keyFromRussian(top)) continue;
+      wanted.add(top);
+    }
+  }
+  return [...wanted];
+}
+
+/** «Документ.Док.Форма.ФормаДокумента» → «Документ.Док». */
+function topLevelName(name) {
+  const parts = String(name || '').split('.');
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : '';
+}
+
 export function neededObjects(commits) {
   const needed = new Map();
   const add = (repo, version, names) => {
@@ -1134,6 +1284,29 @@ async function buildPlacementDiffsByCompare({
   let dumps = 0;
   let limited = false;
 
+  /**
+   * Файл `.cf` версии — с кэшем.
+   *
+   * Каждая версия нужна дважды: как «после» своего помещения и как «до»
+   * следующего. Без кэша она и выгружалась дважды, а выгрузка версии — самая
+   * дорогая операция всего прогона (на ERP это минуты). Для k подряд идущих
+   * версий выходит k+1 выгрузка вместо 2k.
+   */
+  const cfCache = new Map();
+  const cfOfVersion = async (repo, version) => {
+    const key = `${repo.name} ${version}`;
+    if (cfCache.has(key)) return cfCache.get(key);
+    dumps += 1;
+    progress.update('export', `хранилище «${repo.name}»: выгрузка версии ${version}`);
+    const dumped = await repositoryDumpCfg({
+      platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version,
+      extension: repo.extension || '',
+    });
+    if (!dumped.ok) throw new Error(dumped.reason);
+    cfCache.set(key, dumped.file);
+    return dumped.file;
+  };
+
   /** Отчёт сравнения версии N с N−1. Кэш — соседние помещения делят версии. */
   const compareVersions = async (repoName, version) => {
     const key = `${repoName} ${version}`;
@@ -1154,13 +1327,7 @@ async function buildPlacementDiffsByCompare({
       progress.update('export', `хранилище «${repoName}»: сравнение версий ${version - 1} и ${version}`);
       const files = [];
       for (const v of [version, version - 1]) {
-        dumps += 1;
-        const dumped = await repositoryDumpCfg({
-          platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version: v,
-          extension: repo.extension || '',
-        });
-        if (!dumped.ok) throw new Error(dumped.reason);
-        files.push(dumped.file);
+        files.push(await cfOfVersion(repo, v));
       }
       const compared = await compareCfFiles({
         platform, context: contextBase, newer: files[0], older: files[1],
@@ -1280,9 +1447,17 @@ async function readTextSafe(file) {
 
 // --- Общее -------------------------------------------------------------------
 
-async function parseAll({ dir, extensionDirs, progress }) {
+/** Версия конфигурации из последнего помещения — для выборочной выгрузки. */
+function lastConfigVersion(commits) {
+  const withVersion = (commits || []).filter((c) => c.configVersion);
+  if (!withVersion.length) return '';
+  return withVersion.sort((a, b) => Number(a.version) - Number(b.version)).slice(-1)[0].configVersion;
+}
+
+async function parseAll({ dir, extensionDirs, progress, fallbackConfiguration }) {
   startOrThrow(progress, 'parse', 'Чтение состава объектов и модулей');
   const parsed = await parseConfigurationDump(dir, {
+    fallbackConfiguration,
     onProgress: (done, total, name) => progress.update('parse', `${done} из ${total}: ${name}`),
   });
   parsed.hashes = await readConfigDumpInfo(path.join(dir, 'ConfigDumpInfo.xml'));

@@ -31,8 +31,10 @@
  * Заводим пустое сами; имя своё, потому что с именем расширения в хранилище
  * платформа его не сверяет (проверено двумя разными именами на одном хранилище).
  *
- * Периода в самих командах нет (есть только диапазон версий `-NBegin`/`-NEnd`),
- * поэтому отчёт читается целиком, а по датам фильтруем сами.
+ * Период отчёту задаётся ключами `-DateBegin`/`-DateEnd` (проверено
+ * 18.08.2026): на большом хранилище это снимает построение отчёта по всей
+ * истории ради одной недели. Свою фильтрацию (`filterByPeriod`) это не
+ * отменяет — она страхует, если сборка платформы ключи не поймёт.
  */
 
 import path from 'node:path';
@@ -389,8 +391,54 @@ export async function ensureContextExtension({
  * @param {string} [params.password] его пароль
  * @returns {Promise<{ok: boolean, reason?: string, commits: object[]}>}
  */
+/**
+ * Ограничение отчёта по датам — на стороне платформы.
+ *
+ * У `/ConfigurationRepositoryReport` есть `-DateBegin` и `-DateEnd` (вынуты
+ * из строк `1cv8.exe`, проверены живьём 18.08.2026). Это важно на больших
+ * хранилищах: без них платформа строит отчёт по ВСЕЙ истории — на ERP это
+ * тысячи версий и минуты работы, из которых нужна одна неделя.
+ *
+ * Свою фильтрацию (`filterByPeriod`) это не отменяет: она страхует на случай,
+ * если сборка платформы ключи не поддержит и молча вернёт всю историю.
+ */
+export function periodArgs({ from = '', to = '' } = {}) {
+  const args = [];
+  const begin = repositoryDate(from);
+  const end = repositoryDate(to);
+  if (begin) args.push('-DateBegin', begin);
+  // `-DateEnd` платформа понимает как МОМЕНТ (00:00 указанного дня), а не как
+  // «весь этот день»: с `-DateEnd 2026-08-12` четыре помещения того же 12-го
+  // числа в отчёт не попали вовсе (проверено 18.08.2026). Человек же, указывая
+  // дату конца, имеет в виду весь день — поэтому сдвигаем на сутки вперёд.
+  // Ошибиться тут значит молча потерять помещения последнего дня периода.
+  if (end) args.push('-DateEnd', nextDay(end));
+  return args;
+}
+
+/** Следующий день в том же виде `YYYY-MM-DD`. */
+function nextDay(iso) {
+  const date = new Date(`${iso}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Дата в том виде, в каком её принимает платформа.
+ *
+ * Проверено перебором 18.08.2026 на 8.3.24.1691: годятся `2026-08-12`,
+ * `20260812` и `2026.08.12`, а привычные `12.08.2026` и `08/12/2026` платформа
+ * отвергает — «Неверный формат даты», и отчёт не строится вовсе. Период у нас
+ * и так хранится как `YYYY-MM-DD`, поэтому передаётся как есть; всё, что
+ * на него не похоже, не передаётся вовсе.
+ */
+function repositoryDate(iso) {
+  const value = String(iso || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+}
+
 export async function repositoryHistory({
-  platform, contextBase, dir, workDir, user, password, extension = '',
+  platform, contextBase, dir, workDir, user, password, extension = '', period = null,
 }) {
   if (!platform.client) {
     return { ok: false, reason: `в платформе ${platform.version} не найден 1cv8.exe`, commits: [] };
@@ -406,6 +454,7 @@ export async function repositoryHistory({
       'DESIGNER', ...contextArgs(contextBase),
       ...repositoryArgs({ dir, user, password }),
       '/ConfigurationRepositoryReport', reportFile,
+      ...periodArgs(period || {}),
       ...extensionArgs(extension),
       '/DisableStartupDialogs', '/DisableStartupMessages',
       '/Out', logFile,

@@ -815,6 +815,12 @@ export function buildRouter() {
       serviceBasePassword: typeof body.serviceBasePassword === 'string' ? body.serviceBasePassword : '',
       periodFrom: String(body.periodFrom || '').trim(),
       periodTo: String(body.periodTo || '').trim(),
+      // Код правок по помещениям: `auto` строит его везде, кроме дорогого
+      // пути (служебная база без ibcmd — там на версию выгружается вся
+      // конфигурация целиком). Подробности — `placementDiffsWanted`.
+      placementDiffs: ['auto', 'on', 'off'].includes(body.placementDiffs)
+        ? body.placementDiffs
+        : 'auto',
       platformVersion: String(body.platformVersion || '').trim(),
       vendorConfigPath: String(body.vendorConfigPath || '').trim(),
       workDir: String(body.workDir).trim(),

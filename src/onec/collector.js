@@ -93,6 +93,80 @@ export async function exportConfiguration(ctx) {
 }
 
 /**
+ * Выгружает в XML только перечисленные объекты — и ничего больше.
+ *
+ * Зачем. В режиме служебной базы (нет `ibcmd`, нет лицензии на файловые базы)
+ * исходники берутся выгрузкой самой базы, и раньше выгружалась вся
+ * конфигурация целиком плюс все расширения. На ERP это десятки минут ради
+ * двух-трёх модулей: анализируются только объекты, помещённые за период,
+ * остальное выбрасывается сразу после разбора.
+ *
+ * Два правила, снятые с живой платформы 18.08.2026 и обязательные:
+ *
+ *  1. в списке — **только объекты верхнего уровня**. Подчинённые
+ *     (`Документ.Документ4.Форма.ФормаДокумента`) конфигуратор отвергает:
+ *     «Объект метаданных … не существует в конфигурации», и выгрузка не
+ *     состоится вовсе. Формы объекта выгружаются вместе с ним;
+ *  2. одно негодное имя рвёт **всю** выгрузку. Поэтому имя, названное
+ *     в журнале, выбрасывается и выгрузка повторяется. Журнал называет по
+ *     одному имени за раз, отсюда несколько заходов.
+ *
+ * `-listFile` работает и вместе с `-Extension` — проверено там же
+ * (2 файла против 17 при полной выгрузке расширения).
+ *
+ * @returns {Promise<{dir: string, missing: string[], exported: boolean}>}
+ */
+export async function exportObjectsToXml({
+  platform, conn, workDir, outDir, objects, extension = '', name = 'objects',
+  user, password, onProgress, attempts = 8,
+}) {
+  const dir = await freshDir(outDir);
+  const wanted = [...new Set((objects || []).filter(Boolean))];
+  if (!wanted.length) return { dir, missing: [], exported: false };
+
+  const strategy = chooseStrategy({ platform, conn });
+  if (strategy.driver === 'ibcmd') {
+    const done = await ibcmd.exportObjects({
+      platform, conn, names: wanted, outDir: dir, user, password, onProgress,
+    });
+    if (done.ok) return { dir, missing: [], exported: true };
+    log.warn(`ibcmd не выгрузил объекты (${done.reason}), пробуем конфигуратор`);
+    await freshDir(dir);
+  }
+
+  const listFile = path.join(workDir, `${name}-objects.txt`);
+  const missing = [];
+  let list = wanted;
+
+  for (let attempt = 0; attempt < attempts && list.length; attempt += 1) {
+    // BOM обязателен: без него платформа читает список в кодировке консоли,
+    // и русские имена объектов до неё не доезжают.
+    await fs.writeFile(listFile, `﻿${list.join('\n')}\n`, 'utf8');
+    onProgress?.(`выгрузка объектов: ${list.length}`);
+    try {
+      await designer.dumpConfigToFiles({
+        platform, conn, outDir: dir, listFile, extension, user, password,
+        logFile: path.join(workDir, `designer-${name}.log`),
+      });
+      return { dir, missing, exported: true };
+    } catch (err) {
+      rethrowIfCancelled(err);
+      const absent = designer.missingObjectFromLog(err.message);
+      if (!absent || !list.includes(absent)) {
+        // Причина не в списке — дальше повторять бессмысленно.
+        log.warn(`Выборочная выгрузка не удалась: ${err.message}`);
+        return { dir, missing, exported: false, reason: err.message };
+      }
+      log.info(`Объекта «${absent}» в базе нет — выгружаем без него`);
+      missing.push(absent);
+      list = list.filter((item) => item !== absent);
+    }
+  }
+
+  return { dir, missing, exported: false };
+}
+
+/**
  * Считает расширения конфигурации, не выгружая их целиком.
  *
  * Нужно, чтобы честно подписать в отчёте проверку применимости расширений:

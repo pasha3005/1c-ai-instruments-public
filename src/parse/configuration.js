@@ -13,7 +13,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { parseXml, child, children, childText, find, deepText } from './xml.js';
-import { KINDS, kindByTag, countsTowardTotal } from './metadataKinds.js';
+import { KINDS, kindByTag, kindByDir, countsTowardTotal } from './metadataKinds.js';
 import { readText, pathExists } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
 
@@ -46,10 +46,16 @@ const log = createLogger('parse:config');
  */
 
 /** Разбирает Configuration.xml и все объекты выгрузки. */
-export async function parseConfigurationDump(dumpDir, { onProgress } = {}) {
+export async function parseConfigurationDump(dumpDir, { onProgress, fallbackConfiguration } = {}) {
   const configFile = path.join(dumpDir, 'Configuration.xml');
   if (!(await pathExists(configFile))) {
-    throw new Error(`В каталоге выгрузки не найден Configuration.xml: ${dumpDir}`);
+    // Выборочная выгрузка `Configuration.xml` не создаёт вовсе: в каталоге
+    // лежат только запрошенные объекты (проверено 18.08.2026; «Конфигурация»
+    // в списке объектов платформа не принимает). Это законный случай — так
+    // выгружаются помещённые за период объекты, — и состав тогда собирается
+    // обходом каталога, а свойства конфигурации приходят снаружи, из истории
+    // хранилища. Выдумывать их здесь нечем и не нужно.
+    return parsePartialDump(dumpDir, { onProgress, fallbackConfiguration });
   }
 
   const rootNode = parseXml(await readText(configFile));
@@ -95,6 +101,60 @@ export async function parseConfigurationDump(dumpDir, { onProgress } = {}) {
 
   return {
     configuration,
+    objects,
+    countsByKind,
+    totals: buildTotals(objects, countsByKind),
+  };
+}
+
+/**
+ * Разбор выборочной выгрузки — без `Configuration.xml`.
+ *
+ * Состав берётся с диска: каталог вида (`Documents`, `Catalogs`, …) → объекты
+ * в нём. Соответствие «каталог → вид» уже есть (`kindByDir`), и тем же способом
+ * ищет модули `parse/modules.js`, так что новых допущений здесь не появляется.
+ */
+async function parsePartialDump(dumpDir, { onProgress, fallbackConfiguration } = {}) {
+  const objects = [];
+  let entries = [];
+  try {
+    entries = await fs.readdir(dumpDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  const found = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const kind = kindByDir(entry.name);
+    if (!kind) continue;
+    let files = [];
+    try {
+      files = await fs.readdir(path.join(dumpDir, entry.name), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith('.xml')) continue;
+      found.push({ kind, name: file.name.slice(0, -4) });
+    }
+  }
+
+  let processed = 0;
+  for (const item of found) {
+    processed += 1;
+    if (onProgress && processed % 25 === 0) {
+      onProgress(processed, found.length, `${item.kind.tag}.${item.name}`);
+    }
+    objects.push(await parseObject(dumpDir, item.kind, item.name));
+  }
+
+  const countsByKind = {};
+  for (const obj of objects) countsByKind[obj.kind] = (countsByKind[obj.kind] || 0) + 1;
+
+  log.info(`Выборочная выгрузка: объектов ${objects.length} (Configuration.xml нет)`);
+  return {
+    configuration: { name: '', version: '', ...(fallbackConfiguration || {}), partial: true },
     objects,
     countsByKind,
     totals: buildTotals(objects, countsByKind),
