@@ -129,6 +129,31 @@ function pathJoin(...parts) {
 }
 
 /**
+ * Открывает адрес обычным окном того браузера, в котором работает программа.
+ *
+ * Нужно для отчётов: в окне программы (`--app`) нет ни адресной строки,
+ * ни вкладок, а браузер по умолчанию на машине заказчика может оказаться
+ * Internet Explorer — отчёт в нём не открывается нормально.
+ *
+ * @returns {boolean} удалось ли
+ */
+export function openWindow(url, { maximized = false } = {}) {
+  if (process.platform !== 'win32') return false;
+  for (const exe of appWindowBrowsers()) {
+    if (!existsSync(exe)) continue;
+    try {
+      const args = ['--new-window', url];
+      if (maximized) args.unshift('--start-maximized');
+      spawn(exe, args, { detached: true, stdio: 'ignore' }).unref();
+      return true;
+    } catch {
+      // Пробуем следующий браузер.
+    }
+  }
+  return false;
+}
+
+/**
  * Открывает адрес отдельным окном без адресной строки и вкладок.
  * @returns {boolean} удалось ли
  */
@@ -178,6 +203,11 @@ export function openUrl(url, { appWindow = true, size = '1280,900', maximized = 
   try {
     if (process.platform === 'win32') {
       if (appWindow && openAppWindow(url, { size })) return 'app';
+      // Отчёт открывается ТЕМ ЖЕ браузером, в котором живёт окно программы —
+      // обычным окном, с адресной строкой и вкладками. Браузер по умолчанию
+      // для этого не годится: им может оказаться Internet Explorer, а отчёт
+      // в нём не работает.
+      if (openWindow(url, { maximized })) return 'app';
       // `start` открывает адрес через оболочку, своим состоянием показа —
       // здесь `windowsHide` безопасен и нужен: иначе мигает консоль cmd.
       // `/max` — тот же приём, что и `windowsHide` для окна приложения,

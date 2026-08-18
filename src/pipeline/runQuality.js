@@ -34,6 +34,7 @@ import {
 } from '../onec/repository.js';
 import { readInfobaseBindings, matchRepository, describeBindings } from '../onec/infobaseBinding.js';
 import { openRepositoryStore } from '../onec/store/repositoryStore.js';
+import { loadLearnedKinds, saveLearnedKinds, matchKindsByReport } from '../onec/store/kinds.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -527,7 +528,38 @@ function repositoryChangeSet(parsedData, commits) {
     vendorComparison: { available: false, reason: 'источник — хранилище конфигурации' },
     vendorDir: null,
     vendorDetails: null,
+    authorsByObject: byObject,
   };
+}
+
+/**
+ * Спрашивает у платформы виды объектов, которых нет в таблице.
+ *
+ * Платформа печатает в отчёте по хранилищу полные имена
+ * («ОбщийМодуль.Расш1_ОбщийМодуль1»), а имена объектов в хранилище уникальны —
+ * значит, соответствие «идентификатор класса → вид» получается точным.
+ * Один вызов конфигуратора, и только когда незнакомый вид действительно
+ * встретился; выученное сохраняется и дальше работает без платформы.
+ *
+ * Платформы на машине может не быть вовсе — хранилище-каталог читается и без
+ * неё. Тогда просто ничего не выучим: об этом скажет отчёт.
+ */
+async function learnKindsByPlatform({ repo, store, workRoot, progress, warnings }) {
+  try {
+    progress.update('export', `хранилище «${repo.name}»: уточняем виды объектов у платформы`);
+    const { platform } = await resolvePlatform('');
+    const contextBase = await createContextInfobase({ platform, workDir: workRoot });
+    const history = await repositoryHistory({
+      platform, contextBase, dir: repo.dir, workDir: workRoot,
+    });
+    if (!history.ok) throw new Error(history.reason);
+    return matchKindsByReport({ store, unknown: store.unknownClasses, commits: history.commits });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    warnings.push(`Виды некоторых объектов хранилища «${repo.name}» уточнить не удалось `
+      + `(${err.message}). Их код в проверку не попадёт.`);
+    return new Map();
+  }
 }
 
 /**
@@ -575,13 +607,27 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
   const unknownClasses = new Set();
   let mainDir = null;
 
+  const learnedKinds = await loadLearnedKinds();
+
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
     try {
-      const store = await openRepositoryStore(repo.dir);
+      const store = await openRepositoryStore(repo.dir, { extraKinds: learnedKinds });
       stores.set(repo.name, store);
 
-      const all = store.history();
+      let all = store.history();
+      // Незнакомый вид объекта — не приговор: платформа печатает полные имена
+      // в отчёте по этому же хранилищу, и по ним вид выясняется точно.
+      // Спрашиваем только когда действительно нужно, и запоминаем навсегда.
+      if (store.unknownClasses.size) {
+        const learned = await learnKindsByPlatform({ repo, store, workRoot, progress, warnings });
+        if (learned.size) {
+          store.learnKinds(learned);
+          for (const [id, tag] of learned) learnedKinds.set(id, tag);
+          await saveLearnedKinds(learned);
+          all = store.history();
+        }
+      }
       const own = filterByPeriod(all, period);
       for (const commit of own) commits.push({ ...commit, repository: repo.name });
 
@@ -1682,19 +1728,20 @@ function keyFromRussian(name) {
 /**
  * Ставит замечаниям автора из хранилища.
  *
- * Пометки в коде («// ++ Иванов») здесь не нужны: хранилище знает автора точно.
- * Если объект замечания в помещениях периода не значится, автор остаётся
- * прежним — так видно, что замечание пришло не из разбираемых помещений.
+ * Автор замечания в этом режиме — тот, кто поместил объект: всё, что вошло
+ * в помещение, принадлежит его автору. Пометки в коде («// ++ Иванов») здесь
+ * не используются вовсе, поэтому автор из них ЗАТИРАЕТСЯ: они пишутся кем
+ * угодно и когда угодно, а запись хранилища одна и точна. Не нашлось объекта
+ * в помещениях периода — автор пуст, и это честнее фамилии из комментария.
  */
 function applyRepositoryAuthors(findings, byObject) {
   for (const finding of findings) {
     const key = objectKeyOf(finding);
     const entry = key ? byObject.get(key) : null;
-    if (!entry?.author) continue;
-    finding.author = entry.author;
+    finding.author = entry?.author || '';
     finding.authorSource = 'хранилище конфигурации';
-    finding.committedAt = entry.at;
-    finding.commitComment = entry.comment;
+    finding.committedAt = entry?.at || '';
+    finding.commitComment = entry?.comment || '';
   }
 }
 

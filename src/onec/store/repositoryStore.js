@@ -51,10 +51,26 @@ export const CLASS_KINDS = new Map([
   ['014213130bf6d511a3c70050bae0a776', 'InformationRegister'],
   ['0ce8950157b1d4119435004095e12fc7', 'Constant'],
   ['a0751b63e229d611a3c70050bae0a776', 'Report'],
+  ['185184bf7b328246b5c6285d2a0eb296', 'DataProcessor'],
+  ['4907a8f6d75a0b40851939dc5dff2542', 'Enum'],
   ['026b7309ac9c3f4eb4f7d3e9576ab948', 'Role'],
   ['ce10d59cfcabd4119434004095e12fc7', 'Language'],
   ['abbe4acfb237d411940f008048da11f9', 'Configuration'],
+  ['8089e40f2d25d611a3c70050bae0a776', 'CommonModule'],
+  ['2684ee07f187d511b99c0050bae0a95d', 'CommonForm'],
+  ['d943cd7da5ac2649b5491842e6a4e8cf', 'CommonPicture'],
+  ['c0fc7b3e7d06d611a3c70050bae0a776', 'FilterCriterion'],
+  ['4837c42438c9d0458d1401424a72b11e', 'SessionParameter'],
+  ['9afaf23776b2d4119435004095e12fc7', 'Subsystem'],
+  ['6adfbd393c0c2b45921cd99cfa1c2f1b', 'Interface'],
+  ['af04543ef86e734cad1191bd2dfac4c8', 'Style'],
+  ['66878458ea3676408800e91eb49590d7', 'StyleItem'],
+  ['16a0ae3db769d44e9453127911372fe6', 'Template'],
+  // Форм у платформы несколько классов — свой на каждый вид владельца.
   ['930e88fbd74727419357a20e69c17545', 'Form'],
+  ['d216f8fdad1ed511b9750050bae0a95d', 'Form'],
+  ['044213130bf6d511a3c70050bae0a776', 'Form'],
+  ['c068b3a3e229d611a3c70050bae0a776', 'Form'],
 ]);
 
 /** Подчинённые виды: своей строки в справочнике видов у них нет. */
@@ -74,18 +90,20 @@ export async function isRepositoryDir(dir) {
  * @param {string} dir каталог хранилища
  * @returns {Promise<RepositoryStore>}
  */
-export async function openRepositoryStore(dir) {
+export async function openRepositoryStore(dir, { extraKinds = null } = {}) {
   const db = await openCd1(path.join(dir, '1cv8ddb.1CD'));
   const objects = await openObjectStore(dir);
-  return new RepositoryStore(dir, db, objects);
+  return new RepositoryStore(dir, db, objects, extraKinds);
 }
 
 export class RepositoryStore {
-  constructor(dir, db, objects) {
+  constructor(dir, db, objects, extraKinds = null) {
     this.dir = dir;
     this.db = db;
     this.objects = objects;
 
+    /** Виды, выясненные на месте: дополняют таблицу, не подменяя её. */
+    this.extraKinds = new Map(extraKinds || []);
     this.users = new Map(db.rows('USERS').map((u) => [u.USERID, u.NAME]));
     this.classes = new Map(db.rows('OBJECTS').map((o) => [o.OBJID, o.CLASSID]));
     this.rootId = (db.rows('DEPOT')[0] || {}).ROOTOBJID || '';
@@ -116,9 +134,20 @@ export class RepositoryStore {
   kindOf(objId) {
     const classId = this.classes.get(objId);
     if (!classId) return '';
-    const tag = CLASS_KINDS.get(classId);
+    const tag = CLASS_KINDS.get(classId) || this.extraKinds.get(classId);
     if (!tag) this.unknownClasses.add(classId);
     return tag || '';
+  }
+
+  /**
+   * Добавляет виды, выясненные на месте (`store/kinds.js`), и забывает
+   * прежние жалобы: после доучивания эти идентификаторы уже не незнакомые.
+   */
+  learnKinds(pairs) {
+    for (const [classId, tag] of pairs) {
+      this.extraKinds.set(classId, tag);
+      this.unknownClasses.delete(classId);
+    }
   }
 
   /**
