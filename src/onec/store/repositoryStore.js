@@ -67,6 +67,9 @@ export const CLASS_KINDS = new Map([
   ['66878458ea3676408800e91eb49590d7', 'StyleItem'],
   ['16a0ae3db769d44e9453127911372fe6', 'Template'],
   ['409a4db64216d611a3c70050bae0a776', 'AccumulationRegister'],
+  ['b8d9ee2d5600fe4fa473c20a6c32a0bc', 'AccountingRegister'],
+  ['a887def2e564eb45a22db3aedab050e7', 'CalculationRegister'],
+  ['207f58bcd935d611a3c70050bae0a776', 'Sequence'],
   ['d600b1309fb2ac47aec7cb8ca8a54767', 'ChartOfCalculationTypes'],
   ['59b6a18220b2944da9bd14d757b95a48', 'ChartOfCharacteristicTypes'],
   ['beea571c4973b344b1deebfeab67b47d', 'CommandGroup'],
@@ -106,6 +109,8 @@ export const CLASS_KINDS = new Map([
   ['2af9f8a74b7a4b48937e42d242e64144', 'Form'],
   ['fbcb583f7241544ebe49561a579bb38b', 'Form'],
   ['85e27253db038c4f8565fe56f1aea40e', 'Form'],
+  ['20817a3f1ab7654298bf4d9bc09b7719', 'Form'],
+  ['ebd6b5d3a24e1046a3e2624d4e815934', 'Form'],
 ]);
 
 /** Подчинённые виды: своей строки в справочнике видов у них нет. */
@@ -434,6 +439,9 @@ const MODULE_FILES = new Map([
   ['Report 2', 'ManagerModule.bsl'],
   ['SettingsStorage 8', 'ManagerModule.bsl'],
   ['CommonCommand 2', 'CommandModule.bsl'],
+  ['Constant 0', 'ValueManagerModule.bsl'],
+  ['Enum 0', 'ManagerModule.bsl'],
+  ['DataProcessor 0', 'ObjectModule.bsl'],
   ['ChartOfCalculationTypes 0', 'ObjectModule.bsl'],
   ['ChartOfCalculationTypes 3', 'ManagerModule.bsl'],
   ['ExchangePlan 3', 'ManagerModule.bsl'],
