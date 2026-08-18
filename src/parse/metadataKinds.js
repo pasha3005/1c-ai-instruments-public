@@ -34,6 +34,7 @@ export const KINDS = [
   { tag: 'Task', dir: 'Tasks', ru: 'Задача', ruPlural: 'Задачи', countable: true, group: 'data' },
   { tag: 'ExchangePlan', dir: 'ExchangePlans', ru: 'План обмена', ruPlural: 'Планы обмена', countable: true, group: 'exchange' },
   { tag: 'DocumentJournal', dir: 'DocumentJournals', ru: 'Журнал документов', ruPlural: 'Журналы документов', countable: false, group: 'data' },
+  { tag: 'DocumentNumerator', dir: 'DocumentNumerators', ru: 'Нумератор документов', ruPlural: 'Нумераторы документов', countable: false, group: 'data' },
   { tag: 'Sequence', dir: 'Sequences', ru: 'Последовательность', ruPlural: 'Последовательности', countable: false, group: 'register' },
   { tag: 'Constant', dir: 'Constants', ru: 'Константа', ruPlural: 'Константы', countable: false, group: 'data' },
   { tag: 'Enum', dir: 'Enums', ru: 'Перечисление', ruPlural: 'Перечисления', countable: false, group: 'data' },
@@ -71,7 +72,7 @@ export const KINDS = [
   { tag: 'WSReference', dir: 'WSReferences', ru: 'WS-ссылка', ruPlural: 'WS-ссылки', countable: false, group: 'integration' },
   { tag: 'ExternalDataSource', dir: 'ExternalDataSources', ru: 'Внешний источник данных', ruPlural: 'Внешние источники данных', countable: false, group: 'integration' },
   { tag: 'IntegrationService', dir: 'IntegrationServices', ru: 'Сервис интеграции', ruPlural: 'Сервисы интеграции', countable: false, group: 'integration' },
-  { tag: 'XDTOPackage', dir: 'XDTOPackages', ru: 'XDTO-пакет', ruPlural: 'XDTO-пакеты', countable: false, group: 'integration' },
+  { tag: 'XDTOPackage', dir: 'XDTOPackages', ru: 'Пакет XDTO', ruPlural: 'Пакеты XDTO', countable: false, group: 'integration' },
   { tag: 'Bot', dir: 'Bots', ru: 'Бот', ruPlural: 'Боты', countable: false, group: 'integration' },
 ];
 
@@ -115,9 +116,14 @@ export function ruPlural(tag) {
  * («Общий модуль», «Регистр сведений»), а конфигуратор печатает имя типа
  * метаданных слитно («ОбщийМодуль», «РегистрСведений»).
  */
-// «ё» приводится к «е»: конфигуратор печатает «Отчет», а в справочнике видов
-// имя записано как «Отчёт», и без этого отчёты не опознавались вовсе.
-const normalizeRu = (value) => String(value || '').replace(/\s+/g, '').toLowerCase().replace(/ё/g, 'е');
+// Сравниваем только буквы и цифры: конфигуратор печатает имя вида слитно
+// («РегистрСведений», «БизнесПроцесс», «HTTPСервис»), а в справочнике оно
+// записано читаемо — с пробелами и дефисами. «ё» приводится к «е»: там
+// «Отчет», здесь «Отчёт».
+const normalizeRu = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/ё/g, 'е')
+  .replace(/[^0-9a-zа-я]+/g, '');
 const BY_RU = new Map(KINDS.map((k) => [normalizeRu(k.ru), k.tag]));
 
 /**

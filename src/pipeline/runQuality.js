@@ -553,7 +553,18 @@ async function learnKindsByPlatform({ repo, store, workRoot, progress, warnings 
       platform, contextBase, dir: repo.dir, workDir: workRoot,
     });
     if (!history.ok) throw new Error(history.reason);
-    return matchKindsByReport({ store, unknown: store.unknownClasses, commits: history.commits });
+
+    // Проходов несколько: подчинённый объект опознаётся по владельцу, а вид
+    // владельца может выясниться только что. Пока каждый проход что-то даёт,
+    // повторяем — отчёт уже получен, и стоит это ничего.
+    const learned = new Map();
+    for (let pass = 0; pass < 5; pass += 1) {
+      const found = matchKindsByReport({ store, unknown: store.unknownClasses, commits: history.commits });
+      if (!found.size) break;
+      store.learnKinds(found);
+      for (const [classId, tag] of found) learned.set(classId, tag);
+    }
+    return learned;
   } catch (err) {
     rethrowIfCancelled(err);
     warnings.push(`Виды некоторых объектов хранилища «${repo.name}» уточнить не удалось `

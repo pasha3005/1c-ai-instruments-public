@@ -82,14 +82,30 @@ export class ObjectStore {
     return this.index.size;
   }
 
-  /** Распакованное содержимое объекта по хешу. */
+  /**
+   * Распакованное содержимое объекта по хешу.
+   *
+   * Из пака читается только нужный кусок: у большой конфигурации пак весит
+   * гигабайты, а Node не умеет держать в буфере больше 2 ГиБ — попытка
+   * прочитать файл целиком просто падает.
+   */
   async read(hash) {
     const entry = this.index.get(String(hash || '').toLowerCase());
     if (!entry) return null;
     if (entry.file) return unpack(await fs.readFile(entry.file));
-    const buffer = await fs.readFile(entry.pack);
-    const length = Number(buffer.readBigUInt64LE(entry.offset));
-    return unpack(buffer.slice(entry.offset + 8, entry.offset + 8 + length));
+
+    const handle = await fs.open(entry.pack, 'r');
+    try {
+      const head = Buffer.alloc(8);
+      await handle.read(head, 0, 8, entry.offset);
+      const length = Number(head.readBigUInt64LE(0));
+      if (!length) return null;
+      const body = Buffer.alloc(length);
+      await handle.read(body, 0, length, entry.offset + 8);
+      return unpack(body);
+    } finally {
+      await handle.close();
+    }
   }
 
   /**

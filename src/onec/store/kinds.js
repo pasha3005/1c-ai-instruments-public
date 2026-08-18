@@ -77,16 +77,42 @@ export function matchKindsByReport({ store, unknown, commits }) {
   // только внутри владельца, и одного имени для опознания мало.
   const place = (parentFull, name) => `${parentFull}|${name}`;
   const tagsByPlace = new Map();
+  // Тот же вид, но с приметой — именем одного из детей объекта. Так
+  // различаются одноимённые объекты разных видов: план счетов «Управленческий»
+  // и регистр бухгалтерии «Управленческий» стоят на одном месте дерева,
+  // и по имени их не развести, а по детям — да.
+  const tagsByChild = new Map();
+
+  const remember = (map, key, tag) => {
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(tag);
+  };
+
   for (const commit of commits || []) {
     for (const full of [...commit.added, ...commit.changed, ...commit.removed]) {
       const parts = String(full).split('.');
       if (parts.length < 2 || parts.length % 2) continue;
-      const tag = tagByRu(parts[parts.length - 2]) || SUBORDINATE_TAGS.get(parts[parts.length - 2]);
-      if (!tag) continue;
-      const key = place(parts.slice(0, -2).join('.'), parts[parts.length - 1]);
-      if (!tagsByPlace.has(key)) tagsByPlace.set(key, new Set());
-      tagsByPlace.get(key).add(tag);
+      // Полное имя — цепочка пар, и каждая пара сама по себе сведение о виде:
+      // «ПланСчетов.Управленческий.Форма.ФормаСписка» говорит и про план
+      // счетов, и про его форму.
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        const tag = tagByRu(parts[i]) || SUBORDINATE_TAGS.get(parts[i]);
+        if (!tag) continue;
+        const parentFull = parts.slice(0, i).join('.');
+        remember(tagsByPlace, place(parentFull, parts[i + 1]), tag);
+        if (i + 3 < parts.length) {
+          remember(tagsByChild, `${place(parentFull, parts[i + 1])}|${parts[i + 3]}`, tag);
+        }
+      }
     }
+  }
+
+  // Дети объекта — по ним и различаются одноимённые.
+  const childrenOf = new Map();
+  for (const [objId, item] of info) {
+    if (!item.parentId) continue;
+    if (!childrenOf.has(item.parentId)) childrenOf.set(item.parentId, []);
+    childrenOf.get(item.parentId).push(item.name);
   }
 
   const learned = new Map();
@@ -97,7 +123,17 @@ export function matchKindsByReport({ store, unknown, commits }) {
     const parentFull = item.parentId && item.parentId !== store.rootId
       ? store.fullName(item.parentId)
       : '';
-    const tags = tagsByPlace.get(place(parentFull, item.name));
+    const key = place(parentFull, item.name);
+
+    let tags = tagsByPlace.get(key);
+    if (tags && tags.size > 1) {
+      // Место занято двумя видами — спрашиваем детей.
+      const byChild = new Set();
+      for (const child of childrenOf.get(objId) || []) {
+        for (const tag of tagsByChild.get(`${key}|${child}`) || []) byChild.add(tag);
+      }
+      tags = byChild;
+    }
     if (!tags || tags.size !== 1) continue;
     const tag = [...tags][0];
     // Один и тот же идентификатор класса, приведший к разным видам, — признак

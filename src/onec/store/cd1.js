@@ -30,6 +30,8 @@ import { parseBracketFile } from '../infobaseBinding.js';
 
 const SIGNATURE = '1CDBMSV8';
 const OBJECT_SIGNATURE = 0x0000fd1c;
+/** Тот же объект, но со списком страниц через промежуточные страницы. */
+const OBJECT_SIGNATURE_INDIRECT = 0x0001fd1c;
 /** Кусок «файла блобов»: 4 байта «следующий», 2 байта длины, 250 данных. */
 const BLOB_CHUNK = 256;
 const BLOB_HEADER = 6;
@@ -76,25 +78,48 @@ export class Cd1 {
     }
   }
 
-  /** Собирает объект из его страниц. */
+  /**
+   * Собирает объект из его страниц.
+   *
+   * Форм у объекта две, и различаются они третьим байтом сигнатуры:
+   *
+   *  * `1C FD 00 00` — номера страниц лежат прямо в заголовке. В одну страницу
+   *    их помещается 2042, то есть объект до ~16 МБ;
+   *  * `1C FD 01 00` — то же, но в заголовке лежат номера страниц, КАЖДАЯ
+   *    из которых содержит список номеров страниц с данными. Так устроены
+   *    большие таблицы: история хранилища ERP не поместилась бы иначе.
+   *
+   * Длина объекта в обеих формах — uint64 по смещению 16.
+   */
   readObject(page) {
     const at = page * this.pageSize;
-    if (this.buffer.readUInt32LE(at) !== OBJECT_SIGNATURE) {
+    const signature = this.buffer.readUInt32LE(at);
+    if (signature !== OBJECT_SIGNATURE && signature !== OBJECT_SIGNATURE_INDIRECT) {
       throw new Error(`На странице ${page} нет объекта 1CD`);
     }
+
     const length = Number(this.buffer.readBigUInt64LE(at + 16));
+    const perPage = Math.floor(this.pageSize / 4);
+    const needed = Math.ceil(length / this.pageSize);
+    const numbers = [];
+
+    if (signature === OBJECT_SIGNATURE) {
+      for (let i = 0; numbers.length < needed; i += 1) numbers.push(this.buffer.readUInt32LE(at + 24 + i * 4));
+    } else {
+      for (let i = 0; numbers.length < needed; i += 1) {
+        const listPage = this.buffer.readUInt32LE(at + 24 + i * 4);
+        if (!listPage) break;
+        const listAt = listPage * this.pageSize;
+        for (let j = 0; j < perPage && numbers.length < needed; j += 1) {
+          numbers.push(this.buffer.readUInt32LE(listAt + j * 4));
+        }
+      }
+    }
+
     const parts = [];
-    let cursor = at + 24;
-    let collected = 0;
-    while (collected < length) {
-      const target = this.buffer.readUInt32LE(cursor);
-      cursor += 4;
-      // Список страниц длиннее одной страницы продолжается косвенно; в наших
-      // объёмах (история хранилища) такого не встречалось, но молча отдавать
-      // обрезанный объект нельзя.
-      if (!target) throw new Error('Список страниц объекта оборван');
+    for (const target of numbers) {
+      if (!target) throw new Error(`Список страниц объекта на странице ${page} оборван`);
       parts.push(this.buffer.slice(target * this.pageSize, (target + 1) * this.pageSize));
-      collected += this.pageSize;
     }
     return Buffer.concat(parts).slice(0, length);
   }

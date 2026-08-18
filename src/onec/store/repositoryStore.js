@@ -66,11 +66,46 @@ export const CLASS_KINDS = new Map([
   ['af04543ef86e734cad1191bd2dfac4c8', 'Style'],
   ['66878458ea3676408800e91eb49590d7', 'StyleItem'],
   ['16a0ae3db769d44e9453127911372fe6', 'Template'],
+  ['409a4db64216d611a3c70050bae0a776', 'AccumulationRegister'],
+  ['d600b1309fb2ac47aec7cb8ca8a54767', 'ChartOfCalculationTypes'],
+  ['59b6a18220b2944da9bd14d757b95a48', 'ChartOfCharacteristicTypes'],
+  ['beea571c4973b344b1deebfeab67b47d', 'CommandGroup'],
+  ['63457915ecccf641a83cec5f7b9a5bc1', 'CommonAttribute'],
+  ['87511a2f0efb054b9489dc5dd6412348', 'CommonCommand'],
+  ['92c7890cc316d511b96b0050bae0a95d', 'CommonTemplate'],
+  ['9e0945c0b913b64f9d50fca00202971e', 'DefinedType'],
+  ['75bd1246b7715c4a8cc52b0b65f9fa0d', 'DocumentJournal'],
+  ['a68d824e440f5b4bb1c0a2b3cfe7bdcc', 'EventSubscription'],
+  ['914a7c85f4e5ac4f86ec787626f1c108', 'ExchangePlan'],
+  ['407954af68324f43a3e7e47d6d2638c3', 'FunctionalOption'],
+  ['db54d5301e54624f8970a1c6dcfeb2bc', 'FunctionalOptionsParameter'],
+  ['85afbd11add5914dbb24aa0eee139052', 'ScheduledJob'],
+  ['97cdb44613fdaa4eaba23bddd7699218', 'SettingsStorage'],
+  ['02622f10fa43b0408898acd3876daacb', 'StyleItem'],
+  ['5c35633e78135349be9b1deb5fb6bec5', 'Task'],
+  ['4e40d3fc2315ce489bc0ecdb822684a1', 'BusinessProcess'],
+  ['887e8e235f3cb2488a3b81ebbecb20ed', 'ChartOfAccounts'],
+  ['46e3a836aa9af94abdbd83be3c177977', 'DocumentNumerator'],
+  ['9cc0ff0f4c8fcc47b41c8d5c5a221d79', 'HTTPService'],
+  ['2e03578640771d4ea3ba5dd6e8afb78f', 'WebService'],
+  ['fb9660d25d7af94daf6347d04771fa9b', 'WSReference'],
+  ['98f79dcc947c164697d27aa0b7bc515e', 'XDTOPackage'],
   // Форм у платформы несколько классов — свой на каждый вид владельца.
   ['930e88fbd74727419357a20e69c17545', 'Form'],
   ['d216f8fdad1ed511b9750050bae0a95d', 'Form'],
   ['044213130bf6d511a3c70050bae0a776', 'Form'],
   ['c068b3a3e229d611a3c70050bae0a776', 'Form'],
+  ['ede5b0d56d251c409c36f630cafd8a62', 'Form'],
+  ['407c8600b106d611a3c70050bae0a776', 'Form'],
+  ['4be5f233ce377a4aa569b648d7aa4634', 'Form'],
+  ['ab09c587383d674db379aca796298578', 'Form'],
+  ['10ad81ec07cad511b9a50050bae0a95d', 'Form'],
+  ['0c3c53b84223b34d91a2c2b08cbf6b23', 'Form'],
+  ['a8782beba6407e4bb1b36ca9966cbc94', 'Form'],
+  ['449a4db64216d611a3c70050bae0a776', 'Form'],
+  ['2af9f8a74b7a4b48937e42d242e64144', 'Form'],
+  ['fbcb583f7241544ebe49561a579bb38b', 'Form'],
+  ['85e27253db038c4f8565fe56f1aea40e', 'Form'],
 ]);
 
 /** Подчинённые виды: своей строки в справочнике видов у них нет. */
@@ -299,6 +334,11 @@ export class RepositoryStore {
       text = formModuleFromDescription(await this.objects.readDescription(item.hash));
       const formName = this.info.get(item.objId)?.name || 'Форма';
       file = path.join(outDir, ownerDir, owner.name, 'Forms', formName, 'Ext', 'Form', 'Module.bsl');
+    } else if (tag === 'Command') {
+      // Команда объекта — свой каталог рядом с формами; модуль в ней один.
+      text = await this.objects.readModuleText(item.hash);
+      const commandName = this.info.get(item.objId)?.name || 'Команда';
+      file = path.join(outDir, ownerDir, owner.name, 'Commands', commandName, 'Ext', 'CommandModule.bsl');
     } else {
       text = await this.objects.readModuleText(item.hash);
       file = path.join(outDir, ownerDir, owner.name, 'Ext', moduleFileName(owner.tag, suffix));
@@ -331,7 +371,11 @@ export class RepositoryStore {
  */
 export function platformKindName(tag) {
   return ruName(tag)
-    .split(/\s+/)
+    // Пробелы И дефисы: платформа пишет вид слитно и с прописной у каждого
+    // слова — «Регистр сведений» → «РегистрСведений», «HTTP-сервис» →
+    // «HTTPСервис», «Бизнес-процесс» → «БизнесПроцесс». Имя с дефисом
+    // платформа не принимает вовсе: «объект не существует в конфигурации».
+    .split(/[\s-]+/)
     .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : ''))
     .join('')
     // «Отчёт» у нас, «Отчет» у платформы: имена объектов в отчёте должны
@@ -355,7 +399,45 @@ function topLevel(name) {
  */
 export function moduleFileName(ownerTag, suffix) {
   if (ownerTag === 'CommonModule') return 'Module.bsl';
-  if (suffix === '0') return 'ObjectModule.bsl';
-  if (suffix === '3') return 'ManagerModule.bsl';
+  const known = MODULE_FILES.get(`${ownerTag} ${suffix}`);
+  if (known) return known;
   return `Module${suffix}.bsl`;
 }
+
+/**
+ * Какой модуль лежит под каким номером свойства.
+ *
+ * Номера у каждого вида свои, и выяснены сличением: тексты, добытые читателем,
+ * сверены с выгрузкой той же конфигурации платформой — совпали побайтно.
+ * Незнакомая пара получает нейтральное имя `ModuleN.bsl`: пусть отчёт назовёт
+ * модуль просто модулем, чем соврёт про его вид.
+ */
+const MODULE_FILES = new Map([
+  ['Catalog 0', 'ObjectModule.bsl'],
+  ['Catalog 3', 'ManagerModule.bsl'],
+  ['Document 0', 'ObjectModule.bsl'],
+  ['Document 2', 'ManagerModule.bsl'],
+  ['DocumentJournal 1', 'ManagerModule.bsl'],
+  ['InformationRegister 1', 'RecordSetModule.bsl'],
+  ['InformationRegister 2', 'ManagerModule.bsl'],
+  ['AccumulationRegister 1', 'RecordSetModule.bsl'],
+  ['AccumulationRegister 2', 'ManagerModule.bsl'],
+  ['BusinessProcess 6', 'ObjectModule.bsl'],
+  ['BusinessProcess 8', 'ManagerModule.bsl'],
+  ['Task 6', 'ObjectModule.bsl'],
+  ['Task 7', 'ManagerModule.bsl'],
+  ['ChartOfAccounts 14', 'ObjectModule.bsl'],
+  ['ChartOfAccounts 15', 'ManagerModule.bsl'],
+  ['ChartOfCharacteristicTypes 15', 'ObjectModule.bsl'],
+  ['ChartOfCharacteristicTypes 16', 'ManagerModule.bsl'],
+  ['ExchangePlan 2', 'ObjectModule.bsl'],
+  ['Report 2', 'ManagerModule.bsl'],
+  ['SettingsStorage 8', 'ManagerModule.bsl'],
+  ['CommonCommand 2', 'CommandModule.bsl'],
+  ['ChartOfCalculationTypes 0', 'ObjectModule.bsl'],
+  ['ChartOfCalculationTypes 3', 'ManagerModule.bsl'],
+  ['ExchangePlan 3', 'ManagerModule.bsl'],
+  ['Report 0', 'ObjectModule.bsl'],
+  ['HTTPService 0', 'Module.bsl'],
+  ['WebService 0', 'Module.bsl'],
+]);
