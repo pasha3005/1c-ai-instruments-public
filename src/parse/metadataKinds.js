@@ -115,7 +115,9 @@ export function ruPlural(tag) {
  * («Общий модуль», «Регистр сведений»), а конфигуратор печатает имя типа
  * метаданных слитно («ОбщийМодуль», «РегистрСведений»).
  */
-const normalizeRu = (value) => String(value || '').replace(/\s+/g, '').toLowerCase();
+// «ё» приводится к «е»: конфигуратор печатает «Отчет», а в справочнике видов
+// имя записано как «Отчёт», и без этого отчёты не опознавались вовсе.
+const normalizeRu = (value) => String(value || '').replace(/\s+/g, '').toLowerCase().replace(/ё/g, 'е');
 const BY_RU = new Map(KINDS.map((k) => [normalizeRu(k.ru), k.tag]));
 
 /**

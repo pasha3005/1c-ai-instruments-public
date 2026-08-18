@@ -803,6 +803,11 @@ export function buildRouter() {
       infobasePath: String(body.infobasePath || '').trim(),
       repositoryPath: String(body.repositoryPath || '').trim(),
       repositoryAddress: String(body.repositoryAddress || '').trim(),
+      // Где лежит хранилище: каталог программа читает сама, к серверу
+      // хранилищ ходит платформа. От этого зависит и работа, и поля формы.
+      // Пусто — прогон сохранён прежней версией формы, и вид выводится
+      // из самих строк (`repositoryKindOf`).
+      repositoryKind: ['folder', 'tcp'].includes(body.repositoryKind) ? body.repositoryKind : '',
       repositoryUser: String(body.repositoryUser || '').trim(),
       repositoryPassword: typeof body.repositoryPassword === 'string' ? body.repositoryPassword : '',
       // Служебная база: конфигуратору нужна лицензия, а файловой базе на

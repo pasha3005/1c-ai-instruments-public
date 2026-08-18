@@ -751,57 +751,93 @@
       <!-- ---------- Источник: хранилище конфигурации ---------- -->
       <div data-source="repository" hidden>
         <!--
-          Одно поле на оба вида хранилища. Переключателя «каталог или адрес»
-          здесь больше нет: он был вложен в переключатель источника, замечался
-          не сразу, и на сервере заказчика адрес tcp:// ввели в поле каталога
-          при переключателе «Каталог на диске» — программа пошла искать
-          cfgrepo.conf внутри «каталога» и обвинила пользователя. Каталог
-          от адреса отличается по самой строке, спрашивать не о чем.
+          Где лежит хранилище — вопрос, вложенный в выбор источника, и от него
+          зависит вся работа: каталог программа читает сама (файлы хранилища
+          разбираются напрямую, платформа не запускается), а к серверу
+          хранилищ ходит только платформа. Поэтому у каждого варианта свой
+          набор полей: лишнего не спрашиваем.
         -->
         <div class="field">
-          <label for="qRepo">Хранилище конфигурации <span class="req">*</span></label>
-          <div class="picker picker--multiline">
-            <textarea id="qRepo" name="qRepo" rows="3" spellcheck="false"
-                      placeholder="D:\Хранилища&#10;tcp://сервер-хранилищ/erp/основная"></textarea>
-            <button type="button" class="btn btn--pick" data-pick="folder"
-                    data-target="qRepo"
-                    data-title="Выберите каталог хранилища или каталог, в котором они лежат">Каталог…</button>
-          </div>
-          <div class="hint">
-            Каталог на диске или сетевой адрес сервера хранилищ
-            (<span class="mono">tcp://сервер/хранилище</span>, годится
-            и <span class="mono">http://</span>) — по одному в строке, можно
-            вперемешку. Кнопка «Каталог…» дописывает выбранный путь новой строкой.
-            <br>
-            В каталоге программа найдёт все хранилища сама — и основной
-            конфигурации, и расширений (опознаются по файлу
-            <span class="mono">cfgrepo.conf</span>). <b>Адреса перечисляются
-            вручную:</b> списка хранилищ сервер не отдаёт, перебрать их нечем.
-            <br>
-            <b>Сетевые адреса вместе со служебной базой:</b> указывайте только
-            те, к которым эта база уже подключена — основной конфигурацией либо
-            одним из расширений. Программа распознает по адресу, чьё это
-            хранилище; к чужому адресу она не пойдёт и базу переподключать
-            не станет.
+          <label>Где лежит хранилище</label>
+          <div class="switch switch--compact switch--nested" id="qRepoKind">
+            <label class="switch__item">
+              <input type="radio" name="qRepoKind" value="folder" checked>
+              <span class="switch__title">Каталог на диске</span>
+              <span class="switch__text">
+                Программа читает файлы хранилища сама. Ни платформы, ни лицензии,
+                ни служебной базы не нужно; недельный отчёт собирается за секунды.
+              </span>
+            </label>
+            <label class="switch__item">
+              <input type="radio" name="qRepoKind" value="tcp">
+              <span class="switch__title">Сервер хранилищ (tcp)</span>
+              <span class="switch__text">
+                Файлов не видно, работает только платформа: нужен пользователь
+                хранилища, а без лицензии на файловые базы — ещё и служебная база.
+              </span>
+            </label>
           </div>
         </div>
 
-        <div class="field-row">
+        <!-- ----- Хранилище каталогом: читаем сами ----- -->
+        <div data-repo-kind="folder">
           <div class="field">
-            <label for="qRepoUser">Пользователь хранилища <span class="req">*</span></label>
-            <input type="text" id="qRepoUser" name="qRepoUser" spellcheck="false" autocomplete="off">
-          </div>
-          <div class="field">
-            <label for="qRepoPassword">Пароль хранилища</label>
-            <input type="password" id="qRepoPassword" name="qRepoPassword" autocomplete="new-password">
+            <label for="qRepoFolder">Каталог с хранилищами <span class="req">*</span></label>
+            <div class="picker picker--multiline">
+              <textarea id="qRepoFolder" name="qRepoFolder" rows="3" spellcheck="false"
+                        placeholder="D:\Хранилища&#10;\\сервер\общая\Хранилище_ERP"></textarea>
+              <button type="button" class="btn btn--pick" data-pick="folder"
+                      data-target="qRepoFolder"
+                      data-title="Выберите каталог хранилища или каталог, в котором они лежат">Каталог…</button>
+            </div>
+            <div class="hint">
+              Путь к хранилищу или к каталогу, где их несколько, — по одному
+              в строке. Кнопка «Каталог…» дописывает выбранный путь новой строкой.
+              Хранилища опознаются по файлу <span class="mono">cfgrepo.conf</span>,
+              и программа найдёт их сама — и основной конфигурации, и расширений.
+              <br>
+              Пользователь и пароль хранилища здесь не нужны: файлы читаются
+              напрямую, а не через платформу.
+            </div>
           </div>
         </div>
-        <div class="hint">
-          Пользователь <b>хранилища</b>, а не базы: у хранилища свой список
-          пользователей. Нужен при любом виде хранилища — и для каталога,
-          и для <span class="mono">tcp://</span>. Со служебной базой это должен
-          быть тот же пользователь, под которым она подключена к хранилищу.
-        </div>
+
+        <!-- ----- Хранилище на сервере: только через платформу ----- -->
+        <div data-repo-kind="tcp" hidden>
+          <div class="field">
+            <label for="qRepoAddress">Адреса хранилищ <span class="req">*</span></label>
+            <textarea id="qRepoAddress" name="qRepoAddress" rows="3" spellcheck="false"
+                      placeholder="tcp://сервер-хранилищ/erp/основная&#10;tcp://сервер-хранилищ/erp/расширение"></textarea>
+            <div class="hint">
+              По одному адресу в строке (<span class="mono">tcp://сервер/хранилище</span>,
+              годится и <span class="mono">http://</span>). Порт по умолчанию —
+              1542; если он другой, пишется в адресе.
+              <b>Адреса перечисляются вручную:</b> списка хранилищ сервер
+              не отдаёт, перебрать их нечем.
+              <br>
+              <b>Вместе со служебной базой указывайте только те адреса,
+              к которым эта база уже подключена</b> — основной конфигурацией
+              либо одним из расширений. Программа распознает по адресу, чьё это
+              хранилище; к чужому адресу она не пойдёт и базу переподключать
+              не станет.
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="qRepoUser">Пользователь хранилища <span class="req">*</span></label>
+              <input type="text" id="qRepoUser" name="qRepoUser" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="qRepoPassword">Пароль хранилища</label>
+              <input type="password" id="qRepoPassword" name="qRepoPassword" autocomplete="new-password">
+            </div>
+          </div>
+          <div class="hint">
+            Пользователь <b>хранилища</b>, а не базы: у хранилища свой список
+            пользователей. Со служебной базой это должен быть тот же
+            пользователь, под которым она подключена к хранилищу.
+          </div>
 
         <!--
           Служебная база. Для работы с хранилищем программа заводит временные
@@ -853,24 +889,13 @@
           </div>
         </div>
 
-        <div class="field">
-          <label for="qPeriod">Период помещений</label>
-          <div class="picker">
-            <input type="text" id="qPeriod" name="qPeriod" readonly placeholder="Весь период"
-                   aria-haspopup="dialog">
-            <button type="button" class="btn btn--period-pick" id="qPeriodPick">Выбрать…</button>
-          </div>
-          <div class="hint">
-            Проверяются только объекты, помещённые за этот период: это и есть работа
-            разработчиков. Пусто — вся история хранилища.
-          </div>
-        </div>
-
         <!--
           Код правок стоит одной выгрузки версии хранилища. Со своей временной
           базой на версию выгружаются только объекты помещения — это секунды.
           Через служебную базу платформа отдаёт версию только целиком, и на
-          большой конфигурации это десятки минут на одно помещение.
+          большой конфигурации это десятки минут на одно помещение. У хранилища
+          в каталоге такого вопроса нет вовсе: версия читается мгновенно,
+          поэтому выбор показывается только здесь.
         -->
         <div class="field">
           <label for="qPlacementDiffs">Код правок по каждому помещению</label>
@@ -889,10 +914,29 @@
             авторы и замечания к коду остаются в любом случае.
           </div>
         </div>
+        </div>
+
+        <div class="field">
+          <label for="qPeriod">Период помещений</label>
+          <div class="picker">
+            <input type="text" id="qPeriod" name="qPeriod" readonly placeholder="Весь период"
+                   aria-haspopup="dialog">
+            <button type="button" class="btn btn--period-pick" id="qPeriodPick">Выбрать…</button>
+          </div>
+          <div class="hint">
+            Проверяются только объекты, помещённые за этот период: это и есть работа
+            разработчиков. Пусто — вся история хранилища.
+          </div>
+        </div>
       </div>
 
       <div class="field-row">
-        <div class="field">
+        <!--
+          Версия платформы нужна только там, где платформа запускается:
+          у хранилища-каталога её не спрашивают вовсе, и проверка проходит
+          даже на машине, где 1С не установлена.
+        -->
+        <div class="field" data-needs-platform>
           <label for="qPlatform">Версия платформы</label>
           <select id="qPlatform" name="qPlatform" data-platform-list></select>
           <div class="hint">Список установленных на этом компьютере платформ.</div>

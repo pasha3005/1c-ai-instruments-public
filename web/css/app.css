@@ -947,3 +947,12 @@ body {
 .switch--compact .switch__item { padding: 9px 12px; }
 .switch--compact .switch__title { font-weight: 560; font-size: 14px; }
 .switch--compact .switch__text { font-size: 12.5px; }
+/* Выбранный вложенный вариант подсвечивается ТИШЕ внешнего: тот же цвет, но
+   вполсилы и полосой слева. Одинаковая подсветка читалась бы как два равных
+   вопроса, хотя второй уточняет первый. */
+.switch--nested .switch__item:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface-2));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.switch--nested .switch__item input { accent-color: color-mix(in srgb, var(--accent) 65%, var(--ink-muted)); }

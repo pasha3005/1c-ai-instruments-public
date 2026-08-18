@@ -33,6 +33,7 @@ import {
   expandExtensionCf, isExtensionRepositoryRefusal, isMissingExtension, isNetworkRepository,
 } from '../onec/repository.js';
 import { readInfobaseBindings, matchRepository, describeBindings } from '../onec/infobaseBinding.js';
+import { openRepositoryStore } from '../onec/store/repositoryStore.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -81,19 +82,34 @@ async function runPipeline({ qualityId, input, progress }) {
     await ensureDir(workRoot);
     progress.done('prepare', workRoot);
 
-    startStage('platform', 'Поиск установленных версий 1С:Предприятие');
-    const { platform, exact, available } = await resolvePlatform(input.platformVersion);
-    if (!exact && input.platformVersion) {
-      progress.message(
-        `Версия ${input.platformVersion} не найдена. Используется ${platform.version}. `
-        + `Доступны: ${available.join(', ')}`, 'warn',
-      );
+    // Хранилище-каталог читается своими силами, платформа для него
+    // не запускается ни разу — искать её незачем, и на машине без 1С
+    // проверка всё равно проходит.
+    const byFiles = input.source === 'repository' && repositoryKindOf(input) === 'folder';
+    let platform = null;
+    if (byFiles) {
+      progress.skip('platform', 'не требуется: хранилище читается напрямую');
+    } else {
+      startStage('platform', 'Поиск установленных версий 1С:Предприятие');
+      const resolved = await resolvePlatform(input.platformVersion);
+      platform = resolved.platform;
+      if (!resolved.exact && input.platformVersion) {
+        progress.message(
+          `Версия ${input.platformVersion} не найдена. Используется ${platform.version}. `
+          + `Доступны: ${resolved.available.join(', ')}`, 'warn',
+        );
+      }
+      progress.done('platform', platform.version);
     }
-    progress.done('platform', platform.version);
 
-    const prepared = input.source === 'repository'
-      ? await fromRepository({ input, platform, workRoot, progress, warnings })
-      : await fromInfobase({ input, platform, workRoot, progress, warnings });
+    let prepared;
+    if (input.source !== 'repository') {
+      prepared = await fromInfobase({ input, platform, workRoot, progress, warnings });
+    } else if (byFiles) {
+      prepared = await fromRepositoryByStore({ input, workRoot, progress, warnings });
+    } else {
+      prepared = await fromRepository({ input, platform, workRoot, progress, warnings });
+    }
 
     // ---------- Анализ ----------
     startStage('analyze', 'Статический анализ кода');
@@ -134,7 +150,7 @@ async function runPipeline({ qualityId, input, progress }) {
       source: input.source === 'repository' ? 'repository' : 'infobase',
       generatedAt: new Date().toISOString(),
       input: sanitize(input),
-      platformVersion: platform.version,
+      platformVersion: platform ? platform.version : "",
       infobase: prepared.infobase || null,
       repositories: prepared.repositories || null,
       period: prepared.period || null,
@@ -313,6 +329,22 @@ async function fromInfobase({ input, platform, workRoot, progress, warnings }) {
  *
  * @returns {{byAddress: boolean, value: string}[]}
  */
+/**
+ * Где лежит хранилище: каталогом на диске или на сервере хранилищ.
+ *
+ * Выбор делает пользователь — от него зависит и способ работы, и набор полей
+ * формы: каталог программа читает сама, к серверу ходит только платформа.
+ * Прогоны, сохранённые прежними версиями, выбора не знают, поэтому там он
+ * выводится из самих строк: сплошь адреса — значит сервер.
+ */
+export function repositoryKindOf(input) {
+  if (input?.repositoryKind === 'tcp' || input?.repositoryKind === 'folder') {
+    return input.repositoryKind;
+  }
+  const sources = repositorySources(input);
+  return sources.length && sources.every((source) => source.byAddress) ? 'tcp' : 'folder';
+}
+
 export function repositorySources(input) {
   // `repositoryAddress` — поле прежних версий формы: у сохранённых прогонов
   // адрес лежит в нём, и повторный запуск из истории не должен уходить пустым.
@@ -456,6 +488,184 @@ async function bindRepositories({ input, repositories, progress, warnings }) {
   const named = repositories.filter((r) => r.role);
   progress.update('source', `привязка служебной базы: опознано хранилищ ${named.length} из ${repositories.length}`);
   return bindings;
+}
+
+/**
+ * Что из помещений периода идёт в анализ и кому достаются замечания.
+ *
+ * История печатает русские имена объектов, а анализ знает их ключами
+ * ConfigDumpInfo — переводим сразу, и авторов раскладываем по тем же ключам,
+ * иначе замечания к ним не привяжутся.
+ *
+ * У хранилища нет понятия «поставщик» — сравнивать помещённый код не с чем.
+ * Поэтому все тронутые за период объекты идут в `added`, а не в `modified`:
+ * `modified` в остальном движке означает «изменённый ТИПОВОЙ модуль», и тогда
+ * анализ ищет в нём только участки, обрамлённые пометками разработчика
+ * («// ++ Фамилия»). В хранилище таких пометок обычно нет — код и так весь
+ * авторский, — и модуль без пометок тихо исключался из анализа целиком.
+ */
+function repositoryChangeSet(parsedData, commits) {
+  const touched = new Set();
+  const byObject = new Map();
+  for (const [russian, entry] of authorsByObject(commits)) {
+    const key = keyFromRussian(russian);
+    if (!key) continue;
+    touched.add(key);
+    byObject.set(key, entry);
+  }
+
+  return {
+    changeSet: {
+      modified: new Set(),
+      added: touched,
+      removed: new Set(),
+      unchanged: 0,
+      totalClient: parsedData.modules.length,
+      totalVendor: 0,
+      isChanged: (key) => touched.has(key) || touched.has(key.split('.').slice(0, 2).join('.')),
+    },
+    vendorComparison: { available: false, reason: 'источник — хранилище конфигурации' },
+    vendorDir: null,
+    vendorDetails: null,
+  };
+}
+
+/**
+ * Хранилище-КАТАЛОГ: читается напрямую, без платформы.
+ *
+ * Всё, что нужно отчёту, лежит в файлах хранилища (`onec/store/`): история
+ * помещений, авторы, комментарии и код каждой версии. Платформа здесь
+ * не запускается ни разу, поэтому не нужны ни лицензия, ни служебная база,
+ * ни пользователь хранилища — и не спрашиваются в форме. Сверено с отчётом
+ * самой платформы на двух хранилищах: история совпала полностью, тексты
+ * модулей — побайтно.
+ */
+async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
+  startOrThrow(progress, 'source', 'Поиск хранилищ конфигурации');
+  const sources = repositorySources(input);
+  const addresses = sources.filter((source) => source.byAddress).map((source) => source.value);
+  if (addresses.length) {
+    throw new Error(
+      `В режиме «Каталог на диске» указан сетевой адрес: ${addresses.join(', ')}. `
+      + 'Сетевое хранилище читается только платформой — переключитесь на «Сервер хранилищ (tcp)».',
+    );
+  }
+  const dirs = sources.map((source) => source.value);
+  const repositories = [];
+  for (const dir of dirs) {
+    for (const found of await findRepositories(dir)) {
+      if (!repositories.some((known) => known.dir === found.dir)) repositories.push(found);
+    }
+  }
+  if (!repositories.length) {
+    throw new Error(
+      `Хранилищ конфигурации 1С не найдено: ${dirs.join(', ') || 'каталог не указан'}. `
+      + 'Каталог хранилища опознаётся по файлу cfgrepo.conf; укажите сам каталог хранилища '
+      + 'или каталог, в котором их несколько.',
+    );
+  }
+  progress.done('source', `хранилищ: ${repositories.length} (${repositories.map((r) => r.name).join(', ')})`);
+
+  startOrThrow(progress, 'export', 'Чтение хранилищ');
+  const period = { from: input.periodFrom || '', to: input.periodTo || '' };
+  const commits = [];
+  const repoStatus = [];
+  const extensionDirs = [];
+  const stores = new Map();
+  const unknownClasses = new Set();
+  let mainDir = null;
+
+  for (const repo of repositories) {
+    progress.update('export', `хранилище «${repo.name}»: история`);
+    try {
+      const store = await openRepositoryStore(repo.dir);
+      stores.set(repo.name, store);
+
+      const all = store.history();
+      const own = filterByPeriod(all, period);
+      for (const commit of own) commits.push({ ...commit, repository: repo.name });
+
+      const latest = all.reduce((max, commit) => Math.max(max, commit.version), 0);
+      const objects = placedObjects(own);
+      progress.update('export', `хранилище «${repo.name}»: помещений ${own.length}, объектов ${objects.length}`);
+
+      // Первое хранилище считается основной конфигурацией, остальные —
+      // расширениями: по файлам хранилища одно от другого не отличить,
+      // а угадывать по имени корня нельзя — конфигурацию могут звать как
+      // угодно.
+      const isMain = !mainDir;
+      const dir = path.join(workRoot, `store-${safeFileName(repo.name)}`);
+      const done = await store.materialize({ version: latest, outDir: dir, objects });
+      for (const cls of store.unknownClasses) unknownClasses.add(cls);
+
+      repoStatus.push({
+        name: repo.name,
+        dir: repo.dir,
+        ok: true,
+        isMain,
+        isExtension: !isMain,
+        role: isMain ? 'main' : 'extension',
+        boundExtension: null,
+      });
+      if (isMain) mainDir = done.dir;
+      else extensionDirs.push({ name: repo.name, dir: done.dir });
+    } catch (err) {
+      rethrowIfCancelled(err);
+      warnings.push(`Хранилище «${repo.name}» не прочитано: ${err.message}`);
+      progress.message(`Хранилище «${repo.name}» не прочитано: ${err.message}`, 'warn');
+      repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: err.message });
+    }
+  }
+
+  if (!mainDir) {
+    throw new Error(`Ни одно хранилище прочитать не удалось. ${warnings[warnings.length - 1] || ''}`);
+  }
+
+  // Правки помещений строятся всегда: версия достаётся из файлов хранилища
+  // за миллисекунды, и выбирать тут не из чего.
+  const diffStats = await buildPlacementDiffs({
+    progress,
+    commits,
+    versionDir: async (repoName, version, objects) => {
+      const store = stores.get(repoName);
+      if (!store) return null;
+      const done = await store.materialize({
+        version,
+        outDir: path.join(workRoot, `store-${safeFileName(repoName)}-v${version}`),
+        objects,
+      });
+      return done.dir;
+    },
+  });
+
+  if (unknownClasses.size) {
+    warnings.push(`Вид некоторых объектов хранилища программе неизвестен `
+      + `(${[...unknownClasses].join(', ')}) — их код в проверку не попал. `
+      + 'Сообщите об этом: таблица видов пополняется только проверенными значениями.');
+  }
+
+  progress.done('export', `помещений за период: ${commits.length}`);
+
+  const parsedData = await parseAll({
+    dir: mainDir,
+    extensionDirs,
+    progress,
+    fallbackConfiguration: { version: lastConfigVersion(commits) },
+  });
+  progress.skip('vendor', 'не требуется: разбираются помещения за период');
+
+  return {
+    ...parsedData,
+    ...repositoryChangeSet(parsedData, commits),
+    repositories: repoStatus,
+    period,
+    commits,
+    codeSource: 'repository-files',
+    placementDiffs: {
+      mode: 'always', skipped: '', limited: Boolean(diffStats.limited), dumps: diffStats.dumps,
+    },
+    missingObjects: [],
+  };
 }
 
 async function fromRepository({ input, platform, workRoot, progress, warnings }) {
@@ -800,8 +1010,12 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     ? { limited: false, dumps: 0, skipped: diffs.reason }
     : codeSource === 'repository'
       ? await buildPlacementDiffs({
-        platform, contextBase, expandBase, workRoot, progress, commits, repositories,
-        user: input.repositoryUser, password: input.repositoryPassword,
+        progress,
+        commits,
+        versionDir: platformVersionDir({
+          platform, contextBase, expandBase, workRoot, repositories,
+          user: input.repositoryUser, password: input.repositoryPassword,
+        }),
       })
       : await buildPlacementDiffsByCompare({
         platform, contextBase, workRoot, progress, commits, repositories, mainDir, extensionDirs,
@@ -829,50 +1043,15 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     fallbackConfiguration: { version: lastConfigVersion(commits) },
   });
 
-  // Анализируем только то, что помещали за период. История печатает русские
-  // имена объектов, а анализ знает их ключами ConfigDumpInfo — переводим сразу,
-  // и авторов раскладываем по тем же ключам, иначе замечания к ним не привяжутся.
-  const byRussian = authorsByObject(commits);
-  const touched = new Set();
-  const byObject = new Map();
-  for (const [russian, entry] of byRussian) {
-    const key = keyFromRussian(russian);
-    if (!key) continue;
-    touched.add(key);
-    byObject.set(key, entry);
-  }
   progress.skip('vendor', 'не требуется: разбираются помещения за период');
-
-  // У хранилища нет понятия «поставщик» — сравнивать помещённый код не с чем.
-  // Поэтому все тронутые за период объекты идут в `added`, а не в `modified`:
-  // `modified` в остальном движке означает «изменённый ТИПОВОЙ модуль», и тогда
-  // анализ ищет в нём только участки, обрамлённые пометками разработчика
-  // («// ++ Фамилия»). В хранилище таких пометок обычно нет — код и так весь
-  // авторский, — и модуль без пометок тихо исключался из анализа целиком.
-  // Так, например, не находился вызов Сообщить() во вновь помещённом модуле:
-  // модуль был в `touched`, но `isAddedModule` смотрел только в `added`,
-  // видел пустое множество и включал модуль в «типовые с пометками».
-  const changeSet = {
-    modified: new Set(),
-    added: touched,
-    removed: new Set(),
-    unchanged: 0,
-    totalClient: parsedData.modules.length,
-    totalVendor: 0,
-    isChanged: (key) => touched.has(key) || touched.has(key.split('.').slice(0, 2).join('.')),
-  };
 
   return {
     ...parsedData,
-    changeSet,
-    vendorComparison: { available: false, reason: 'источник — хранилище конфигурации' },
-    vendorDir: null,
-    vendorDetails: null,
+    ...repositoryChangeSet(parsedData, commits),
     repositories: repoStatus,
     period,
     commits,
     codeSource,
-    authorsByObject: byObject,
     // Что стало с кодом правок и чего в отчёте нет: отчёт обязан сказать это
     // сам, а не оставить читателя гадать, почему у помещений пусто.
     placementDiffs: {
@@ -1096,13 +1275,40 @@ async function expandRepositoryCf({
  * на часы. При достижении предела часть диффов остаётся без текста — это
  * показано в отчёте предупреждением, а не подменяется тишиной.
  */
-async function buildPlacementDiffs({
-  platform, contextBase, expandBase, workRoot, progress, commits, repositories, user, password,
+/**
+ * Каталог с кодом версии — средствами платформы.
+ *
+ * Версия выгружается из хранилища файлом `.cf` и разворачивается в XML,
+ * причём только запрошенными объектами: ради двух модулей помещения
+ * конфигурацию целиком разворачивать незачем.
+ */
+function platformVersionDir({
+  platform, contextBase, expandBase, workRoot, repositories, user, password,
 }) {
+  const repoByName = new Map(repositories.map((r) => [r.name, r]));
+  return async (repoName, version, objects) => {
+    const repo = repoByName.get(repoName);
+    if (!repo) return null;
+    const dumped = await repositoryDumpCfg({
+      platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version,
+      extension: repo.extension || '',
+    });
+    if (!dumped.ok) return null;
+    // К хранилищу ходим через `contextBase` (там может быть служебная база —
+    // только чтение), а разворачиваем в `expandBase` — своей.
+    const expanded = await expandRepositoryCf({
+      repo: { ...repo, suffix: `-v${version}` },
+      cfFile: dumped.file, platform, contextBase: expandBase || contextBase, workRoot,
+      objects,
+    });
+    return expanded.ok ? expanded.dir : null;
+  };
+}
+
+async function buildPlacementDiffs({ progress, commits, versionDir }) {
   const withCode = commits.filter((c) => (c.added.length || c.changed.length));
   if (!withCode.length) return { limited: false, dumps: 0 };
 
-  const repoByName = new Map(repositories.map((r) => [r.name, r]));
   const cache = new Map();
   const needed = neededObjects(withCode);
   const startedAt = Date.now();
@@ -1116,42 +1322,29 @@ async function buildPlacementDiffs({
     // Бюджет времени вместо жёсткого числа выгрузок: дорога сама выгрузка
     // версии, а сколько она длится, зависит от размера конфигурации — на ERP
     // это минуты, на маленькой базе секунды. Считать в минутах честнее,
-    // чем в штуках.
+    // чем в штуках. Прямому чтению каталога бюджет не мешает: там версия
+    // достаётся за миллисекунды и до предела дело не доходит.
     if (outOfPlacementBudget({ dumps, startedAt })) {
       limited = true;
       cache.set(key, null);
       return null;
     }
-    const repo = repoByName.get(repoName);
-    if (!repo) return null;
     dumps += 1;
     const objects = [...(needed.get(key) || [])];
     progress.update('export', `хранилище «${repoName}»: версия ${version} — объектов ${objects.length}`);
     let entry = null;
     try {
-      const dumped = await repositoryDumpCfg({
-        platform, contextBase, dir: repo.dir, workDir: workRoot, user, password, version,
-        extension: repo.extension || '',
-      });
-      if (dumped.ok) {
-        // К хранилищу ходим через `contextBase` (там может быть служебная
-        // база — только чтение), а разворачиваем в `expandBase` — своей.
-        const expanded = await expandRepositoryCf({
-          repo: { ...repo, suffix: `-v${version}` },
-          cfFile: dumped.file, platform, contextBase: expandBase || contextBase, workRoot,
-          objects,
-        });
-        if (expanded.ok) {
-          const modules = await collectModules(expanded.dir);
-          const byObject = new Map();
-          for (const m of modules) {
-            if (!m.ownerKind || !m.ownerName) continue;
-            const k = `${m.ownerKind}.${m.ownerName}`;
-            if (!byObject.has(k)) byObject.set(k, []);
-            byObject.get(k).push(m);
-          }
-          entry = { byObject };
+      const dir = await versionDir(repoName, version, objects);
+      if (dir) {
+        const modules = await collectModules(dir);
+        const byObject = new Map();
+        for (const m of modules) {
+          if (!m.ownerKind || !m.ownerName) continue;
+          const k = `${m.ownerKind}.${m.ownerName}`;
+          if (!byObject.has(k)) byObject.set(k, []);
+          byObject.get(k).push(m);
         }
+        entry = { byObject };
       }
     } catch (err) {
       rethrowIfCancelled(err);

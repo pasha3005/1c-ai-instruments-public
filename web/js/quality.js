@@ -31,6 +31,9 @@ export function initQuality() {
   state.timer = createTimer($('#qProgressTimer'));
   attachPathHint($('#qPath'), $('#qPathHint'), api.parsePath);
 
+  $$('#qRepoKind input[name="qRepoKind"]').forEach((radio) => {
+    radio.addEventListener('change', () => applyRepoKind());
+  });
   $$('#qSource input[name="qSource"]').forEach((radio) => {
     radio.addEventListener('change', () => applySource(radio.value));
   });
@@ -279,27 +282,57 @@ function applySource(source) {
   $('#qStartBtn').querySelector('span').textContent = source === 'repository'
     ? 'Проверить помещения в хранилище'
     : 'Проверить качество кода';
+  applyRepoKind();
+}
+
+/** Каталог или сервер хранилищ: у вариантов разная работа и разные поля. */
+function currentRepoKind() {
+  return $('#qRepoKind input[name="qRepoKind"]:checked')?.value || 'folder';
+}
+
+/**
+ * Показывает поля выбранного варианта и прячет чужие.
+ *
+ * Версия платформы прячется вместе с ними: хранилище-каталог читается
+ * напрямую, платформа при этом не запускается ни разу — спрашивать её версию
+ * значило бы спрашивать о том, что ни на что не влияет.
+ */
+function applyRepoKind() {
+  const kind = currentRepoKind();
+  const repository = currentSource() === 'repository';
+  $$('[data-repo-kind]').forEach((block) => {
+    block.hidden = !repository || block.dataset.repoKind !== kind;
+  });
+  $$('[data-needs-platform]').forEach((block) => {
+    block.hidden = repository && kind === 'folder';
+  });
 }
 
 function collectInput() {
+  const source = currentSource();
+  const repositoryKind = currentRepoKind();
+  const byFolder = repositoryKind === 'folder';
   return {
-    source: currentSource(),
+    source,
     infobasePath: $('#qPath').value.trim(),
     user: $('#qUser').value.trim(),
     password: $('#qPassword').value,
-    // Одно поле на каталог и на сетевой адрес: что именно введено, программа
-    // разбирает сама (`repositorySources` в конвейере).
-    repositoryPath: $('#qRepo').value.trim(),
-    repositoryUser: $('#qRepoUser').value.trim(),
-    repositoryPassword: $('#qRepoPassword').value,
-    serviceBase: $('#qServiceBase').value.trim(),
-    serviceBaseUser: $('#qServiceBaseUser').value.trim(),
-    serviceBasePassword: $('#qServiceBasePassword').value,
+    // Поле у каждого варианта своё, а конвейеру уходит одно: что именно
+    // введено, он разбирает сам (`repositorySources`).
+    repositoryKind,
+    repositoryPath: (byFolder ? $('#qRepoFolder').value : $('#qRepoAddress').value).trim(),
+    // Пользователь хранилища и служебная база нужны только платформе:
+    // у каталога программа читает файлы и ни к кому не подключается.
+    repositoryUser: byFolder ? '' : $('#qRepoUser').value.trim(),
+    repositoryPassword: byFolder ? '' : $('#qRepoPassword').value,
+    serviceBase: byFolder ? '' : $('#qServiceBase').value.trim(),
+    serviceBaseUser: byFolder ? '' : $('#qServiceBaseUser').value.trim(),
+    serviceBasePassword: byFolder ? '' : $('#qServiceBasePassword').value,
     periodFrom: $('#qFrom').value,
     periodTo: $('#qTo').value,
-    placementDiffs: $('#qPlacementDiffs').value,
+    placementDiffs: byFolder ? 'on' : $('#qPlacementDiffs').value,
     vendorConfigPath: $('#qVendor').value.trim(),
-    platformVersion: $('#qPlatform').value.trim(),
+    platformVersion: byFolder ? '' : $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),
     keepDump: $('#qKeepDump').checked,
   };
@@ -309,11 +342,14 @@ async function start() {
   if (state.running) return;
   const input = collectInput();
 
+  const byFolder = input.repositoryKind === 'folder';
   const checks = input.source === 'repository'
-    ? [
-      [input.repositoryPath, 'Укажите хранилище: каталог на диске или сетевой адрес', '#qRepo'],
-      [input.repositoryUser, 'Укажите пользователя хранилища', '#qRepoUser'],
-    ]
+    ? (byFolder
+      ? [[input.repositoryPath, 'Укажите каталог с хранилищами', '#qRepoFolder']]
+      : [
+        [input.repositoryPath, 'Укажите адрес хранилища', '#qRepoAddress'],
+        [input.repositoryUser, 'Укажите пользователя хранилища', '#qRepoUser'],
+      ])
     : [[input.infobasePath, 'Укажите путь к информационной базе', '#qPath']];
   checks.push([input.workDir, 'Укажите рабочий каталог', '#qWorkDir']);
 
