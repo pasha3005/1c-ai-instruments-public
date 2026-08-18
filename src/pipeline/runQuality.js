@@ -30,8 +30,9 @@ import { exportConfiguration, exportExtensions } from '../onec/collector.js';
 import {
   findRepositories, parseRepositoryAddresses, repositoryHistory, repositoryDumpCfg,
   filterByPeriod, authorsByObject, createContextInfobase, ensureContextExtension,
-  expandExtensionCf, isExtensionRepositoryRefusal, isNetworkRepository,
+  expandExtensionCf, isExtensionRepositoryRefusal, isMissingExtension, isNetworkRepository,
 } from '../onec/repository.js';
+import { readInfobaseBindings, matchRepository, describeBindings } from '../onec/infobaseBinding.js';
 import { parseConfigurationDump } from '../parse/configuration.js';
 import { collectModules } from '../parse/modules.js';
 import { parseExtensions } from '../parse/extensions.js';
@@ -330,6 +331,131 @@ export function repositorySources(input) {
   return sources;
 }
 
+/**
+ * Чьё это хранилище с точки зрения служебной базы — и её ли оно вообще.
+ *
+ * Условие пользователя (18.08.2026): по `tcp://` указываются **только те
+ * адреса, к которым служебная база уже подключена** — основной конфигурацией
+ * либо одним из её расширений. Отсюда три следствия, и все три здесь:
+ *
+ *  1. чужой сетевой адрес — остановка прогона с перечнем того, к чему база
+ *     подключена на самом деле. Идти к такому хранилищу вслепую нельзя:
+ *     непонятно ни чьё оно, ни каким расширением его читать;
+ *  2. распознанное хранилище расширения снимает главный отказ режима «только
+ *     чтение». Раньше программа отказывалась читать такие хранилища, потому
+ *     что конфигуратору нужно расширение в базе, а создавать его в служебной
+ *     базе запрещено. Но подключённое расширение в базе **уже есть** —
+ *     создавать нечего, и чтение остаётся чтением;
+ *  3. пользователь хранилища сверяется с тем, под которым база подключена:
+ *     переподключать чужую базу под другим пользователем программа не станет.
+ *
+ * Каталоги проверяются мягче: к хранилищу-каталогу база может быть и не
+ * подключена — он читается по пути, — поэтому там расхождение это
+ * предупреждение, а распознавание работает так же и служит только тому, чтобы
+ * сразу знать, где хранилище расширений.
+ *
+ * Без служебной базы (работает своя временная) сверять не с чем: своя база
+ * не подключена ни к чему.
+ *
+ * Само решение принимает `classifyRepositories` — оно чистое и потому
+ * проверяется тестами; `bindRepositories` читает привязку с диска и превращает
+ * решение в остановку прогона.
+ *
+ * @returns {{strangers: string[], mismatched: string[], notes: string[]}}
+ */
+export function classifyRepositories({ repositories, bindings, repositoryUser }) {
+  const strangers = [];
+  const mismatched = [];
+  const notes = [];
+  const given = String(repositoryUser || '').trim();
+
+  for (const repo of repositories) {
+    const isNetwork = isNetworkRepository(repo.dir);
+    const match = matchRepository(repo.dir, bindings);
+    if (!match) {
+      // Каталог читается по пути, и подключённость базы к нему ничего не
+      // решает; сетевой адрес без привязки — это тот самый случай, ради
+      // которого всё и делается.
+      if (isNetwork) strangers.push(repo.dir);
+      continue;
+    }
+
+    repo.role = match.kind;
+    if (match.kind === 'extension') {
+      repo.boundExtension = match.extensionName || '';
+      // Контекстом годится ЛЮБОЕ существующее расширение базы: имя расширения
+      // в базе платформа с именем расширения в хранилище не сверяет (проверено
+      // 12.08.2026 двумя разными именами на одном хранилище). Поэтому первым
+      // идёт опознанное, а следом остальные — на случай устаревшего профиля.
+      repo.extensionCandidates = [
+        ...(match.extensionName ? [match.extensionName] : []),
+        ...(bindings.extensionNames || []).filter((name) => name !== match.extensionName),
+      ];
+      repo.extension = repo.extensionCandidates[0] || '';
+    }
+
+    if (match.user && given && match.user.toLowerCase() !== given.toLowerCase()) {
+      if (isNetwork) {
+        mismatched.push(`${repo.name}: база подключена под «${match.user}», указан «${given}»`);
+      } else {
+        notes.push(`Хранилище «${repo.name}»: служебная база подключена к нему под пользователем `
+          + `хранилища «${match.user}», а в форме указан «${given}».`);
+      }
+    }
+  }
+
+  return { strangers, mismatched, notes };
+}
+
+async function bindRepositories({ input, repositories, progress, warnings }) {
+  if (!input.serviceBase) return null;
+
+  const network = repositories.filter((r) => isNetworkRepository(r.dir));
+  const bindings = await readInfobaseBindings(input.serviceBase);
+
+  if (!bindings.ok) {
+    if (!network.length) {
+      warnings.push(`Привязку служебной базы к хранилищам проверить не удалось: ${bindings.reason}. `
+        + 'Хранилища заданы каталогами и читаются по пути, поэтому проверка не обязательна.');
+      return null;
+    }
+    throw new Error(
+      `Сетевые адреса хранилищ сверить не с чем: ${bindings.reason}. `
+      + 'По сети (tcp://) программа работает только с теми хранилищами, к которым служебная база '
+      + 'уже подключена: иначе неизвестно ни чьё это хранилище, ни каким расширением его читать. '
+      + 'Откройте служебную базу конфигуратором на этой машине под этим пользователем Windows '
+      + '(Конфигурация → Хранилище конфигурации) и запустите проверку заново.',
+    );
+  }
+
+  const { strangers, mismatched, notes } = classifyRepositories({
+    repositories, bindings, repositoryUser: input.repositoryUser,
+  });
+  warnings.push(...notes);
+
+  if (strangers.length) {
+    throw new Error(
+      `Служебная база не подключена к этим хранилищам: ${strangers.join(', ')}. `
+      + 'Ни основная конфигурация базы, ни одно из её расширений с этими адресами не связаны. '
+      + `База «${bindings.base}» подключена к: ${describeBindings(bindings).join('; ') || 'ничему'}. `
+      + 'Проверьте адрес или укажите ту базу, через которую вы работаете с этим хранилищем: '
+      + 'переподключать базу программа не станет.',
+    );
+  }
+  if (mismatched.length) {
+    throw new Error(
+      `Указан не тот пользователь хранилища. ${mismatched.join('; ')}. `
+      + 'Программа работает с хранилищем от имени того пользователя, под которым база к нему '
+      + 'подключена, и переподключать её под другим не станет — укажите в форме этого же '
+      + 'пользователя и его пароль.',
+    );
+  }
+
+  const named = repositories.filter((r) => r.role);
+  progress.update('source', `привязка служебной базы: опознано хранилищ ${named.length} из ${repositories.length}`);
+  return bindings;
+}
+
 async function fromRepository({ input, platform, workRoot, progress, warnings }) {
   const sources = repositorySources(input);
   // Только адреса — значит и говорить надо про адреса; хоть один каталог —
@@ -366,6 +492,11 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
         + 'хранилища, каталог, где их несколько, или сетевой адрес вида '
         + 'tcp://сервер/хранилище.');
   }
+  // Чьё это хранилище с точки зрения служебной базы — до первого обращения
+  // к платформе: чужой адрес должен остановить прогон сразу, а не через минуту
+  // работы, и распознанное расширение избавляет от лишней неудачной попытки.
+  await bindRepositories({ input, repositories, progress, warnings });
+
   progress.done('source', `хранилищ: ${repositories.length} (${repositories.map((r) => r.name).join(', ')})`);
 
   startOrThrow(progress, 'export', 'Чтение истории и выгрузка конфигурации из хранилища');
@@ -415,10 +546,23 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
 
   for (const repo of repositories) {
     progress.update('export', `хранилище «${repo.name}»: история`);
-    let history = await repositoryHistory({
-      platform, contextBase, dir: repo.dir, workDir: workRoot,
-      user: input.repositoryUser, password: input.repositoryPassword,
-    });
+    // Хранилище опознано как расширение служебной базы — идём сразу через
+    // расширение этой базы, без заведомо неудачной попытки основной
+    // конфигурацией. Профиль конфигуратора отстаёт от базы (расширение могли
+    // переименовать), поэтому имён пробуется столько, сколько есть.
+    let history = null;
+    for (const extension of repo.extensionCandidates?.length ? repo.extensionCandidates : ['']) {
+      history = await repositoryHistory({
+        platform, contextBase, dir: repo.dir, workDir: workRoot,
+        user: input.repositoryUser, password: input.repositoryPassword,
+        extension,
+      });
+      if (history.ok) {
+        repo.extension = extension;
+        break;
+      }
+      if (!isMissingExtension(history.reason)) break;
+    }
 
     // Хранилище расширений отвечает «Соединение основной конфигурации
     // с хранилищем расширений конфигураций невозможно»: ему нужно расширение
@@ -426,16 +570,24 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     // расширения в базе с именем расширения в хранилище платформа не сверяет
     // (проверено), поэтому одного хватает на все хранилища расширений.
     if (!history.ok && isExtensionRepositoryRefusal(history.reason) && readOnly) {
-      // Расширение пришлось бы завести в СЛУЖЕБНОЙ базе: команды хранилища
-      // идут через неё (только она получает лицензию), а своя временная база
-      // в этом месте не годится — по той же причине. Создание расширения —
-      // изменение базы, а в служебную не пишется ничего. Значит, честный отказ.
+      // Прочитать хранилище расширений можно только через расширение той базы,
+      // из которой работает конфигуратор. ГОТОВОЕ расширение служебной базы для
+      // этого годится (это чтение) — но лишь когда известно, что оно там есть:
+      // такие хранилища распознаёт `bindRepositories` по привязке базы. Сюда
+      // мы попадаем, когда распознать не вышло, а заводить расширение самим
+      // нельзя: создание расширения — запись в служебную базу.
       history = {
         ...history,
-        reason: 'это хранилище РАСШИРЕНИЙ. Чтобы его прочитать, конфигуратору нужно расширение '
-          + 'в базе, через которую он работает, — а в служебную базу программа не пишет ничего. '
-          + 'Проверьте это хранилище на машине, где есть лицензия на файловые базы: там '
-          + 'служебная база не нужна и расширение заводится во временной.',
+        reason: repo.extensionCandidates?.length
+          ? 'это хранилище РАСШИРЕНИЙ, и расширения служебной базы для него не подошли '
+            + `(пробовали: ${repo.extensionCandidates.join(', ')}). Завести своё программа `
+            + 'не может: в служебную базу не пишется ничего.'
+          : 'это хранилище РАСШИРЕНИЙ. Чтобы его прочитать, конфигуратору нужно расширение '
+            + 'в базе, через которую он работает. Готовое расширение служебной базы подошло бы, '
+            + 'но эта база к данному хранилищу не подключена — а заводить своё нельзя: '
+            + 'в служебную базу программа не пишет ничего. Укажите базу, через которую вы '
+            + 'работаете с этим хранилищем, либо проверьте его на машине с лицензией '
+            + 'на файловые базы: там служебная база не нужна вовсе.',
       };
     } else if (!history.ok && isExtensionRepositoryRefusal(history.reason)) {
       progress.update('export', `хранилище «${repo.name}»: это хранилище расширений`);
@@ -510,6 +662,11 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
     const isMain = !mainDir && !repo.extension;
     repoStatus.push({
       name: repo.name, dir: repo.dir, ok: true, isMain, isExtension: Boolean(repo.extension),
+      // Чем хранилище оказалось по привязке служебной базы: у сетевых адресов
+      // это единственный способ понять, основной конфигурации оно или
+      // расширения, — по самому адресу не видно.
+      role: repo.role || null,
+      boundExtension: repo.boundExtension || null,
     });
     if (!expanded.dir) continue;
     if (isMain) mainDir = expanded.dir;
@@ -701,6 +858,19 @@ const MAX_PLACEMENT_DUMPS = Number(process.env.ONEC_AUDIT_MAX_PLACEMENT_DUMPS ||
 const PLACEMENT_BUDGET_MS = Number(process.env.ONEC_AUDIT_PLACEMENT_BUDGET_MS || 25 * 60 * 1000);
 
 /**
+ * Кончился ли отпущенный на выгрузки запас — по времени или по числу.
+ *
+ * Правило одно на оба пути построения правок, и живёт оно здесь именно поэтому:
+ * пока проверка стояла внутри каждого из них, в запасном пути (сравнение двух
+ * `.cf` без разворачивания) остался только счёт в штуках — 200 выгрузок, то
+ * есть сотня версий подряд. На ERP это часы вместо обещанных 25 минут, причём
+ * молча. Найдено 18.08.2026 разбором кода, тестов на тот путь не было.
+ */
+export function outOfPlacementBudget({ dumps, startedAt, now = Date.now() }) {
+  return dumps >= MAX_PLACEMENT_DUMPS || now - startedAt > PLACEMENT_BUDGET_MS;
+}
+
+/**
  * Какие объекты нужны на каждой версии хранилища.
  *
  * Ради двух изменённых модулей помещения незачем разворачивать конфигурацию
@@ -797,7 +967,7 @@ async function buildPlacementDiffs({
     // версии, а сколько она длится, зависит от размера конфигурации — на ERP
     // это минуты, на маленькой базе секунды. Считать в минутах честнее,
     // чем в штуках.
-    if (dumps >= MAX_PLACEMENT_DUMPS || Date.now() - startedAt > PLACEMENT_BUDGET_MS) {
+    if (outOfPlacementBudget({ dumps, startedAt })) {
       limited = true;
       cache.set(key, null);
       return null;
@@ -960,6 +1130,7 @@ async function buildPlacementDiffsByCompare({
 
   const repoByName = new Map(repositories.map((r) => [r.name, r]));
   const cache = new Map();
+  const startedAt = Date.now();
   let dumps = 0;
   let limited = false;
 
@@ -969,7 +1140,10 @@ async function buildPlacementDiffsByCompare({
     if (cache.has(key)) return cache.get(key);
     const repo = repoByName.get(repoName);
     if (!repo || version < 2) return null;
-    if (dumps >= MAX_PLACEMENT_DUMPS) {
+    // Тот же бюджет, что у основного пути: здесь на версию приходится ДВЕ
+    // выгрузки, и без ограничения по времени сотня помещений растянула бы
+    // проверку на часы.
+    if (outOfPlacementBudget({ dumps, startedAt })) {
       limited = true;
       cache.set(key, null);
       return null;

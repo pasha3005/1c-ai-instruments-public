@@ -195,7 +195,7 @@ function renderCommits(result) {
       ? c.repository === repo.name
       : repositories.length === 1));
     const title = `Хранилище «${esc(repo.name)}»`
-      + `<span class="muted"> — ${repo.isMain ? 'основная конфигурация' : 'расширение'}</span>`;
+      + `<span class="muted"> — ${esc(repositoryRole(repo))}</span>`;
     return collapsible(title, renderRepositoryCommits(repo, own), {
       count: repo.ok === false
         ? 'не прочитано'
@@ -216,6 +216,26 @@ function renderCommits(result) {
   <div class="callout callout--warn">
     Ни одного хранилища прочитать не удалось — проверять нечего.
   </div>`}`;
+}
+
+/**
+ * Чем оказалось хранилище — основной конфигурации или расширения.
+ *
+ * У сетевого адреса это по самой строке не видно вовсе, и раньше подпись
+ * держалась на порядке чтения: первое прочитанное хранилище считалось основным.
+ * Теперь при работе через служебную базу роль известна точно — из привязки
+ * этой базы к хранилищам (`onec/infobaseBinding.js`), — и подписывается ею.
+ * Имя расширения выводится, только когда оно следует однозначно: связи
+ * «расширение в базе → его имя» в привязке нет, и угадывать её нельзя.
+ */
+export function repositoryRole(repo) {
+  if (repo?.role === 'main') return 'основная конфигурация';
+  if (repo?.role === 'extension') {
+    return repo.boundExtension
+      ? `хранилище расширения «${repo.boundExtension}»`
+      : 'хранилище расширения';
+  }
+  return repo?.isMain ? 'основная конфигурация' : 'расширение';
 }
 
 /**
