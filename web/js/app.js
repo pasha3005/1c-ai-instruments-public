@@ -11,6 +11,7 @@ import { initQuality, showQualityStages, reloadQualityHistory } from './quality.
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
   formatDuration, formatNumber, formatDateTime, attachPathHint, openReportInBrowser,
+  restoreInput,
 } from './ui.js';
 
 const state = {
@@ -21,6 +22,22 @@ const state = {
   startedAt: null,
   timer: null,
   cancelling: false,
+  /** Значения прошлого аудита подставлены — второй раз не подставляем. */
+  restored: false,
+};
+
+/** Поля формы обследования, восстанавливаемые из последнего прогона. */
+const AUDIT_FIELDS = {
+  infobasePath: '#infobasePath',
+  platformVersion: '#platformVersion',
+  vendorConfigPath: '#vendorConfigPath',
+  clientName: '#clientName',
+  user: '#user',
+  workDir: '#workDir',
+  hourlyRate: '#hourlyRate',
+  reportTheme: '#reportTheme',
+  collectLiveData: '#collectLiveData',
+  keepDump: '#keepDump',
 };
 
 /**
@@ -687,6 +704,12 @@ async function loadHistory() {
 
   try {
     const { items } = await api.listAudits();
+    // Поля формы — из последнего прогона: пути и каталоги от раза к разу
+    // не меняются, а набирать их заново приходилось каждый раз.
+    if (!state.restored && items[0]?.input) {
+      state.restored = true;
+      restoreInput(AUDIT_FIELDS, items[0].input);
+    }
     if (!items.length) {
       container.innerHTML = '<div class="empty">Аудиты ещё не выполнялись.</div>';
       return;
@@ -845,4 +868,8 @@ requireLicense().then(() => {
   initUpdate();
   initQuality();
   loadEnvironment();
+  // История читается сразу, а не при открытии её раздела: из последней
+  // записи в форму подставляются значения прошлого прогона. Остальные
+  // разделы делают то же самое в своих init.
+  loadHistory();
 });

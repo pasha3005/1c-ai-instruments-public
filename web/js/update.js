@@ -13,7 +13,7 @@
 import { api, subscribeToUpdate } from './api.js';
 import {
   $, $$, escapeHtml, setNote, renderStages, formatDuration, formatNumber,
-  formatDateTime, createTimer, attachPathHint, openReportInBrowser,
+  formatDateTime, createTimer, attachPathHint, openReportInBrowser, restoreInput,
 } from './ui.js';
 
 const state = {
@@ -22,6 +22,21 @@ const state = {
   cancelling: false,
   running: false,
   timer: null,
+  /** Значения прошлого объединения подставлены — второй раз не подставляем. */
+  restored: false,
+};
+
+/** Поля формы обновления, восстанавливаемые из последнего прогона. */
+const UPDATE_FIELDS = {
+  infobasePath: '#uPath',
+  user: '#uUser',
+  platformVersion: '#uPlatform',
+  vendorConfigPath: '#uVendor',
+  targetConfigPath: '#uTarget',
+  workDir: '#uWorkDir',
+  reportTheme: '#uReportTheme',
+  keepDump: '#uKeepDump',
+  openResultsForm: '#uOpenResultsForm',
 };
 
 export function initUpdate() {
@@ -419,6 +434,10 @@ async function loadHistory() {
   container.innerHTML = '<div class="empty">Загрузка…</div>';
   try {
     const { items } = await api.listUpdates();
+    if (!state.restored && items[0]?.input) {
+      state.restored = true;
+      restoreInput(UPDATE_FIELDS, items[0].input);
+    }
     if (!items.length) {
       container.innerHTML = '<div class="empty">Объединения ещё не выполнялись.</div>';
       return;

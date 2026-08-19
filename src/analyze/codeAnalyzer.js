@@ -18,6 +18,7 @@ import * as architectureRules from './rules/architecture.js';
 import * as securityRules from './rules/security.js';
 import * as standardsRules from './rules/standards.js';
 import * as itsRules from './rules/its.js';
+import * as policyRules from './rules/policy.js';
 import { shouldAnalyzeModule, isAddedModule, dumpInfoKeyForModule } from './vendorConfig.js';
 import { findAuthoredRegions, authoredLineCount } from './bsl/authorship.js';
 import { diffModule, diffModuleAligned, attachVendorLines, keepOnlyRegions, toRegions } from './bsl/moduleDiff.js';
@@ -35,6 +36,9 @@ const log = createLogger('analyze:code');
 
 const RULE_SETS = [
   performanceRules, architectureRules, securityRules, standardsRules, itsRules,
+  // Правила регламента проекта. Набор молча выходит, если регламент
+  // не выбран, — тогда отчёт остаётся ровно таким, каким был.
+  policyRules,
 ];
 
 /**
@@ -43,7 +47,7 @@ const RULE_SETS = [
  * @param {{onProgress?: (done: number, total: number, title: string) => void}} [options]
  */
 export async function analyzeCode(modules, configuration, options = {}) {
-  const { onProgress, changeSet, vendorDir = null } = options;
+  const { onProgress, changeSet, vendorDir = null, policy = null } = options;
 
   // Есть с чем сравнивать — проверяем только доработки. Флага «проверять
   // и типовой код» больше нет: типовой код вендора не анализируется никогда,
@@ -270,8 +274,15 @@ export async function analyzeCode(modules, configuration, options = {}) {
     // часть правил считает по модулю целиком и привязывает одно замечание
     // со счётчиком к первому вхождению — то есть к строке ВЕНДОРА.
     const ctx = diff
-      ? runRuleSets({ module, source: keepOnlyRegions(source, diff.regions), configuration })
-      : runRuleSets({ module, source, tokens, stats, structure, queries, comments, configuration });
+      ? runRuleSets({
+        module, source: keepOnlyRegions(source, diff.regions), configuration, policy,
+        // Модуль целиком нужен проверкам регламента, которые судят о месте
+        // вставки в модуле, а не о её содержимом.
+        fullSource: source, partialSource: true,
+      })
+      : runRuleSets({
+        module, source, tokens, stats, structure, queries, comments, configuration, policy,
+      });
 
     if (diff) {
       // Правила здесь видят текст с вычищенными типовыми строками (включая
@@ -702,6 +713,7 @@ async function readVendorModule(vendorDir, module) {
  */
 function runRuleSets({
   module, source, tokens, stats, structure, queries, comments, configuration,
+  policy = null, fullSource = null, partialSource = false,
 }) {
   let parsed = { tokens, stats, structure, queries, comments };
   if (!parsed.tokens) {
@@ -717,7 +729,9 @@ function runRuleSets({
     };
   }
 
-  const ctx = createRuleContext({ module, source, configuration, ...parsed });
+  const ctx = createRuleContext({
+    module, source, configuration, policy, fullSource, partialSource, ...parsed,
+  });
   for (const ruleSet of RULE_SETS) {
     try {
       ruleSet.run(ctx);

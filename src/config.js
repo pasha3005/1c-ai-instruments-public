@@ -28,6 +28,12 @@ function readVersion() {
   }
 }
 
+/**
+ * Шаблон регламента разработки: обезличенный образец, который пользователь
+ * сохраняет из формы проверки качества и правит под свой проект.
+ */
+export const POLICY_TEMPLATE = path.join(SRC_DIR, 'policy', 'template', 'Регламент разработки (шаблон).md');
+
 /** Каталог со статикой веб-интерфейса. */
 export const WEB_DIR = path.join(ROOT_DIR, 'web');
 

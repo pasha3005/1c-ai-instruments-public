@@ -11,7 +11,7 @@
 import { api, subscribeToQuality } from './api.js';
 import {
   $, $$, setNote, renderStages, formatDuration, formatNumber, createTimer, attachPathHint,
-  escapeHtml, formatDateTime, openReportInBrowser,
+  escapeHtml, formatDateTime, openReportInBrowser, restoreInput,
 } from './ui.js';
 
 const state = {
@@ -21,6 +21,8 @@ const state = {
   cancelling: false,
   timer: null,
   periodApplied: { from: '', to: '' },
+  // Значения прошлого прогона подставляются один раз за открытие страницы.
+  restored: false,
   // Незавершённый выбор в календаре: `anchor` — первая нажатая дата, пока
   // не нажата вторая; `hover` — дата под указателем, ради предварительной
   // подсветки диапазона. Наружу это не попадает до кнопки «Применить».
@@ -43,6 +45,7 @@ export function initQuality() {
   applySource(currentSource());
 
   initPeriodDialog();
+  initPolicyField();
 
   $('#qualityForm').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -56,6 +59,85 @@ export function initQuality() {
   });
 
   loadHistory();
+}
+
+/**
+ * Регламент разработки: поле файла открывается флагом.
+ *
+ * Флаг снимают чаще, чем меняют файл, поэтому путь при снятии не стирается:
+ * следующий прогон с регламентом не потребует выбирать файл заново.
+ */
+function initPolicyField() {
+  const flag = $('#qUsePolicy');
+  const field = $('#qPolicyField');
+  const apply = () => { field.hidden = !flag.checked; };
+  flag.addEventListener('change', apply);
+  apply();
+
+  $('#qPolicyTemplate').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.savePolicyTemplate();
+      if (!result.cancelled) setNote('#qFormNote', `Шаблон регламента сохранён: ${result.path}`);
+    } catch (err) {
+      setNote('#qFormNote', err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+/**
+ * Поля формы, восстанавливаемые из последнего прогона.
+ *
+ * Оба переключателя восстанавливаются тоже: без источника и вида хранилища
+ * остальные поля оказались бы в скрытых блоках.
+ */
+const QUALITY_FIELDS = {
+  source: 'name:qSource',
+  repositoryKind: 'name:qRepoKind',
+  infobasePath: '#qPath',
+  user: '#qUser',
+  repositoryPath: '#qRepoFolder',
+  repositoryUser: '#qRepoUser',
+  serviceBase: '#qServiceBase',
+  serviceBaseUser: '#qServiceBaseUser',
+  placementDiffs: '#qPlacementDiffs',
+  vendorConfigPath: '#qVendor',
+  platformVersion: '#qPlatform',
+  workDir: '#qWorkDir',
+  keepDump: '#qKeepDump',
+  usePolicy: '#qUsePolicy',
+  policyPath: '#qPolicyPath',
+};
+
+/**
+ * Подставляет значения последнего прогона — один раз за открытие страницы.
+ *
+ * Второй раз (по кнопке обновления истории) подставлять нельзя: пользователь
+ * к тому времени уже мог править поля, и затирать их было бы хуже, чем
+ * не подставлять вовсе.
+ */
+function restoreLastInput(input) {
+  if (state.restored || !input) return;
+  state.restored = true;
+
+  // Адрес хранилища и каталог приходят одним полем: раскладывает их по своим
+  // местам тот же признак, что и в форме, — вид хранилища.
+  const byFolder = (input.repositoryKind || 'folder') !== 'tcp';
+  restoreInput({
+    ...QUALITY_FIELDS,
+    repositoryPath: byFolder ? '#qRepoFolder' : '#qRepoAddress',
+  }, input);
+  applySource(currentSource());
+
+  if (input.periodFrom || input.periodTo) {
+    $('#qFrom').value = input.periodFrom || '';
+    $('#qTo').value = input.periodTo || '';
+    state.periodApplied = { from: input.periodFrom || '', to: input.periodTo || '' };
+    updatePeriodLabel();
+  }
 }
 
 /** Перечитать список прошлых проверок — раздел «История» этого режима. */
@@ -335,6 +417,10 @@ function collectInput() {
     platformVersion: byFolder ? '' : $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),
     keepDump: $('#qKeepDump').checked,
+    // Регламент разработки проекта: флаг и путь идут отдельно, чтобы снятый
+    // флаг не стирал выбранный файл.
+    usePolicy: $('#qUsePolicy').checked,
+    policyPath: $('#qPolicyPath').value.trim(),
   };
 }
 
@@ -352,6 +438,9 @@ async function start() {
       ])
     : [[input.infobasePath, 'Укажите путь к информационной базе', '#qPath']];
   checks.push([input.workDir, 'Укажите рабочий каталог', '#qWorkDir']);
+  if (input.usePolicy) {
+    checks.push([input.policyPath, 'Укажите файл регламента разработки', '#qPolicyPath']);
+  }
 
   for (const [value, message, focus] of checks) {
     if (!value) {
@@ -471,6 +560,7 @@ async function loadHistory() {
   container.innerHTML = '<div class="empty">Загрузка…</div>';
   try {
     const { items } = await api.listQuality();
+    restoreLastInput(items[0]?.input);
     if (!items.length) {
       container.innerHTML = '<div class="empty">Проверки качества ещё не выполнялись.</div>';
       return;

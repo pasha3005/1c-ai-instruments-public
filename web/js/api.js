@@ -89,6 +89,10 @@ export const api = {
 
   // --- Проверка качества кода ---
 
+  /** Сохранить шаблон регламента разработки — куда, спросит сервер диалогом. */
+  savePolicyTemplate: () =>
+    request('api/quality/policy-template', { method: 'POST' }),
+
   startQuality: (input) =>
     request('api/quality', { method: 'POST', body: JSON.stringify(input) }),
 

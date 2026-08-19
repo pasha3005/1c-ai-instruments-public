@@ -23,6 +23,7 @@ const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts'
 export const FILE_FILTERS = {
   cf: 'Конфигурация поставщика (*.cf)|*.cf|Все файлы (*.*)|*.*',
   html: 'Веб-страница (*.html)|*.html|Все файлы (*.*)|*.*',
+  md: 'Регламент разработки (*.md)|*.md|Все файлы (*.*)|*.*',
   any: 'Все файлы (*.*)|*.*',
 };
 

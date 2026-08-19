@@ -310,10 +310,18 @@ export class RepositoryStore {
 
     const skipped = [];
     let modules = 0;
-    for (const item of this.externalsAt(version, objIds)) {
-      const written = await this.#writeModule(item, outDir);
-      if (written) modules += 1;
-      else if (written === false) skipped.push(this.fullName(item.objId));
+    // Созданные каталоги запоминаются: без этого на каждый модуль приходится
+    // свой mkdir, а модулей у большого помещения десятки тысяч.
+    const made = new Set();
+    try {
+      for (const item of this.externalsAt(version, objIds)) {
+        const written = await this.#writeModule(item, outDir, made);
+        if (written) modules += 1;
+        else if (written === false) skipped.push(this.fullName(item.objId));
+      }
+    } finally {
+      // Паки держались открытыми ради скорости — отпускаем файлы.
+      await this.objects.close();
     }
     log.info(`Версия ${version} хранилища «${path.basename(this.dir)}»: модулей ${modules}`);
     return { dir: outDir, modules, skipped: [...new Set(skipped)] };
@@ -323,7 +331,7 @@ export class RepositoryStore {
    * Пишет один модуль. Возвращает true (записан), false (вид неизвестен)
    * либо null (это не модуль — описание объекта, макет и прочее).
    */
-  async #writeModule(item, outDir) {
+  async #writeModule(item, outDir, made = null) {
     const owner = this.ownerOf(item.objId);
     if (!owner) return null;
     const ownerDir = DIR_BY_TAG.get(owner.tag);
@@ -350,7 +358,11 @@ export class RepositoryStore {
     }
     if (!text.trim()) return null;
 
-    await ensureDir(path.dirname(file));
+    const dir = path.dirname(file);
+    if (!made || !made.has(dir)) {
+      await ensureDir(dir);
+      made?.add(dir);
+    }
     await fs.writeFile(file, text, 'utf8');
 
     // Рядом с модулем нужен XML объекта: по нему разбор выгрузки узнаёт

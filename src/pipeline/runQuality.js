@@ -48,6 +48,8 @@ import { reportedRegions } from '../analyze/codeAnalyzer.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
 import { analyzeStructure } from '../analyze/bsl/structure.js';
 import { runAnalysis } from '../analyze/index.js';
+import { SEVERITY, CATEGORY } from '../analyze/rules/context.js';
+import { parsePolicy, policySummary, safePattern } from '../policy/parsePolicy.js';
 import { tagByRu } from '../parse/metadataKinds.js';
 import { renderQualityReport } from '../report/qualityReport.js';
 import * as store from '../store/qualityStore.js';
@@ -81,6 +83,11 @@ async function runPipeline({ qualityId, input, progress }) {
     startStage('prepare');
     await ensureDir(workRoot);
     progress.done('prepare', workRoot);
+
+    // Регламент разработки проекта — необязательный MD-файл. Читается первым:
+    // от него зависят и состав проверок кода, и уровень замечаний, и проверка
+    // комментариев помещений.
+    const policy = await loadPolicy({ input, progress, warnings });
 
     // Хранилище-каталог читается своими силами, платформа для него
     // не запускается ни разу — искать её незачем, и на машине без 1С
@@ -126,6 +133,7 @@ async function runPipeline({ qualityId, input, progress }) {
       vendorDir: prepared.vendorDir,
       vendorDetails: prepared.vendorDetails,
       input,
+      policy,
       hooks: {
         onCodeProgress: (done, total) => progress.update('analyze', `модуль ${done} из ${total}`),
       },
@@ -137,6 +145,11 @@ async function runPipeline({ qualityId, input, progress }) {
     if (prepared.authorsByObject) {
       applyRepositoryAuthors(analysis.findings, prepared.authorsByObject);
     }
+
+    // Замечания к самим помещениям добавляются ПОСЛЕ подстановки авторов:
+    // у них автор известен точно — это тот, кто поместил, — а подстановка
+    // ищет автора по объекту и такому замечанию проставила бы пустоту.
+    analysis.findings.push(...checkCommitTickets(prepared.commits, policy));
 
     const bySeverity = countBy(analysis.findings, (f) => f.severity);
     const authors = new Set(analysis.findings.map((f) => f.author).filter(Boolean));
@@ -159,6 +172,9 @@ async function runPipeline({ qualityId, input, progress }) {
       // выгрузкой служебной базы. Отчёт обязан говорить об этом прямо —
       // от этого зависит, что в нём вообще может быть видно.
       codeSource: prepared.codeSource || null,
+      // Регламент разработки проекта: по нему часть замечаний, и отчёт обязан
+      // назвать его — вместе с правилами, которых программа не знает.
+      policy: policySummary(policy),
       placementDiffs: prepared.placementDiffs || null,
       missingObjects: prepared.missingObjects || null,
       configuration: prepared.parsed.configuration,
@@ -672,6 +688,7 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
       return done.dir;
     },
   });
+  if (diffStats.massNote) warnings.push(diffStats.massNote);
 
   if (unknownClasses.size) {
     // Одного идентификатора мало: по нему вид не назовёт никто. Поэтому рядом
@@ -1069,6 +1086,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
         user: input.repositoryUser, password: input.repositoryPassword,
       });
   if (diffStats.skipped) warnings.push(diffStats.skipped);
+  if (diffStats.massNote) warnings.push(diffStats.massNote);
   if (diffStats.limited) {
     warnings.push(
       `Правки показаны не по всем помещениям периода: на выгрузку версий хранилища `
@@ -1259,6 +1277,52 @@ function topLevelName(name) {
   return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : '';
 }
 
+/**
+ * Сколько объектов в помещении делают его массовым.
+ *
+ * Помещение из тысяч объектов — не работа разработчика, а массовая заливка:
+ * первое наполнение хранилища либо помещение после обновления конфигурации.
+ * Строить по нему код правок бессмысленно (там типовой код вендора) и очень
+ * дорого: на ERP версия раскладывается в двадцать тысяч файлов, а версий нужно
+ * две — своя и предыдущая. Живой случай 19.08.2026: помещение на 12 219
+ * объектов держало прогон больше часа на одном этапе.
+ *
+ * Порог намеренно щедрый: правка в полсотни объектов — обычное дело,
+ * в триста — уже редкость, а тысячи бывают только у заливки.
+ */
+export const MASS_PLACEMENT_OBJECTS = 300;
+
+/**
+ * Делит помещения на те, по которым строится код правок, и массовые.
+ *
+ * Массовые не отбрасываются из отчёта: помещение остаётся в дереве со всеми
+ * своими объектами и автором — не строятся только фрагменты кода, и отчёт
+ * говорит об этом прямо.
+ */
+export function splitMassPlacements(commits, limit = MASS_PLACEMENT_OBJECTS) {
+  const withCode = [];
+  const mass = [];
+  for (const commit of commits || []) {
+    const count = new Set([...(commit.added || []), ...(commit.changed || [])]).size;
+    if (!count) continue;
+    if (count > limit) mass.push({ ...commit, objectCount: count });
+    else withCode.push(commit);
+  }
+  return { withCode, mass };
+}
+
+/** Предупреждение о массовых помещениях — одной строкой на прогон. */
+export function massPlacementNote(mass) {
+  if (!mass.length) return '';
+  const shown = mass.slice(0, 5)
+    .map((c) => `${c.repository ? `«${c.repository}» ` : ''}версия ${c.version} (объектов ${c.objectCount})`);
+  return 'Код правок не строился по массовым помещениям: '
+    + `${shown.join(', ')}${mass.length > 5 ? ` и ещё ${mass.length - 5}` : ''}. `
+    + `В таком помещении больше ${MASS_PLACEMENT_OBJECTS} объектов — это заливка конфигурации целиком, `
+    + 'а не правка разработчика: сравнивать в ней нечего, а раскладка версии заняла бы часы. '
+    + 'Сами помещения, их объекты и авторы в отчёте остались.';
+}
+
 export function neededObjects(commits) {
   const needed = new Map();
   const add = (repo, version, names) => {
@@ -1353,8 +1417,11 @@ function platformVersionDir({
 }
 
 async function buildPlacementDiffs({ progress, commits, versionDir }) {
-  const withCode = commits.filter((c) => (c.added.length || c.changed.length));
-  if (!withCode.length) return { limited: false, dumps: 0 };
+  // Массовые помещения из построения правок исключаются целиком: иначе одна
+  // заливка конфигурации держит прогон часами (см. splitMassPlacements).
+  const { withCode, mass } = splitMassPlacements(commits);
+  const massNote = massPlacementNote(mass);
+  if (!withCode.length) return { limited: false, dumps: 0, massNote };
 
   const cache = new Map();
   const needed = neededObjects(withCode);
@@ -1476,7 +1543,7 @@ async function buildPlacementDiffs({ progress, commits, versionDir }) {
     if (diffs.length) commit.moduleDiffs = diffs;
   }
 
-  return { limited, dumps };
+  return { limited, dumps, massNote };
 }
 
 /**
@@ -1503,8 +1570,11 @@ async function buildPlacementDiffsByCompare({
   platform, contextBase, workRoot, progress, commits, repositories,
   mainDir, extensionDirs, user, password,
 }) {
-  const withCode = commits.filter((c) => (c.added.length || c.changed.length));
-  if (!withCode.length) return { limited: false, dumps: 0 };
+  // Массовые помещения из построения правок исключаются целиком: иначе одна
+  // заливка конфигурации держит прогон часами (см. splitMassPlacements).
+  const { withCode, mass } = splitMassPlacements(commits);
+  const massNote = massPlacementNote(mass);
+  if (!withCode.length) return { limited: false, dumps: 0, massNote };
 
   // Модули базы — единый источник текста для всех помещений.
   const byObject = new Map();
@@ -1634,7 +1704,7 @@ async function buildPlacementDiffsByCompare({
     if (diffs.length) commit.moduleDiffs = diffs;
   }
 
-  return { limited, dumps };
+  return { limited, dumps, massNote };
 }
 
 /**
@@ -1735,6 +1805,91 @@ function keyFromRussian(name) {
  * угодно и когда угодно, а запись хранилища одна и точна. Не нашлось объекта
  * в помещениях периода — автор пуст, и это честнее фамилии из комментария.
  */
+/**
+ * Читает и разбирает регламент разработки проекта.
+ *
+ * Флаг снят или файл не указан — этап пропускается, и проверка работает ровно
+ * как раньше. Файл указан, но не прочитан — это ошибка ввода, а не повод
+ * молча продолжить: пользователь ждёт проверки по своему регламенту.
+ */
+async function loadPolicy({ input, progress, warnings }) {
+  const file = String(input.policyPath || '').trim();
+  if (input.usePolicy !== true || !file) {
+    progress.skip('policy', 'регламент не используется');
+    return null;
+  }
+
+  progress.start('policy', file);
+  const policy = parsePolicy(await readText(file));
+  if (!policy.blocks) {
+    throw new Error(
+      `В файле «${file}» нет ни одного блока «правило»: это не регламент разработки `
+      + 'в понятном программе виде. Возьмите за основу шаблон из формы проверки.',
+    );
+  }
+
+  for (const message of policy.errors) progress.message(message, 'warn');
+  if (policy.errors.length) warnings.push(...policy.errors);
+  if (policy.unknown.length) {
+    // Честность важнее полноты: если правило в регламенте есть, а проверки
+    // в программе нет, отчёт обязан назвать его поимённо.
+    warnings.push(
+      `Регламент требует проверок, которых в программе нет: ${policy.unknown.map((u) => u.code).join(', ')}. `
+      + 'Эти пункты не проверялись.',
+    );
+  }
+
+  const active = [...policy.rules.values()].filter((r) => !r.disabled).length;
+  progress.done('policy', `${policy.name || 'регламент'}: правил ${active}`);
+  log.info(`Регламент «${policy.name}» v${policy.version}: правил ${active}, режим ${policy.mode}`);
+  return policy;
+}
+
+/**
+ * Номер задачи в комментарии помещения.
+ *
+ * Замечание относится не к коду, а к самому помещению, поэтому автор известен
+ * точно — это тот, кто поместил. Работает только в режиме хранилища: в режиме
+ * информационной базы помещений нет.
+ */
+export function checkCommitTickets(commits, policy) {
+  const rule = policy?.rules?.get('policy.commit-ticket');
+  if (!rule || rule.disabled || !commits?.length) return [];
+
+  const mask = safePattern(rule.params['маска номера задачи'], null, '') || /[#№]\s*\d+/;
+  const findings = [];
+  for (const commit of commits) {
+    const comment = String(commit.comment || '').trim();
+    if (mask.test(comment)) continue;
+    findings.push({
+      ruleId: 'policy.commit-ticket',
+      policyCode: 'policy.commit-ticket',
+      policyRef: rule.section || null,
+      title: `Помещение ${commit.version} без номера задачи`,
+      severity: rule.severity || SEVERITY.MEDIUM,
+      category: CATEGORY.POLICY,
+      detail: comment
+        ? `Комментарий помещения — «${comment.slice(0, 160)}». Номера задачи в нём нет.`
+        : 'Комментарий помещения пуст.',
+      recommendation: rule.text
+        || 'Указывайте в комментарии помещения номер задачи: по нему восстанавливают, зачем сделана правка.',
+      moduleTitle: `Хранилище «${commit.repository || ''}», помещение ${commit.version}`,
+      moduleFile: '',
+      moduleType: 'commit',
+      moduleTypeRu: 'Помещение в хранилище',
+      ownerKind: null,
+      ownerName: null,
+      formName: null,
+      routine: null,
+      author: commit.user || '',
+      authorSource: 'хранилище конфигурации',
+      committedAt: commit.at || '',
+      commitComment: comment,
+    });
+  }
+  return findings;
+}
+
 function applyRepositoryAuthors(findings, byObject) {
   for (const finding of findings) {
     const key = objectKeyOf(finding);

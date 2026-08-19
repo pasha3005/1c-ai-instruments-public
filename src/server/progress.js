@@ -85,6 +85,7 @@ export const UPDATE_STAGES = [
  */
 export const QUALITY_STAGES = [
   { id: 'prepare', title: 'Подготовка', weight: 2 },
+  { id: 'policy', title: 'Регламент разработки', weight: 1 },
   { id: 'platform', title: 'Поиск платформы 1С', weight: 2 },
   { id: 'source', title: 'Источник кода', weight: 4 },
   { id: 'export', title: 'Получение исходников', weight: 34 },

@@ -108,7 +108,39 @@ function renderCover(result) {
     <div><dt>Дата проверки</dt><dd>${esc(formatDate(result.generatedAt))}</dd></div>
   </dl>
   <p class="cover__scope">${esc(scopeSentence(result, fromRepo))}</p>
+  ${renderPolicyNote(result)}
 </header>`;
+}
+
+/**
+ * По какому регламенту проверяли — на титуле, рядом с областью проверки.
+ *
+ * Читатель отчёта обязан видеть три вещи: чей это регламент, дополняет он
+ * встроенные правила или заменяет их, и какие его пункты программа проверить
+ * не смогла. Последнее — прямое требование продукта: отчёт не утверждает того,
+ * чего не делал.
+ */
+export function renderPolicyNote(result) {
+  const policy = result?.policy;
+  if (!policy) return '';
+
+  const name = policy.name || 'Регламент разработки проекта';
+  const version = policy.version ? ` (версия ${policy.version})` : '';
+  const mode = policy.mode === 'replace'
+    ? 'Проверялись только правила регламента: встроенные проверки программы отключены режимом «заменяет».'
+    : 'Регламент дополняет встроенные проверки программы.';
+  const disabled = policy.disabled
+    ? ` Выключено регламентом правил: ${formatNumber(policy.disabled)}.`
+    : '';
+  const unknown = policy.unknown?.length
+    ? `<p class="cover__scope"><b>Не проверено:</b> регламент требует проверок, которых в программе нет —
+       ${esc(policy.unknown.join(', '))}. Эти пункты остаются за специалистом.</p>`
+    : '';
+
+  return `
+  <p class="cover__scope">Проверка выполнена по регламенту «${esc(name)}»${esc(version)}:
+    правил применено ${formatNumber(policy.rules || 0)}. ${esc(mode)}${esc(disabled)}</p>
+  ${unknown}`;
 }
 
 /**

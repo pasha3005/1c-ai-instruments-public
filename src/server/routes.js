@@ -25,7 +25,7 @@ import { inspectWorkDir, clearWorkDir } from '../util/workDir.js';
 import { licenseStatus, activate } from '../util/license.js';
 import { renderMarkdown } from '../report/markdownToHtml.js';
 import { openUrl } from '../util/browser.js';
-import { APP, ROOT_DIR, SERVER } from '../config.js';
+import { APP, ROOT_DIR, SERVER, POLICY_TEMPLATE } from '../config.js';
 import { readText, pathExists } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
 
@@ -832,6 +832,11 @@ export function buildRouter() {
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
       keepDump: body.keepDump === true,
+      // Регламент разработки проекта: необязательный MD-файл со СОСТАВОМ правил.
+      // Флаг отдельно от пути: снятый флаг оставляет путь в форме, чтобы
+      // не выбирать файл заново при следующем прогоне.
+      usePolicy: body.usePolicy === true,
+      policyPath: String(body.policyPath || '').trim(),
       reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
     };
 
@@ -843,6 +848,42 @@ export function buildRouter() {
     });
 
     sendJson(res, 202, { qualityId });
+  });
+
+  /**
+   * Сохранение шаблона регламента разработки.
+   *
+   * Шаблон едет в поставке и правится под проект: пользователь получает его
+   * системным диалогом сохранения — так же, как отчёт. Через браузер отдать
+   * файл нельзя: страница не знает путей на диске, а класть шаблон рядом
+   * с программой значило бы предлагать править файл внутри поставки, который
+   * пересборка затрёт.
+   */
+  router.post('/api/quality/policy-template', async (req, res) => {
+    if (!dialogsAvailable()) {
+      sendError(res, 400, 'Диалог сохранения доступен только под Windows');
+      return;
+    }
+    try {
+      const template = await fs.readFile(POLICY_TEMPLATE, 'utf8');
+      const target = await pickPath({
+        mode: 'save',
+        title: 'Куда сохранить шаблон регламента разработки',
+        filter: FILE_FILTERS.md,
+        fileName: 'Регламент разработки.md',
+        initial: downloadsDir(),
+      });
+      if (!target) {
+        sendJson(res, 200, { cancelled: true });
+        return;
+      }
+      const file = /\.md$/i.test(target) ? target : `${target}.md`;
+      await fs.writeFile(file, template, 'utf8');
+      log.info(`Шаблон регламента сохранён: ${file}`);
+      sendJson(res, 200, { cancelled: false, path: file });
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
   });
 
   router.get('/api/quality', async (req, res, { query }) => {

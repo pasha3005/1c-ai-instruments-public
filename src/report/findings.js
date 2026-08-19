@@ -247,10 +247,19 @@ function renderRuleGroup(rule) {
     {
       id: `rule-${slug(rule.ruleId)}`,
       count: formatNumber(rule.items.length),
-      badges: `<span class="badge badge--info">${esc(CATEGORY_RU[rule.category] || rule.category)}</span>`,
+      // Пункт регламента проекта — рядом с направлением: читателю важно
+      // видеть, что требование пришло из документа проекта, а не от нас.
+      badges: `<span class="badge badge--info">${esc(CATEGORY_RU[rule.category] || rule.category)}</span>`
+        + policyBadge(rule.items[0]),
       extraClass: 'collapsible--group',
     },
   );
+}
+
+/** Ссылка на пункт регламента проекта — у замечаний, пришедших из него. */
+function policyBadge(finding) {
+  if (!finding?.policyRef) return '';
+  return `<span class="badge">Регламент: ${esc(finding.policyRef)}</span>`;
 }
 
 /**

@@ -179,3 +179,52 @@ export async function openReportInBrowser(button, request, onError) {
     button.textContent = original;
   }
 }
+
+/**
+ * Подставляет в форму значения последнего прогона этого раздела.
+ *
+ * Пути к базам, каталоги, версия платформы, флажки — всё это от прогона
+ * к прогону не меняется, а набирать их заново приходилось каждый раз. Берутся
+ * значения из последней записи истории раздела: там они уже сохранены вместе
+ * с прогоном (`store/*.js`, поле `input`).
+ *
+ * Чего в подстановке нет и не будет — **паролей**: они не сохраняются вовсе,
+ * ни в истории, ни где-либо ещё (`sanitizeInput` вырезает их до записи).
+ *
+ * Истории нет — форма остаётся пустой, и сообщать об этом не нужно: пустая
+ * форма при первом запуске и есть ожидаемое поведение.
+ *
+ * @param {Record<string, string>} map поле входных данных → селектор элемента
+ * @param {object|null} input сохранённые значения прогона
+ */
+export function restoreInput(map, input) {
+  if (!input) return;
+
+  for (const [key, selector] of Object.entries(map)) {
+    const value = input[key];
+    if (value === undefined || value === null) continue;
+
+    // Переключатель: выбирается тот вариант, что был в прошлый раз, и ему
+    // подаётся событие — от него зависит, какие блоки формы показаны.
+    if (selector.startsWith('name:')) {
+      const radio = document.querySelector(`input[name="${selector.slice(5)}"][value="${value}"]`);
+      if (!radio || radio.checked) continue;
+      radio.checked = true;
+      radio.dispatchEvent(new Event('change', { bubbles: true }));
+      continue;
+    }
+
+    const el = document.querySelector(selector);
+    if (!el) continue;
+
+    if (el.type === 'checkbox') {
+      if (typeof value !== 'boolean') continue;
+      el.checked = value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      continue;
+    }
+    if (value === '') continue;
+    el.value = String(value);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}

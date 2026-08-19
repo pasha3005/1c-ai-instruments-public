@@ -4,7 +4,9 @@
  * данными, поэтому модуль полностью покрывается тестами.
  */
 
-import { analyzeCode } from './codeAnalyzer.js';
+import { analyzeCode, summarize } from './codeAnalyzer.js';
+import { runMetadataChecks } from './metadataChecks.js';
+import { applyPolicy } from '../policy/applyPolicy.js';
 import { buildVendorDiffTree } from './vendorConfig.js';
 import {
   analyzeModifications, describeModificationLevel, topCustomObjects, analyzeNamePrefixes,
@@ -14,7 +16,8 @@ import { scoreUpdatability, scoreHealth } from './updatability.js';
 import { analyzeDataVolume } from './dataVolume.js';
 import { estimateEffort, buildImprovementPlan } from './effort.js';
 import { orderedKindStats } from '../parse/configuration.js';
-import { SEVERITY_RU, CATEGORY_RU } from './rules/context.js';
+import { SEVERITY_RU, CATEGORY_RU, SEVERITY_ORDER } from './rules/context.js';
+import { groupByAuthor } from './attribution.js';
 import { ruPlural } from '../parse/metadataKinds.js';
 
 /**
@@ -32,7 +35,7 @@ import { ruPlural } from '../parse/metadataKinds.js';
 export async function runAnalysis({
   parsed, modules, extensions, roles, live, infobaseFacts, baseline,
   changeSet = null, vendorComparison = null, vendorDir = null, vendorDetails = null,
-  missingExtensions = [], input, hooks = {},
+  missingExtensions = [], input, policy = null, hooks = {},
 }) {
   const objectIndex = new Map(parsed.objects.map((o) => [o.fullName, o]));
 
@@ -49,10 +52,32 @@ export async function runAnalysis({
   const codeAnalysis = await analyzeCode(modules, configurationContext, {
     onProgress: hooks.onCodeProgress,
     changeSet,
+    // Регламент разработки проекта: правила берут из него состав проверок
+    // и уровень критичности замечаний.
+    policy,
     // Исходники поставщика на диске — тогда изменённые типовые модули
     // разбираются построчным сравнением, а не по пометкам.
     vendorDir,
   });
+
+  // --- Проверки уровня конфигурации ---
+  //
+  // Подписка на событие с потерянным обработчиком и префикс доработок в имени
+  // объекта — требования, которые из одного модуля не проверить. Результат
+  // вливается в общий список замечаний до расчёта оценок и трудозатрат:
+  // это такие же находки, и считаться они должны наравне.
+  const metadataFindings = await runMetadataChecks({
+    parsed, modules, extensions, changeSet, policy,
+  });
+
+  // Регламент проекта распоряжается ВСТРОЕННЫМИ правилами: выключает,
+  // переставляет уровень, а в режиме «заменяет» оставляет только своё.
+  // Свои замечания регламента уровень и ссылку на пункт несут уже сами.
+  codeAnalysis.findings = applyPolicy(
+    [...codeAnalysis.findings, ...metadataFindings], policy,
+  ).sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  codeAnalysis.summary = summarize(codeAnalysis.findings);
+  codeAnalysis.byAuthor = groupByAuthor(codeAnalysis.findings);
 
   // --- Дерево отличий от конфигурации поставщика ---
   // Строится после анализа кода: только он знает, что именно изменилось
@@ -302,4 +327,10 @@ function buildSecurityObservations({ roles, fullAccessRoles, setForNewObjects, t
   }
 
   return observations;
+}
+
+/** Порядок критичности: замечания метаданных встают на своё место. */
+function severityRank(severity) {
+  const at = SEVERITY_ORDER.indexOf(severity);
+  return at < 0 ? SEVERITY_ORDER.length : at;
 }

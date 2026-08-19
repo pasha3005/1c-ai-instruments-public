@@ -76,6 +76,30 @@ export async function openObjectStore(repositoryDir) {
 export class ObjectStore {
   constructor(index) {
     this.index = index;
+    /**
+     * Открытые файлы паков.
+     *
+     * Раньше пак открывался и закрывался на КАЖДЫЙ объект. На раскладке
+     * большого помещения это десятки тысяч пар системных вызовов, а когда
+     * каталог выгрузки лежит на сетевом диске — ещё и столько же обращений
+     * по сети. Паков в хранилище единицы, поэтому держим их открытыми
+     * до `close()`.
+     */
+    this.handles = new Map();
+  }
+
+  /** Закрывает открытые паки: без этого файлы остаются занятыми. */
+  async close() {
+    const open = [...this.handles.values()];
+    this.handles.clear();
+    for (const handle of open) {
+      await (await handle).close().catch(() => {});
+    }
+  }
+
+  #handle(pack) {
+    if (!this.handles.has(pack)) this.handles.set(pack, fs.open(pack, 'r'));
+    return this.handles.get(pack);
   }
 
   get size() {
@@ -94,18 +118,14 @@ export class ObjectStore {
     if (!entry) return null;
     if (entry.file) return unpack(await fs.readFile(entry.file));
 
-    const handle = await fs.open(entry.pack, 'r');
-    try {
-      const head = Buffer.alloc(8);
-      await handle.read(head, 0, 8, entry.offset);
-      const length = Number(head.readBigUInt64LE(0));
-      if (!length) return null;
-      const body = Buffer.alloc(length);
-      await handle.read(body, 0, length, entry.offset + 8);
-      return unpack(body);
-    } finally {
-      await handle.close();
-    }
+    const handle = await this.#handle(entry.pack);
+    const head = Buffer.alloc(8);
+    await handle.read(head, 0, 8, entry.offset);
+    const length = Number(head.readBigUInt64LE(0));
+    if (!length) return null;
+    const body = Buffer.alloc(length);
+    await handle.read(body, 0, length, entry.offset + 8);
+    return unpack(body);
   }
 
   /**

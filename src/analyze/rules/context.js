@@ -37,6 +37,8 @@ export const CATEGORY = {
   SECURITY: 'security',
   STANDARDS: 'standards',
   MAINTAINABILITY: 'maintainability',
+  /** Требования регламента разработки проекта, а не наши и не ИТС. */
+  POLICY: 'policy',
 };
 
 export const CATEGORY_RU = {
@@ -45,6 +47,7 @@ export const CATEGORY_RU = {
   security: 'Безопасность',
   standards: 'Стандарты разработки 1С',
   maintainability: 'Сопровождаемость',
+  policy: 'Регламент проекта',
 };
 
 /** Небезопасные конструкции: динамическое исполнение кода. */
@@ -77,6 +80,7 @@ export const DEPRECATED_METHODS = new Map([
  */
 export function createRuleContext({
   module, source, tokens, stats, structure, queries, comments = [], configuration,
+  policy = null, fullSource = null, partialSource = false,
 }) {
   /** @type {object[]} */
   const findings = [];
@@ -94,6 +98,19 @@ export function createRuleContext({
     // Нужны они одному правилу — «закомментированный код» (ИТС 456).
     comments,
     configuration,
+    // Регламент разработки проекта: набор правил, выбранный пользователем
+    // MD-файлом. Пуст — набор `rules/policy.js` молча выходит.
+    policy,
+    // Текст модуля ЦЕЛИКОМ и признак того, что `source` от него урезан.
+    //
+    // У изменённого типового модуля правила видят только строки правки:
+    // отличия от типового кода типовым кодом не являются. Но проверкам
+    // регламента иногда нужен весь модуль — например, чтобы убедиться, что
+    // вставка лежит внутри области добавленного функционала. Правила,
+    // считающие по модулю целиком (области, размер), на урезанном тексте
+    // не работают вовсе: там нет ни областей вендора, ни его строк.
+    fullSource: fullSource || source,
+    partialSource,
     findings,
 
     /**
