@@ -213,6 +213,18 @@ export const LAYOUT_SCRIPT = `
     }, { passive: true });
   }
 
+  /**
+   * Куда мы уже пообещали прокрутиться.
+   *
+   * Щелчков колеса подряд бывает много, а плавная прокрутка длится дольше
+   * одного щелчка. Считать каждый раз от текущего положения нельзя: анимация
+   * ещё идёт, положение отстаёт, и цель каждый раз оказывается почти той же —
+   * страница ползёт вместо того, чтобы ехать. Поэтому следующий щелчок
+   * прибавляется к ЦЕЛИ предыдущего.
+   */
+  var chainTarget = null;
+  var chainTimer = null;
+
   function chainWheel(event) {
     if (event.ctrlKey || event.defaultPrevented) return; // масштабирование
     var box = event.currentTarget;
@@ -228,15 +240,22 @@ export const LAYOUT_SCRIPT = `
       || (delta > 0 ? box.scrollTop >= room - 1 : box.scrollTop <= 0);
     if (!atEdge) return;
 
-    // Плавная прокрутка (html { scroll-behavior: smooth }) нужна переходам
-    // по ссылкам, а колесо от неё уплывает: докрутка идёт анимацией и на
-    // следующий щелчок колеса накладывается. Поэтому на время этого шага
-    // плавность снимается своим же инлайновым стилем.
-    var root = document.documentElement;
-    var previous = root.style.scrollBehavior;
-    root.style.scrollBehavior = 'auto';
-    window.scrollBy(0, delta);
-    root.style.scrollBehavior = previous;
+    var limit = document.documentElement.scrollHeight - window.innerHeight;
+    var from = chainTarget === null ? window.scrollY : chainTarget;
+    var target = Math.max(0, Math.min(limit, from + delta));
+    chainTarget = target;
+
+    // Прокрутка страницы обязана выглядеть одинаково — что над блоком кода,
+    // что рядом с ним. Поэтому докручиваем плавно, как это делает сам
+    // браузер, а не прыжком (жалоба пользователя 19.08.2026). Уважаем
+    // и системную настройку «уменьшить движение»: в ней прыжок уместен.
+    var smooth = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    window.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' });
+
+    // Цель живёт, пока идут щелчки. Забыть её нужно обязательно: иначе
+    // следующая прокрутка через минуту начнётся от старого места.
+    clearTimeout(chainTimer);
+    chainTimer = setTimeout(function () { chainTarget = null; }, 400);
     event.preventDefault();
   }
 

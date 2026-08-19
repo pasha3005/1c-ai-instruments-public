@@ -18,9 +18,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DATA_DIR } from '../config.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -139,7 +140,7 @@ function pathJoin(...parts) {
  */
 export function openWindow(url, { maximized = false } = {}) {
   if (process.platform !== 'win32') return false;
-  for (const exe of appWindowBrowsers()) {
+  for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
     try {
       const args = ['--new-window', url];
@@ -159,19 +160,61 @@ export function openWindow(url, { maximized = false } = {}) {
  */
 export function openAppWindow(url, { size = '1280,900' } = {}) {
   if (process.platform !== 'win32') return false;
-  for (const exe of appWindowBrowsers()) {
+  for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
     try {
       spawn(exe, [`--app=${url}`, `--window-size=${size}`], {
         detached: true,
         stdio: 'ignore',
       }).unref();
+      rememberAppBrowser(exe);
       return true;
     } catch {
       // Пробуем следующий браузер.
     }
   }
   return false;
+}
+
+/**
+ * Каким браузером открыто окно программы.
+ *
+ * Записывается на диск, а не в память процесса: сервер переживает перезапуск,
+ * а окно программы — нет, и наоборот. Живой случай 19.08.2026: окно открыл
+ * экземпляр с переносным Chromium в поставке, сервер потом перезапустили
+ * из другой копии — без переносного браузера, — и отчёт ушёл в Edge, хотя
+ * программа работала в Chromium. Правило продукта одно: **отчёт открывается
+ * тем же браузером, что и окно программы**.
+ */
+const BROWSER_CHOICE_FILE = path.join(DATA_DIR, 'browser.json');
+
+export function rememberAppBrowser(exe) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(BROWSER_CHOICE_FILE, JSON.stringify({ exe, at: new Date().toISOString() }, null, 2), 'utf8');
+  } catch {
+    // Не записалось — не беда: порядок поиска остаётся прежним.
+  }
+}
+
+/** Запомненный браузер, если он ещё на месте. */
+export function rememberedBrowser() {
+  try {
+    const { exe } = JSON.parse(readFileSync(BROWSER_CHOICE_FILE, 'utf8'));
+    return exe && existsSync(exe) ? exe : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Порядок перебора браузеров: запомненный — первым.
+ *
+ * Вынесено отдельной чистой функцией ради теста: порядок здесь и есть всё
+ * правило, а проверять его с настоящими браузерами на машине невозможно.
+ */
+export function browserOrder(remembered, candidates) {
+  return [...new Set([remembered, ...candidates].filter(Boolean))];
 }
 
 /**

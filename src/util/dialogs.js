@@ -9,6 +9,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { run } from './proc.js';
@@ -79,9 +80,69 @@ export async function pickPath({
   }
 }
 
-/** Каталог по умолчанию для диалога, если поле пустое. */
+/**
+ * С какого каталога открыть диалог.
+ *
+ * Правило простое и одинаковое во всех разделах: в поле уже что-то выбрано —
+ * открываемся там, где это лежит; поле пустое — на рабочем столе. Домашний
+ * каталог, который был здесь раньше, показывал `AppData`, `Загрузки`
+ * и прочее, чего в диалоге выбора базы или выгрузки не ищут никогда.
+ *
+ * Значение из поля бывает и не путём вовсе — строкой соединения
+ * (`Srvr="сервер";Ref="база";`) или адресом хранилища (`tcp://…`). Тогда
+ * ничего не находится, и это правильный случай: открываемся на рабочем столе.
+ */
 export function defaultInitialDir(hint) {
-  const value = String(hint || '').trim();
-  if (value) return value;
+  return existingDirOf(hint) || desktopDir();
+}
+
+/**
+ * Ближайший существующий каталог для указанного пути.
+ *
+ * Файл — его каталог; несуществующий путь — первый существующий родитель
+ * (человек мог набрать имя новой папки руками). Так диалог всё равно
+ * открывается рядом с тем местом, о котором идёт речь.
+ */
+function existingDirOf(hint) {
+  const raw = String(hint || '').trim();
+  // Файловая база записывается строкой соединения — путь в ней внутри кавычек.
+  const inQuotes = /File\s*=\s*"([^"]+)"/i.exec(raw);
+  let current = (inQuotes ? inQuotes[1] : raw).trim().replace(/^"+|"+$/g, '');
+  // Только полный путь: у относительного «родителем» окажется рабочий каталог
+  // программы, и диалог открылся бы в её собственной папке.
+  if (!current || !path.isAbsolute(current)) return '';
+
+  for (let depth = 0; depth < 40 && current; depth += 1) {
+    try {
+      if (statSync(current).isDirectory()) return current;
+      return path.dirname(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return '';
+      current = parent;
+    }
+  }
+  return '';
+}
+
+/**
+ * Рабочий стол пользователя.
+ *
+ * С OneDrive рабочий стол переезжает в его каталог, и `%USERPROFILE%\\Desktop`
+ * там пуст либо отсутствует вовсе — поэтому проверяем оба места.
+ */
+function desktopDir() {
+  const candidates = [
+    path.join(os.homedir(), 'Desktop'),
+    path.join(os.homedir(), 'Рабочий стол'),
+    process.env.OneDrive ? path.join(process.env.OneDrive, 'Desktop') : '',
+    process.env.OneDriveCommercial ? path.join(process.env.OneDriveCommercial, 'Desktop') : '',
+  ].filter(Boolean);
+
+  for (const dir of candidates) {
+    try {
+      if (statSync(dir).isDirectory()) return dir;
+    } catch { /* следующий */ }
+  }
   return os.homedir();
 }
