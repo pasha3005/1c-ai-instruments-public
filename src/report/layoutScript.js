@@ -184,7 +184,7 @@ export const LAYOUT_SCRIPT = `
     target.scrollIntoView({ block: 'start', behavior: 'auto' });
   }
 
-/**
+  /**
    * Колесо мыши над блоком кода не запирается в нём.
    *
    * У блока кода своя прокрутка по обеим осям, и браузер отдаёт ему колесо
@@ -197,32 +197,47 @@ export const LAYOUT_SCRIPT = `
    * нечего) — прокручивается страница. Требование пользователя.
    */
   function chainScrollOutOfCode() {
-    document.addEventListener('wheel', function (event) {
-      if (event.ctrlKey || event.defaultPrevented) return; // масштабирование
+    // Обработчик вешается на САМ блок кода, а не на документ.
+    //
+    // Непассивный обработчик колеса на документе означает для браузера:
+    // «любой щелчок колеса где угодно может быть отменён». Прокрутка тогда
+    // перестаёт идти в потоке композитора и на каждый щелчок ждёт главный
+    // поток — на длинном отчёте это видно как рывки. Поэтому документ слушает
+    // только наведение указателя, и делает это пассивно, а тяжёлый обработчик
+    // достаётся тем блокам кода, над которыми указатель действительно побывал.
+    document.addEventListener('mouseover', function (event) {
       var box = event.target && event.target.closest ? event.target.closest('pre.snippet') : null;
-      if (!box) return;
+      if (!box || box.hasAttribute('data-wheel-chained')) return;
+      box.setAttribute('data-wheel-chained', '1');
+      box.addEventListener('wheel', chainWheel, { passive: false });
+    }, { passive: true });
+  }
 
-      var delta = event.deltaY;
-      if (event.deltaMode === 1) delta *= 16;                    // строки
-      else if (event.deltaMode === 2) delta *= window.innerHeight; // страницы
-      if (!delta) return;
+  function chainWheel(event) {
+    if (event.ctrlKey || event.defaultPrevented) return; // масштабирование
+    var box = event.currentTarget;
+    if (!box) return;
 
-      var room = box.scrollHeight - box.clientHeight;
-      var atEdge = room <= 1
-        || (delta > 0 ? box.scrollTop >= room - 1 : box.scrollTop <= 0);
-      if (!atEdge) return;
+    var delta = event.deltaY;
+    if (event.deltaMode === 1) delta *= 16;                    // строки
+    else if (event.deltaMode === 2) delta *= window.innerHeight; // страницы
+    if (!delta) return;
 
-      // Плавная прокрутка (html { scroll-behavior: smooth }) нужна переходам
-      // по ссылкам, а колесо от неё уплывает: докрутка идёт анимацией и на
-      // следующий щелчок колеса накладывается. Поэтому на время этого шага
-      // плавность снимается своим же инлайновым стилем.
-      var root = document.documentElement;
-      var previous = root.style.scrollBehavior;
-      root.style.scrollBehavior = 'auto';
-      window.scrollBy(0, delta);
-      root.style.scrollBehavior = previous;
-      event.preventDefault();
-    }, { passive: false });
+    var room = box.scrollHeight - box.clientHeight;
+    var atEdge = room <= 1
+      || (delta > 0 ? box.scrollTop >= room - 1 : box.scrollTop <= 0);
+    if (!atEdge) return;
+
+    // Плавная прокрутка (html { scroll-behavior: smooth }) нужна переходам
+    // по ссылкам, а колесо от неё уплывает: докрутка идёт анимацией и на
+    // следующий щелчок колеса накладывается. Поэтому на время этого шага
+    // плавность снимается своим же инлайновым стилем.
+    var root = document.documentElement;
+    var previous = root.style.scrollBehavior;
+    root.style.scrollBehavior = 'auto';
+    window.scrollBy(0, delta);
+    root.style.scrollBehavior = previous;
+    event.preventDefault();
   }
 
   /**
