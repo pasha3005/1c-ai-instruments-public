@@ -28,6 +28,7 @@ export const LAYOUT_SCRIPT = `
   }
   openTargetOnNavigation();
   expandForPrinting();
+  chainScrollOutOfCode();
 
   /**
    * Подпункты меню: по одному на каждый верхнеуровневый блок раздела —
@@ -181,6 +182,47 @@ export const LAYOUT_SCRIPT = `
     }
     // Раскрытие меняет высоту документа, поэтому доводим до цели сами.
     target.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }
+
+/**
+   * Колесо мыши над блоком кода не запирается в нём.
+   *
+   * У блока кода своя прокрутка по обеим осям, и браузер отдаёт ему колесо
+   * целиком: пока указатель в блоке, страница стоит. Хуже того, «прилипание»
+   * работает и когда прокручивать в блоке нечего — длинная строка делает его
+   * прокручиваемым по горизонтали, и этого достаточно.
+   *
+   * Поэтому колесо перехватывается: пока блоку есть куда прокручиваться
+   * по вертикали, он прокручивается сам; дошёл до края (или прокручивать
+   * нечего) — прокручивается страница. Требование пользователя.
+   */
+  function chainScrollOutOfCode() {
+    document.addEventListener('wheel', function (event) {
+      if (event.ctrlKey || event.defaultPrevented) return; // масштабирование
+      var box = event.target && event.target.closest ? event.target.closest('pre.snippet') : null;
+      if (!box) return;
+
+      var delta = event.deltaY;
+      if (event.deltaMode === 1) delta *= 16;                    // строки
+      else if (event.deltaMode === 2) delta *= window.innerHeight; // страницы
+      if (!delta) return;
+
+      var room = box.scrollHeight - box.clientHeight;
+      var atEdge = room <= 1
+        || (delta > 0 ? box.scrollTop >= room - 1 : box.scrollTop <= 0);
+      if (!atEdge) return;
+
+      // Плавная прокрутка (html { scroll-behavior: smooth }) нужна переходам
+      // по ссылкам, а колесо от неё уплывает: докрутка идёт анимацией и на
+      // следующий щелчок колеса накладывается. Поэтому на время этого шага
+      // плавность снимается своим же инлайновым стилем.
+      var root = document.documentElement;
+      var previous = root.style.scrollBehavior;
+      root.style.scrollBehavior = 'auto';
+      window.scrollBy(0, delta);
+      root.style.scrollBehavior = previous;
+      event.preventDefault();
+    }, { passive: false });
   }
 
   /**

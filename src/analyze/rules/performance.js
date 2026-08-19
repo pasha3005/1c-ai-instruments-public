@@ -32,7 +32,68 @@ export function run(ctx) {
   analyzeQueries(ctx);
 }
 
-/** Конкатенация строк в цикле — квадратичное потребление памяти. */
+/**
+ * Слова, по которым переменную видно как строковую, и слова, по которым видно
+ * число. Ни лексер, ни структура модуля типов не выводят, поэтому решение
+ * принимается по тому, что написано прямо в этом же операторе.
+ */
+const STRING_WORDS = [
+  'строк', 'текст', 'представлен', 'сообщени', 'описани', 'комментар',
+  'заголов', 'наименован', 'подпис', 'html', 'xml', 'json',
+];
+const NUMBER_WORDS = [
+  'счетчик', 'счётчик', 'количеств', 'колво', 'сумм', 'итог', 'номер', 'индекс',
+  'процент', 'всего', 'размер', 'длина', 'цена', 'вес', 'объем', 'объём',
+];
+
+/** Функции, возвращающие строку: их вызов в правой части — доказательство. */
+const STRING_FUNCTIONS = new Set([
+  'строка', 'string', 'стршаблон', 'strtemplate', 'стрзаменить', 'strreplace',
+  'стрсоединить', 'strconcat', 'сокрлп', 'trimall', 'сокрл', 'triml', 'сокрп', 'trimr',
+  'формат', 'format', 'нстр', 'nstr', 'символы', 'chars', 'врег', 'upper', 'нрег', 'lower',
+  'трег', 'title', 'стрполучитьстроку', 'strgetline', 'представлениепериода',
+  'xmlстрока', 'xmlstring', 'получитьстрокуиздвоичныхданных',
+]);
+
+/** Есть ли в имени одно из слов-примет (сравнение без регистра). */
+function hasWord(name, words) {
+  const lower = String(name || '').toLowerCase();
+  return words.some((w) => lower.includes(w));
+}
+
+/**
+ * Что складывается в правой части присваивания: строка, число или непонятно.
+ *
+ * Просматриваются все токены выражения до конца оператора. Строковый литерал
+ * либо вызов строковой функции — прямое доказательство строки, числовой
+ * литерал — доказательство числа. Остальное («Итог = Итог + Строка.Процент»)
+ * не доказывает ничего: имена реквизитов о типе не говорят.
+ *
+ * @returns {'string'|'number'|'unknown'}
+ */
+function expressionKind(tokens, from) {
+  let sawNumber = false;
+  for (let i = from; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.type === TOKEN.OPERATOR && token.value === ';') break;
+    if (token.type === TOKEN.STRING) return 'string';
+    if (token.type === TOKEN.NUMBER) sawNumber = true;
+    if (token.type === TOKEN.IDENT && STRING_FUNCTIONS.has(token.value.toLowerCase())) return 'string';
+  }
+  return sawNumber ? 'number' : 'unknown';
+}
+
+/**
+ * Накопление СТРОКИ конкатенацией в цикле — квадратичный расход памяти.
+ *
+ * Шаблон «Перем = Перем + …» у строки и у числа одинаков, а «Счетчик = Счетчик + 1»
+ * проблемой не является: требование пользователя прямое — «научись различать,
+ * что является строкой, а что нет». Поэтому замечание выдаётся, только когда
+ * строку видно: в правой части стоит строковый литерал или вызов строковой
+ * функции, либо (когда в выражении одни имена) о строке говорит имя самой
+ * переменной и ничто в нём не говорит о числе. «ОбщийПроцентОплатыИтог =
+ * ОбщийПроцентОплатыИтог + СтрокаТаблицы.ПроцентОплаты» замечанием не считается.
+ */
 function detectStringConcatInLoop(ctx) {
   const { tokens, structure, source } = ctx;
   if (!structure.loops.length) return;
@@ -50,6 +111,11 @@ function detectStringConcatInLoop(ctx) {
     if (next.value.toLowerCase() !== target.value.toLowerCase()) continue;
     if (plus?.type !== TOKEN.OPERATOR || plus.value !== '+') continue;
 
+    const kind = expressionKind(tokens, i + 3);
+    if (kind === 'number') continue;
+    const namedAsString = hasWord(target.value, STRING_WORDS) && !hasWord(target.value, NUMBER_WORDS);
+    if (kind !== 'string' && !namedAsString) continue;
+
     const loop = findEnclosingLoop(structure.loops, i);
     if (!loop) continue;
 
@@ -60,11 +126,11 @@ function detectStringConcatInLoop(ctx) {
       category: CATEGORY.PERFORMANCE,
       line: eq.line,
       detail:
-        `Переменная «${target.value}» наращивается конкатенацией на каждой итерации. ` +
-        'В 1С строки неизменяемы, поэтому расход памяти и времени растёт квадратично от числа итераций.',
+        `Переменная «${target.value}» наращивается конкатенацией на каждой итерации. `
+        + 'В 1С строки неизменяемы, поэтому расход памяти и времени растёт квадратично от числа итераций.',
       recommendation:
-        'Используйте объект СтроковыйБуфер (8.3.24+) либо накапливайте фрагменты в массиве ' +
-        'и объединяйте один раз через СтрСоединить().',
+        'Используйте объект СтроковыйБуфер (8.3.24+) либо накапливайте фрагменты в массиве '
+        + 'и объединяйте один раз через СтрСоединить().',
       snippet: snippetAt(source, eq.line),
     });
   }

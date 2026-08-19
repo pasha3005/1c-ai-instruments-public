@@ -901,7 +901,12 @@ pre.snippet {
   word-break: normal;
   overflow: auto;
   max-height: 420px;
-  overscroll-behavior: contain;
+  /* По горизонтали прокрутка остаётся внутри блока — иначе жест вбок уводит
+     браузер назад по истории. По вертикали, наоборот, прокрутка обязана
+     переходить на страницу: contain по обеим осям запирал колесо в блоке,
+     даже когда прокручивать в нём нечего. */
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   color: var(--ink);
 }
 
