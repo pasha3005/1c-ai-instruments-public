@@ -28,7 +28,6 @@ export const LAYOUT_SCRIPT = `
   }
   openTargetOnNavigation();
   expandForPrinting();
-  chainScrollOutOfCode();
 
   /**
    * Подпункты меню: по одному на каждый верхнеуровневый блок раздела —
@@ -182,81 +181,6 @@ export const LAYOUT_SCRIPT = `
     }
     // Раскрытие меняет высоту документа, поэтому доводим до цели сами.
     target.scrollIntoView({ block: 'start', behavior: 'auto' });
-  }
-
-  /**
-   * Колесо мыши над блоком кода не запирается в нём.
-   *
-   * У блока кода своя прокрутка по обеим осям, и браузер отдаёт ему колесо
-   * целиком: пока указатель в блоке, страница стоит. Хуже того, «прилипание»
-   * работает и когда прокручивать в блоке нечего — длинная строка делает его
-   * прокручиваемым по горизонтали, и этого достаточно.
-   *
-   * Поэтому колесо перехватывается: пока блоку есть куда прокручиваться
-   * по вертикали, он прокручивается сам; дошёл до края (или прокручивать
-   * нечего) — прокручивается страница. Требование пользователя.
-   */
-  function chainScrollOutOfCode() {
-    // Обработчик вешается на САМ блок кода, а не на документ.
-    //
-    // Непассивный обработчик колеса на документе означает для браузера:
-    // «любой щелчок колеса где угодно может быть отменён». Прокрутка тогда
-    // перестаёт идти в потоке композитора и на каждый щелчок ждёт главный
-    // поток — на длинном отчёте это видно как рывки. Поэтому документ слушает
-    // только наведение указателя, и делает это пассивно, а тяжёлый обработчик
-    // достаётся тем блокам кода, над которыми указатель действительно побывал.
-    document.addEventListener('mouseover', function (event) {
-      var box = event.target && event.target.closest ? event.target.closest('pre.snippet') : null;
-      if (!box || box.hasAttribute('data-wheel-chained')) return;
-      box.setAttribute('data-wheel-chained', '1');
-      box.addEventListener('wheel', chainWheel, { passive: false });
-    }, { passive: true });
-  }
-
-  /**
-   * Куда мы уже пообещали прокрутиться.
-   *
-   * Щелчков колеса подряд бывает много, а плавная прокрутка длится дольше
-   * одного щелчка. Считать каждый раз от текущего положения нельзя: анимация
-   * ещё идёт, положение отстаёт, и цель каждый раз оказывается почти той же —
-   * страница ползёт вместо того, чтобы ехать. Поэтому следующий щелчок
-   * прибавляется к ЦЕЛИ предыдущего.
-   */
-  var chainTarget = null;
-  var chainTimer = null;
-
-  function chainWheel(event) {
-    if (event.ctrlKey || event.defaultPrevented) return; // масштабирование
-    var box = event.currentTarget;
-    if (!box) return;
-
-    var delta = event.deltaY;
-    if (event.deltaMode === 1) delta *= 16;                    // строки
-    else if (event.deltaMode === 2) delta *= window.innerHeight; // страницы
-    if (!delta) return;
-
-    var room = box.scrollHeight - box.clientHeight;
-    var atEdge = room <= 1
-      || (delta > 0 ? box.scrollTop >= room - 1 : box.scrollTop <= 0);
-    if (!atEdge) return;
-
-    var limit = document.documentElement.scrollHeight - window.innerHeight;
-    var from = chainTarget === null ? window.scrollY : chainTarget;
-    var target = Math.max(0, Math.min(limit, from + delta));
-    chainTarget = target;
-
-    // Прокрутка страницы обязана выглядеть одинаково — что над блоком кода,
-    // что рядом с ним. Поэтому докручиваем плавно, как это делает сам
-    // браузер, а не прыжком (жалоба пользователя 19.08.2026). Уважаем
-    // и системную настройку «уменьшить движение»: в ней прыжок уместен.
-    var smooth = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    window.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' });
-
-    // Цель живёт, пока идут щелчки. Забыть её нужно обязательно: иначе
-    // следующая прокрутка через минуту начнётся от старого места.
-    clearTimeout(chainTimer);
-    chainTimer = setTimeout(function () { chainTarget = null; }, 400);
-    event.preventDefault();
   }
 
   /**

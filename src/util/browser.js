@@ -17,11 +17,11 @@
  * и окно создавал уже работающий процесс — с нормальным состоянием показа.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR } from '../config.js';
+import { DATA_DIR, SERVER } from '../config.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -140,7 +140,11 @@ function pathJoin(...parts) {
  */
 export function openWindow(url, { maximized = false } = {}) {
   if (process.platform !== 'win32') return false;
-  for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
+  const order = browserOrder(
+    browserWithAppWindow(SERVER.port) || rememberedBrowser(),
+    appWindowBrowsers(),
+  );
+  for (const exe of order) {
     if (!existsSync(exe)) continue;
     try {
       const args = ['--new-window', url];
@@ -194,6 +198,34 @@ export function rememberAppBrowser(exe) {
     writeFileSync(BROWSER_CHOICE_FILE, JSON.stringify({ exe, at: new Date().toISOString() }, null, 2), 'utf8');
   } catch {
     // Не записалось — не беда: порядок поиска остаётся прежним.
+  }
+}
+
+/**
+ * Браузер, в котором ПРЯМО СЕЙЧАС открыто окно программы.
+ *
+ * Спрашиваем у Windows, а не полагаемся на память: окно и сервер живут
+ * порознь. Окно мог открыть другой экземпляр программы, сервер могли
+ * перезапустить, память процесса при этом пуста — а пользователь видит
+ * своё окно и справедливо ждёт, что отчёт откроется в нём же.
+ *
+ * Ищем по командной строке: окно программы запускается ключом `--app=<адрес>`,
+ * и другого процесса с таким ключом на машине нет.
+ */
+export function browserWithAppWindow(port) {
+  if (process.platform !== 'win32') return null;
+  const command = 'Get-CimInstance Win32_Process'
+    + ` | Where-Object { $_.CommandLine -like '*--app=http://127.0.0.1:${Number(port)}*' }`
+    + ' | Select-Object -First 1 -ExpandProperty ExecutablePath';
+  try {
+    const found = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
+      encoding: 'utf8', timeout: 6000, windowsHide: true,
+    });
+    const exe = String(found.stdout || '').trim();
+    return exe && existsSync(exe) ? exe : null;
+  } catch {
+    // Не вышло спросить — работаем по запомненному и по списку.
+    return null;
   }
 }
 
