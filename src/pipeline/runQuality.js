@@ -29,7 +29,7 @@ import { parseConnection, validateConnection } from '../onec/connection.js';
 import { exportConfiguration, exportExtensions, exportObjectsToXml } from '../onec/collector.js';
 import {
   findRepositories, parseRepositoryAddresses, repositoryHistory, repositoryDumpCfg,
-  filterByPeriod, dropInitialCommit, authorsByObject, createContextInfobase, ensureContextExtension,
+  filterByPeriod, authorsByObject, createContextInfobase, ensureContextExtension,
   expandExtensionCf, isExtensionRepositoryRefusal, isMissingExtension, isNetworkRepository,
 } from '../onec/repository.js';
 import { readInfobaseBindings, matchRepository, describeBindings } from '../onec/infobaseBinding.js';
@@ -543,14 +543,9 @@ function emptyPeriodNote({ repo, all, warnings }) {
     return;
   }
   const last = all[all.length - 1];
-  // Первое помещение исключено (dropInitialCommit) — об этом надо сказать,
-  // иначе у хранилища из одной версии сообщение выглядит противоречиво.
-  const initial = all.some((commit) => Number(commit.version) === 1)
-    ? ' Первое помещение (создание хранилища) в отчёт не берётся: в него попадает вся конфигурация целиком.'
-    : '';
   warnings.push(`Хранилище «${repo.name}»: за указанный период помещений нет. `
     + `Всего в нём версий ${all.length}, последняя — № ${last.version} от ${last.date || 'даты нет'}`
-    + `${last.user ? ` (${last.user})` : ''}.${initial}`);
+    + `${last.user ? ` (${last.user})` : ''}.`);
 }
 
 /**
@@ -605,7 +600,7 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
       stores.set(repo.name, store);
 
       const all = store.history();
-      const own = dropInitialCommit(filterByPeriod(all, period));
+      const own = filterByPeriod(all, period);
       for (const commit of own) commits.push({ ...commit, repository: repo.name });
 
       const latest = all.reduce((max, commit) => Math.max(max, commit.version), 0);
@@ -892,7 +887,7 @@ async function fromRepository({ input, platform, workRoot, progress, warnings })
       repoStatus.push({ name: repo.name, dir: repo.dir, ok: false, reason: history.reason });
       continue;
     }
-    const own = dropInitialCommit(filterByPeriod(history.commits, period));
+    const own = filterByPeriod(history.commits, period);
     for (const commit of own) commits.push({ ...commit, repository: repo.name });
     progress.update('export', `хранилище «${repo.name}»: помещений за период ${own.length}`);
 
