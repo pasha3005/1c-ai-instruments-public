@@ -24,6 +24,9 @@ import { pickPath, dialogsAvailable, FILE_FILTERS, defaultInitialDir } from '../
 import { inspectWorkDir, clearWorkDir } from '../util/workDir.js';
 import { licenseStatus, activate } from '../util/license.js';
 import { renderMarkdown } from '../report/markdownToHtml.js';
+import { renderHtmlReport } from '../report/html.js';
+import { renderUpdateReport } from '../report/updateReport.js';
+import { renderQualityReport } from '../report/qualityReport.js';
 import { openUrl } from '../util/browser.js';
 import { APP, ROOT_DIR, SERVER, POLICY_TEMPLATE } from '../config.js';
 import { readText, pathExists } from '../util/fsx.js';
@@ -146,6 +149,39 @@ function guardRouter(router) {
     };
   };
   return router;
+}
+
+/**
+ * Отчёт из хранилища — пересобранный, если он собран прежней версией программы.
+ *
+ * Отчёт хранится готовым HTML, и правка в его разметке или скрипте до старых
+ * прогонов сама не доходит: файл лежит таким, каким его собрали. Живой случай
+ * 19.08.2026: прокрутку над блоками кода поправили, а в отчёте недельной
+ * давности она осталась прежней — и это выглядит как «не исправили».
+ *
+ * Источником правды остаётся `result.json`: HTML из него выводится целиком,
+ * поэтому пересборка ничего не выдумывает. Нет результата (прогоны старых
+ * версий, где он не сохранялся) — отдаём как есть: это лучше, чем ошибка.
+ */
+async function freshReport(runStore, render, id, kind = null) {
+  const stored = await runStore.readReport(id, kind || undefined);
+  if (!stored) return null;
+  if (stored.includes(`v${APP.version}`)) return stored;
+
+  const result = await runStore.getResult(id);
+  if (!result) return stored;
+
+  try {
+    const html = render(result);
+    if (kind) await runStore.saveReport(id, kind, html);
+    else await runStore.saveReport(id, html);
+    log.info(`Отчёт ${id} пересобран версией ${APP.version}`);
+    return html;
+  } catch (err) {
+    // Пересборка — удобство, а не обязанность: не вышло — открываем прежний.
+    log.warn(`Отчёт ${id} не пересобран: ${err.message}`);
+    return stored;
+  }
 }
 
 /**
@@ -472,7 +508,7 @@ export function buildRouter() {
   });
 
   router.get('/api/audits/:id/report.html', async (req, res, { params }) => {
-    const html = await store.readReport(params.id, 'html');
+    const html = await freshReport(store, renderHtmlReport, params.id, 'html');
     if (!html) {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
@@ -703,7 +739,7 @@ export function buildRouter() {
   });
 
   router.get('/api/updates/:id/report.html', async (req, res, { params }) => {
-    const html = await updateStore.readReport(params.id);
+    const html = await freshReport(updateStore, renderUpdateReport, params.id);
     if (!html) {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
@@ -929,7 +965,7 @@ export function buildRouter() {
   });
 
   router.get('/api/quality/:id/report.html', async (req, res, { params }) => {
-    const html = await qualityStore.readReport(params.id);
+    const html = await freshReport(qualityStore, renderQualityReport, params.id);
     if (!html) {
       sendError(res, 404, 'Отчёт ещё не сформирован');
       return;
