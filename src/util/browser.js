@@ -22,6 +22,9 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR, SERVER } from '../config.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('browser');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -146,16 +149,41 @@ export function openWindow(url, { maximized = false } = {}) {
   );
   for (const exe of order) {
     if (!existsSync(exe)) continue;
-    try {
-      const args = ['--new-window', url];
-      if (maximized) args.unshift('--start-maximized');
-      spawn(exe, args, { detached: true, stdio: 'ignore' }).unref();
-      return true;
-    } catch {
-      // Пробуем следующий браузер.
-    }
+    const args = ['--new-window', url];
+    if (maximized) args.unshift('--start-maximized');
+    if (launch(exe, args, 'окно отчёта')) return true;
   }
+  log.warn(`Отчёт открыть нечем: подходящий браузер не найден (${url})`);
   return false;
+}
+
+/**
+ * Запуск браузера с присмотром.
+ *
+ * `spawn` не бросает исключение, когда запустить не удалось: об этом
+ * приходит событие `error`, а раньше его никто не слушал — программа
+ * докладывала об успехе, окна не было, и в журнале не оставалось ни строки
+ * (живой случай 20.08.2026). Ранний выход с ненулевым кодом означает то же
+ * самое: так ведёт себя переносной Chromium без прав «все пакеты приложений».
+ *
+ * @returns {boolean} удалось ли ЗАПУСТИТЬ (не «показать окно»)
+ */
+function launch(exe, args, what) {
+  try {
+    const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => {
+      log.warn(`${what}: ${exe} не запустился — ${err.message}`);
+    });
+    child.on('exit', (code) => {
+      if (code) log.warn(`${what}: ${exe} завершился сразу с кодом ${code} — окна нет`);
+    });
+    child.unref();
+    log.info(`${what}: ${exe}`);
+    return true;
+  } catch (err) {
+    log.warn(`${what}: ${exe} не запустился — ${err.message}`);
+    return false;
+  }
 }
 
 /**
@@ -166,15 +194,9 @@ export function openAppWindow(url, { size = '1280,900' } = {}) {
   if (process.platform !== 'win32') return false;
   for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
-    try {
-      spawn(exe, [`--app=${url}`, `--window-size=${size}`], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
+    if (launch(exe, [`--app=${url}`, `--window-size=${size}`], 'окно программы')) {
       rememberAppBrowser(exe);
       return true;
-    } catch {
-      // Пробуем следующий браузер.
     }
   }
   return false;
@@ -214,19 +236,41 @@ export function rememberAppBrowser(exe) {
  */
 export function browserWithAppWindow(port) {
   if (process.platform !== 'win32') return null;
+  // Отбор по ИМЕНИ процесса обязателен. Искомая подстрока «--app=http://…»
+  // лежит в командной строке самого опроса, поэтому без этого условия
+  // PowerShell находит СЕБЯ и отдаёт свой путь. Дальше программа честно
+  // запускает powershell.exe с ключами браузера, тот молча завершается,
+  // и отчёт не открывается ничем: ни окна, ни ошибки (живой случай
+  // 20.08.2026). Своя строка исключается ещё и по идентификатору процесса.
+  const names = BROWSER_PROCESS_NAMES.map((name) => `'${name}'`).join(',');
   const command = 'Get-CimInstance Win32_Process'
-    + ` | Where-Object { $_.CommandLine -like '*--app=http://127.0.0.1:${Number(port)}*' }`
+    + ` | Where-Object { $_.ProcessId -ne $PID -and @(${names}) -contains $_.Name `
+    + `-and $_.CommandLine -like '*--app=http://127.0.0.1:${Number(port)}*' }`
     + ' | Select-Object -First 1 -ExpandProperty ExecutablePath';
   try {
     const found = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
       encoding: 'utf8', timeout: 6000, windowsHide: true,
     });
     const exe = String(found.stdout || '').trim();
-    return exe && existsSync(exe) ? exe : null;
+    if (!exe || !existsSync(exe)) return null;
+    // Вторая застава — уже в самой программе: путь обязан вести к браузеру.
+    return isBrowserExecutable(exe) ? exe : null;
   } catch {
     // Не вышло спросить — работаем по запомненному и по списку.
     return null;
   }
+}
+
+/** Имена процессов браузеров на движке Chromium. */
+const BROWSER_PROCESS_NAMES = [
+  'msedge.exe', 'chrome.exe', 'chromium.exe', 'brave.exe', 'vivaldi.exe',
+  'opera.exe', 'browser.exe', 'yandex.exe',
+];
+
+/** Путь ведёт к браузеру, а не к чему угодно, что нашлось по командной строке. */
+export function isBrowserExecutable(exe) {
+  const name = String(exe || '').split(/[\\/]/).pop().toLowerCase();
+  return BROWSER_PROCESS_NAMES.includes(name);
 }
 
 /** Запомненный браузер, если он ещё на месте. */
