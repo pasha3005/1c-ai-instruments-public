@@ -205,7 +205,7 @@ function checkNamePrefix({ findings, objects, extensions, changeSet, policy, rul
   const lower = prefix.toLowerCase();
 
   const seen = new Set();
-  const check = (kind, name, where) => {
+  const check = (kind, name, where, extensionName = null) => {
     const key = `${kind}.${name}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -215,6 +215,10 @@ function checkNamePrefix({ findings, objects, extensions, changeSet, policy, rul
 
     findings.push(policyFinding(rule, kind, name, {
       title: `Имя «${name}» без префикса «${prefix}»`,
+      // В группе лежат объекты разных видов: имя первого из них было бы
+      // подписью ко всем (замечание пользователя, 20.08.2026).
+      groupTitle: `Объект метаданных без префикса «${prefix}»`,
+      extensionName,
       detail:
         `${meta?.ru || kind} «${name}» ${where} и по регламенту проекта должен именоваться `
         + `с префиксом «${prefix}». По префиксу доработку видно в дереве конфигурации и в обновлении.`,
@@ -235,7 +239,8 @@ function checkNamePrefix({ findings, objects, extensions, changeSet, policy, rul
     for (const key of extension.ownKeys || []) {
       const at = key.indexOf('.');
       if (at < 0) continue;
-      check(key.slice(0, at), key.slice(at + 1), `является собственным объектом расширения «${extension.name}»`);
+      check(key.slice(0, at), key.slice(at + 1),
+        `является собственным объектом расширения «${extension.name}»`, extension.name);
     }
   }
 }
@@ -253,6 +258,7 @@ function checkRoleSynonym({ findings, objects, isCustom, rule }) {
 
     findings.push(policyFinding(rule, object.kind, object.name, {
       title: `Синоним роли «${object.name}» без признака проекта`,
+      groupTitle: `Синоним роли без признака проекта «${suffix}»`,
       detail:
         `Синоним «${synonym || 'не задан'}» не оканчивается на «${suffix}». В списке прав проектную роль `
         + 'не отличить от типовой.',
@@ -321,6 +327,7 @@ async function checkManagerProcedures({ findings, objects, modules, changeSet, r
 
     findings.push(policyFinding(rule, object.kind, object.name, {
       title: `${meta?.ru || object.kind} «${object.name}»: нет процедур ${missing.join(', ')}`,
+      groupTitle: 'Объект не подключён к стандартным механизмам',
       detail:
         `Регламент требует у добавленного объекта этого вида процедуры модуля менеджера: ${names.join(', ')}. `
         + `${module ? `В модуле менеджера не найдены: ${missing.join(', ')}.` : 'Модуля менеджера у объекта нет вовсе.'} `

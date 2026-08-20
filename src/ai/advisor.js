@@ -100,26 +100,6 @@ export function buildManagerSection(result) {
   parts.push('### Что даст исправление');
   for (const benefit of buildBenefits(result)) parts.push(`- ${benefit}`);
 
-  parts.push('');
-  parts.push('### Оценка работ');
-  parts.push(
-    `Суммарная трудоёмкость устранения выявленных проблем и приведения базы в порядок — ` +
-    `около **${result.effort.total.hours} часов** ` +
-    `(диапазон ${result.effort.total.optimistic}–${result.effort.total.pessimistic} часов, ` +
-    `примерно ${result.effort.total.days} рабочих дней одного специалиста).`,
-  );
-  if (result.effort.budget) {
-    parts.push(
-      `При ставке ${formatNumber(result.effort.budget.hourlyRate)} ₽/час это ` +
-      `${formatNumber(result.effort.budget.base)} ₽ ` +
-      `(диапазон ${formatNumber(result.effort.budget.optimistic)}–${formatNumber(result.effort.budget.pessimistic)} ₽).`,
-    );
-  }
-  parts.push(
-    'Оценка предварительная: она построена на автоматическом анализе и уточняется ' +
-    'после согласования состава работ.',
-  );
-
   return parts.join('\n');
 }
 

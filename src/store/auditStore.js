@@ -148,7 +148,6 @@ function buildSummary(result) {
     objectCount: result?.metadata?.totals?.objects ?? null,
     findingsCount: result?.findings?.length ?? 0,
     criticalCount: result?.findings?.filter((f) => f.severity === 'critical').length ?? 0,
-    effortHours: result?.effort?.total?.hours ?? null,
     vendorCompared: Boolean(result?.vendorComparison?.available),
     analyzedModules: result?.code?.scope?.analyzedModules ?? null,
     totalModules: result?.code?.scope?.totalModules ?? null,

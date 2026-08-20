@@ -22,6 +22,7 @@ import { TOKEN } from '../bsl/lexer.js';
 import { SEVERITY, CATEGORY, snippetAt } from './context.js';
 import { DATE_RE, TICKET_RE, SURNAME_INITIALS_RE } from '../bsl/markerDictionary.js';
 import { listOf, pairsOf, safePattern } from '../../policy/parsePolicy.js';
+import { ticketPresence } from '../../policy/ticket.js';
 import {
   LIMIT_KINDS, FORMAT_RULES, MARKER_PARTS, MODULE_TYPE_BY_RU, EXTENSION_ANNOTATIONS,
 } from '../../policy/catalog.js';
@@ -101,21 +102,45 @@ function checkChangeMarker(ctx, rule, policy) {
   const ticketRe = safePattern(rule.params['маска номера задачи'], null, '') || TICKET_RE;
   const prefix = String(policy.prefix || '').toLowerCase();
 
+  const sample = String(rule.params['пример номера задачи'] || '').trim();
+
   for (const comment of ctx.comments) {
     if (!open.test(comment.value)) continue;
     const body = comment.value.replace(open, '').trim();
 
+    // Номер задачи разбирается отдельно от остального состава: «номера нет»
+    // и «номер написан не по формату проекта» — разные ошибки и разные
+    // способы исправления, и в отчёте они не должны лежать в одной куче.
+    const ticket = parts.has('ticket') ? ticketPresence(body, ticketRe) : 'ok';
+    if (ticket === 'malformed') {
+      report(ctx, rule, {
+        ruleId: 'policy.change-marker-ticket',
+        title: 'Номер задачи в пометке не по формату проекта',
+        groupTitle: 'Номер задачи в пометке не по формату проекта',
+        line: comment.line,
+        detail:
+          `В пометке «${body.slice(0, 120)}» ссылка на задачу есть, но она записана не так, `
+          + `как требует регламент проекта${sample ? ` (образец: ${sample})` : ''}. `
+          + 'По номеру задачи правку связывают с требованием, поэтому запись должна быть единой.',
+        recommendation: sample
+          ? `Приведите номер задачи к формату проекта: ${sample}.`
+          : 'Приведите номер задачи к формату, принятому на проекте.',
+        snippet: snippetAt(ctx.source, comment.line),
+      });
+    }
+
     const missing = [];
     if (parts.has('prefix') && prefix && !body.toLowerCase().includes(prefix)) {
-      missing.push(`префикс «${policy.prefix}»`);
+      missing.push(`префикса «${policy.prefix}»`);
     }
-    if (parts.has('author') && !SURNAME_INITIALS_RE.test(body)) missing.push('фамилия с инициалами');
-    if (parts.has('date') && !DATE_RE.test(body)) missing.push('дата');
-    if (parts.has('ticket') && !ticketRe.test(body)) missing.push('номер задачи');
+    if (parts.has('author') && !SURNAME_INITIALS_RE.test(body)) missing.push('фамилии с инициалами');
+    if (parts.has('date') && !DATE_RE.test(body)) missing.push('даты');
+    if (ticket === 'none') missing.push('номера задачи');
     if (!missing.length) continue;
 
     report(ctx, rule, {
       title: `Пометка изменения неполна: нет ${missing.join(', ')}`,
+      groupTitle: 'Пометка изменения неполна',
       line: comment.line,
       detail:
         `В пометке «${body.slice(0, 120)}» не хватает: ${missing.join(', ')}. `
@@ -130,6 +155,13 @@ function checkChangeMarker(ctx, rule, policy) {
  *
  * Это тот самый случай, ради которого регламент и делается файлом: логика
  * проверки одна, а требование прямо противоположное.
+ *
+ * Запрет действует **только в конце метода**: на строке «КонецПроцедуры» либо
+ * «КонецФункции» и на следующей за ней строке. Внутри тела метода закрывающая
+ * пометка — законная граница вставленного блока, и замечание на неё было бы
+ * ложным (уточнение пользователя, 20.08.2026). Поэтому и фрагмент кода
+ * показывается от конца метода до самой пометки: читателю нужно видеть, где
+ * именно разработчик её поставил.
  */
 function checkClosingMarker(ctx, rule) {
   if (!rule) return;
@@ -143,11 +175,23 @@ function checkClosingMarker(ctx, rule) {
 
   if (mode.startsWith('запрещ')) {
     for (const comment of closed) {
+      const end = routineEndAbove(ctx.structure.routines, comment.line);
+      if (!end) continue;
+      const sameLine = end.endLine === comment.line;
+
       report(ctx, rule, {
-        title: 'Закрывающая пометка изменения не используется на проекте',
+        title: sameLine
+          ? `Закрывающая пометка на строке ${end.endKeyword}`
+          : `Закрывающая пометка сразу после ${end.endKeyword}`,
+        groupTitle: 'Закрывающая пометка изменения в конце метода',
         line: comment.line,
-        detail: 'Регламент проекта оставляет только открывающую пометку перед объявлением метода.',
-        snippet: snippetAt(ctx.source, comment.line),
+        detail:
+          `Регламент проекта оставляет только открывающую пометку перед объявлением метода: `
+          + `после «${end.endKeyword}» закрывающая пометка не ставится`
+          + `${sameLine ? '' : ' и на следующей строке тоже'}. `
+          + 'Внутри тела метода закрывающая пометка допустима — она обозначает границу вставки.',
+        // От конца метода до пометки: видно, что она стоит именно в конце.
+        snippet: fragmentBetween(ctx.source, end.endLine, comment.line),
       });
     }
     return;
@@ -169,6 +213,31 @@ function checkClosingMarker(ctx, rule) {
   }
 }
 
+/**
+ * Конец метода, к которому относится пометка на строке `line`.
+ *
+ * Пометка считается стоящей в конце метода, только если она на самой строке
+ * «КонецПроцедуры»/«КонецФункции» либо на следующей за ней. Слово берётся
+ * из текста модуля: у функции в отчёте должно быть написано «КонецФункции».
+ */
+function routineEndAbove(routines, line) {
+  for (const routine of routines || []) {
+    if (line !== routine.endLine && line !== routine.endLine + 1) continue;
+    return {
+      endLine: routine.endLine,
+      endKeyword: routine.kind === 'function' ? 'КонецФункции' : 'КонецПроцедуры',
+    };
+  }
+  return null;
+}
+
+/** Кусок текста от строки `from` до строки `to` включительно. */
+function fragmentBetween(source, from, to) {
+  const lines = String(source ?? '').split(/\r?\n/);
+  return lines.slice(Math.max(0, from - 1), to)
+    .map((line) => line.trimEnd()).join('\n').slice(0, 400);
+}
+
 // --- Области ------------------------------------------------------------------
 
 /** Имена областей модуля в порядке появления. */
@@ -181,13 +250,6 @@ function regionNames(preprocessor) {
   return names;
 }
 
-/** Область разрешена: точное совпадение либо шаблон с «*» на конце. */
-function regionAllowed(name, allowed) {
-  return allowed.some((pattern) => (pattern.endsWith('*')
-    ? name.toLowerCase().startsWith(pattern.slice(0, -1).toLowerCase())
-    : name.toLowerCase() === pattern.toLowerCase()));
-}
-
 function checkRegions(ctx, rule) {
   // Состав областей — свойство модуля целиком. У изменённого типового модуля
   // виден только кусок правки, и судить по нему о структуре модуля нельзя.
@@ -195,21 +257,11 @@ function checkRegions(ctx, rule) {
   if (!ctx.stats.codeLines) return;
 
   const present = regionNames(ctx.structure.preprocessor);
-  const allowed = listOf(rule.params['разрешённые области']);
 
-  if (allowed.length) {
-    for (const region of present) {
-      if (regionAllowed(region.name, allowed)) continue;
-      report(ctx, rule, {
-        title: `Область «${region.name}» не предусмотрена регламентом`,
-        line: region.line,
-        detail:
-          `Регламент проекта перечисляет допустимые области модуля; «${region.name}» в перечень не входит. `
-          + 'Единообразие областей позволяет находить код на том же месте в любом модуле.',
-      });
-    }
-  }
-
+  // Перечня РАЗРЕШЁННЫХ областей у правила нет намеренно: регламент требует
+  // стандартных областей там, где они положены, но не запрещает разработчику
+  // заводить свои (замечание пользователя, 20.08.2026). Проверяется только
+  // наличие обязательных.
   for (const pair of pairsOf(rule.params['обязательные области'])) {
     if (MODULE_TYPE_BY_RU.get(pair.from.toLowerCase()) !== ctx.module.moduleType) continue;
     const names = pair.to.split(',').map((s) => s.trim()).filter(Boolean);
@@ -217,6 +269,7 @@ function checkRegions(ctx, rule) {
     if (!missing.length) continue;
     report(ctx, rule, {
       title: `В модуле нет обязательных областей: ${missing.join(', ')}`,
+      groupTitle: 'В модуле нет обязательных областей',
       detail:
         `Регламент требует для этого вида модуля области: ${names.join(', ')}. `
         + `Не найдены: ${missing.join(', ')}.`,
@@ -247,6 +300,7 @@ function checkEmptyRegions(ctx, rule) {
     if (hasCode) continue;
     report(ctx, rule, {
       title: `Пустая область «${region.name}»`,
+      groupTitle: 'Пустая область модуля',
       line: region.line,
       detail:
         `Между «#Область ${region.name}» (строка ${region.line}) и «#КонецОбласти» (строка ${region.endLine}) `
@@ -322,48 +376,59 @@ function checkExtensionGuard(ctx, rule) {
 }
 
 /**
- * Аннотация полной замены без продолжения вызова.
+ * Полная замена типового метода без возврата вызова.
  *
  * Регламенты разрешают `&Вместо` в двух случаях: типовой метод заменяется
- * целиком либо меняется его начало, а дальше вызов возвращается в типовую
- * процедуру через `ПродолжитьВызов()`. Отличить одно от другого можно только
- * по объёму: скопированный в расширение типовой метод длинный, осознанная
- * замена — короткая. Поэтому у правила есть предел строк, и он проектный.
+ * целиком осознанно либо меняется его начало, а дальше вызов возвращается
+ * в типовую процедуру через `ПродолжитьВызов()`. Ошибкой считается ровно
+ * одно — замена БЕЗ возврата вызова: такой метод перестаёт получать правки
+ * вендора и расходится с типовым при первом же обновлении.
  *
- * Замечания на каждый `&Вместо` здесь нет намеренно: аннотация сама по себе
- * разрешена, и обвинять разработчика в её использовании было бы неправдой.
+ * Наличие возврата проверяется по потоку токенов внутри самого метода,
+ * а не по тексту модуля: `ПродолжитьВызов` в комментарии или в соседнем
+ * методе возвратом вызова не является (требование пользователя, 20.08.2026).
  */
 function checkExtensionAnnotations(ctx, rule) {
   if (!rule || !ctx.module.extensionName) return;
 
-  const annotation = String(rule.params['аннотация замены'] || '&Вместо').trim().toLowerCase();
+  const annotation = String(rule.params['аннотация замены'] || '&Вместо').trim();
   const proceed = String(rule.params['вызов продолжения'] || 'ПродолжитьВызов').trim();
-  const limit = Number(String(rule.params['предел строк без продолжения'] ?? 20).replace(',', '.'));
-  if (!annotation || !proceed || !Number.isFinite(limit) || limit <= 0) return;
+  if (!annotation || !proceed) return;
 
+  const wanted = annotation.toLowerCase();
   const proceedName = proceed.toLowerCase();
+
   for (const routine of ctx.structure.routines) {
-    if (!(routine.directives || []).some((d) => String(d).trim().toLowerCase() === annotation)) continue;
-    if (routine.lines <= limit) continue;
-    // Вызов ищется по потоку токенов, а не по тексту: в комментарии
-    // «когда-то был ПродолжитьВызов» продолжения вызова нет.
-    const continued = ctx.tokens.some((t, i) => i > routine.startIdx && i < routine.endIdx
-      && t.type === TOKEN.IDENT && String(t.value).toLowerCase() === proceedName
-      && ctx.tokens[i + 1]?.value === '(');
-    if (continued) continue;
+    if (!(routine.directives || []).some((d) => String(d).trim().toLowerCase() === wanted)) continue;
+    if (callsInside(ctx, routine, proceedName)) continue;
 
     report(ctx, rule, {
-      title: `Замена «${routine.name}» целиком: ${routine.lines} строк без ${proceed}()`,
+      title: `${annotation} без ${proceed}(): «${routine.name}»`,
+      groupTitle: `Замена типовой процедуры ${annotation} без ${proceed}()`,
       line: routine.startLine,
       detail:
-        `Метод объявлен с аннотацией ${rule.params['аннотация замены'] || '&Вместо'}, занимает ${routine.lines} строк `
-        + `и ни разу не зовёт ${proceed}(). Похоже, типовой метод скопирован в расширение целиком ради правки `
-        + 'нескольких строк: при обновлении такая копия останется прежней, а типовой метод уйдёт вперёд.',
+        `Метод «${routine.name}» объявлен с аннотацией ${annotation} и ни разу не зовёт ${proceed}(): `
+        + 'типовая процедура заменена целиком. Правки вендора в неё больше не попадут, '
+        + `и при обновлении метод разойдётся с типовым. ${annotation} допустим, когда меняется начало `
+        + `метода и управление возвращается в типовую процедуру через ${proceed}(), либо когда типовой `
+        + 'метод заменяется целиком осознанно.',
       recommendation:
         `Измените начало метода и верните управление через ${proceed}() либо примените &ИзменениеИКонтроль.`,
-      snippet: snippetAt(ctx.source, routine.startLine),
+      snippet: snippetAt(ctx.source, routine.startLine, 1),
     });
   }
+}
+
+/** Метод зовёт функцию с таким именем — по токенам своего тела. */
+function callsInside(ctx, routine, name) {
+  for (let i = routine.startIdx; i <= routine.endIdx; i += 1) {
+    const token = ctx.tokens[i];
+    if (!token) break;
+    if (token.type !== TOKEN.IDENT) continue;
+    if (String(token.value).toLowerCase() !== name) continue;
+    if (ctx.tokens[i + 1]?.value === '(') return true;
+  }
+  return false;
 }
 
 /**

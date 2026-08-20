@@ -50,6 +50,7 @@ import { analyzeStructure } from '../analyze/bsl/structure.js';
 import { runAnalysis } from '../analyze/index.js';
 import { SEVERITY, CATEGORY } from '../analyze/rules/context.js';
 import { parsePolicy, policySummary, safePattern } from '../policy/parsePolicy.js';
+import { ticketPresence, isServiceComment } from '../policy/ticket.js';
 import { tagByRu } from '../parse/metadataKinds.js';
 import { renderQualityReport } from '../report/qualityReport.js';
 import * as store from '../store/qualityStore.js';
@@ -1857,21 +1858,41 @@ export function checkCommitTickets(commits, policy) {
   if (!rule || rule.disabled || !commits?.length) return [];
 
   const mask = safePattern(rule.params['маска номера задачи'], null, '') || /[#№]\s*\d+/;
+  const sample = String(rule.params['пример номера задачи'] || '').trim();
   const findings = [];
   for (const commit of commits) {
     const comment = String(commit.comment || '').trim();
-    if (mask.test(comment)) continue;
+    // Комментарий пишет платформа, а не разработчик: задачи за таким
+    // помещением нет и быть не может.
+    if (isServiceComment(comment)) continue;
+
+    const state = ticketPresence(comment, mask);
+    if (state === 'ok') continue;
+    const malformed = state === 'malformed';
+
     findings.push({
-      ruleId: 'policy.commit-ticket',
+      ruleId: malformed ? 'policy.commit-ticket-format' : 'policy.commit-ticket',
       policyCode: 'policy.commit-ticket',
       policyRef: rule.section || null,
-      title: `Помещение ${commit.version} без номера задачи`,
+      title: malformed
+        ? `Помещение ${commit.version}: номер задачи не по формату`
+        : `Помещение ${commit.version} без номера задачи`,
+      // Заголовок группы общий: в одной группе лежат разные помещения,
+      // и номер первого из них был бы подписью ко всем.
+      groupTitle: malformed
+        ? 'Помещения в хранилище: номер задачи не по формату'
+        : 'Помещения в хранилище без номера задачи',
       severity: rule.severity || SEVERITY.MEDIUM,
       category: CATEGORY.POLICY,
-      detail: comment
-        ? `Комментарий помещения — «${comment.slice(0, 160)}». Номера задачи в нём нет.`
-        : 'Комментарий помещения пуст.',
-      recommendation: rule.text
+      detail: malformed
+        ? `Комментарий помещения — «${comment.slice(0, 160)}». Ссылка на задачу есть, но записана `
+          + `не по формату проекта${sample ? ` (образец: ${sample})` : ''}.`
+        : comment
+          ? `Комментарий помещения — «${comment.slice(0, 160)}». Номера задачи в нём нет.`
+          : 'Комментарий помещения пуст.',
+      recommendation: (malformed && sample)
+        ? `Приведите номер задачи к формату проекта: ${sample}.`
+        : rule.text
         || 'Указывайте в комментарии помещения номер задачи: по нему восстанавливают, зачем сделана правка.',
       moduleTitle: `Хранилище «${commit.repository || ''}», помещение ${commit.version}`,
       moduleFile: '',

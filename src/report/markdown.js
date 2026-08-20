@@ -267,36 +267,6 @@ export function renderMarkdownReport(result, recommendations) {
     p('');
   }
 
-  // --- 11. Трудозатраты ---
-  const e = result.effort;
-  p('## 11. Оценка трудозатрат');
-  p('');
-  p('| Сценарий | Часов |');
-  p('| --- | ---: |');
-  p(`| Оптимистично | ${formatNumber(e.total.optimistic)} |`);
-  p(`| **Базовая оценка** | **${formatNumber(e.total.hours)}** |`);
-  p(`| Пессимистично | ${formatNumber(e.total.pessimistic)} |`);
-  p('');
-  p('### Структура');
-  p('');
-  p('| Направление | Замечаний | Часов |');
-  p('| --- | ---: | ---: |');
-  for (const c of e.byCategory) {
-    p(`| ${CATEGORY_RU[c.category] || (c.category === 'data' ? 'Работы по данным' : c.category)} | ${c.findings} | ${c.hours} |`);
-  }
-  p(`| Накладные (анализ, тестирование, документирование, управление) | | ${e.remediation.overheadHours} |`);
-  p(`| ${e.update.scenario} | | ${e.update.hours} |`);
-  p(`| **ИТОГО** | | **${e.total.hours}** |`);
-  p('');
-  if (e.budget) {
-    p(`Бюджет при ставке ${formatNumber(e.budget.hourlyRate)} ₽/час: ` +
-      `**${formatNumber(e.budget.base)} ₽** ` +
-      `(${formatNumber(e.budget.optimistic)} — ${formatNumber(e.budget.pessimistic)} ₽).`);
-    p('');
-  }
-  p(`> ${e.breakdownNote}`);
-  p('');
-
   // --- Приложение ---
   p('## Приложение. Детальный перечень замечаний');
   p('');

@@ -98,11 +98,12 @@ function renderFilters(findings) {
   const severities = SEVERITY_ORDER.filter((s) => countBy(findings, 'severity', s));
   const categories = [...new Set(findings.map((f) => f.category))]
     .sort((a, b) => countBy(findings, 'category', b) - countBy(findings, 'category', a));
+  const authors = groupByAuthor(findings);
 
   return `
   <div class="filters no-print">
     <input type="search" id="findingSearch" autocomplete="off"
-           placeholder="Поиск по модулю, объекту, фамилии разработчика или тексту замечания…">
+           placeholder="Поиск по модулю, объекту, процедуре или тексту замечания…">
     <div class="filter-chips" data-filter="severity">
       <button type="button" class="chip is-active" data-value="all">Все уровни</button>
       ${severities.map((s) => `
@@ -113,8 +114,29 @@ function renderFilters(findings) {
       ${categories.map((c) => `
       <button type="button" class="chip" data-value="${esc(c)}">${esc(CATEGORY_RU[c] || c)} — ${countBy(findings, 'category', c)}</button>`).join('')}
     </div>
+    ${authors.length > 1 ? `
+    <div class="filter-chips" data-filter="author">
+      <button type="button" class="chip is-active" data-value="all">Все разработчики</button>
+      ${authors.map((a) => `
+      <button type="button" class="chip" data-value="${esc(authorKey(a.author))}">${esc(authorLabel(a.author))} — ${a.items.length}</button>`).join('')}
+    </div>` : ''}
     <div class="filter-stat muted" id="findingStat"></div>
   </div>`;
+}
+
+/**
+ * Ключ разработчика для фильтра.
+ *
+ * У безымянной группы ключ свой: пустая строка означала бы «все», и по
+ * замечаниям без автора нельзя было бы отобрать (замечание пользователя,
+ * 20.08.2026 — «Автор не установлен» не кликался).
+ */
+function authorKey(author) {
+  return author || '__none__';
+}
+
+function authorLabel(author) {
+  return author || 'Автор не установлен';
 }
 
 /** Сводка по типам: что чаще всего и чего это стоит. */
@@ -124,7 +146,7 @@ function renderRuleSummary(result, byRule) {
   <table>
     <thead><tr>
       <th>Тип замечания</th><th>Направление</th><th>Критичность</th>
-      <th class="num">Случаев</th><th class="num">Оценка, ч</th>
+      <th class="num">Случаев</th>
     </tr></thead>
     <tbody>
       ${byRule.map((r) => `
@@ -133,7 +155,6 @@ function renderRuleSummary(result, byRule) {
         <td>${esc(CATEGORY_RU[r.category] || r.category)}</td>
         <td>${badge(r.severity)}</td>
         <td class="num">${formatNumber(r.items.length)}</td>
-        <td class="num">${effortForRule(result, r.items.length)}</td>
       </tr>`).join('')}
     </tbody>
   </table>
@@ -180,15 +201,15 @@ function renderAuthorSummary(byAuthor, findings) {
     </tr></thead>
     <tbody>
       ${byAuthor.map((a) => `
-      <tr>
-        <td>${a.author
-    ? `<button type="button" class="author-pick" data-author="${esc(a.author)}">${authorBadge(a.author)}</button>`
-    : '<span class="badge badge--info">Автор не установлен</span>'}</td>
-        <td class="num"><b>${formatNumber(a.items.length)}</b></td>
-        <td class="num">${countBy(a.items, 'severity', 'critical') || ''}</td>
-        <td class="num">${countBy(a.items, 'severity', 'high') || ''}</td>
-        <td class="num">${formatNumber(a.moduleCount)}</td>
-        <td class="muted" style="font-size:13px">${esc(topIssues(a.items))}</td>
+      <tr class="author-row" data-author-row="${esc(authorKey(a.author))}">
+        <td><button type="button" class="author-pick" data-author="${esc(authorKey(a.author))}">${a.author
+    ? authorBadge(a.author)
+    : '<span class="badge badge--info">Автор не установлен</span>'}</button></td>
+        <td class="num" data-cell="total"><b>${formatNumber(a.items.length)}</b></td>
+        <td class="num" data-cell="critical">${countBy(a.items, 'severity', 'critical') || ''}</td>
+        <td class="num" data-cell="high">${countBy(a.items, 'severity', 'high') || ''}</td>
+        <td class="num" data-cell="modules">${formatNumber(a.moduleCount)}</td>
+        <td class="muted" style="font-size:13px" data-cell="top">${esc(topIssues(a.items))}</td>
       </tr>`).join('')}
     </tbody>
   </table>
@@ -274,6 +295,9 @@ function renderCase(f, index) {
         <tr class="finding-row"
             data-severity="${esc(f.severity)}"
             data-category="${esc(f.category)}"
+            data-author="${esc(authorKey(f.author))}"
+            data-module="${esc(f.moduleFile || f.moduleTitle || '')}"
+            data-rule="${esc(stripTrailingCount(f.groupTitle || f.title))}"
             data-search="${esc(searchKey(f))}">
           <td class="num muted">${index + 1}</td>
           <td>${whereCell(f)}</td>
@@ -319,20 +343,24 @@ export const FINDINGS_SCRIPT = `
   var search = document.getElementById('findingSearch');
   if (!search) return;
   var stat = document.getElementById('findingStat');
-  var rows = document.querySelectorAll('.finding-row');
-  var picked = { severity: 'all', category: 'all' };
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.finding-row'));
+  var picked = { severity: 'all', category: 'all', author: 'all' };
   var timer = null;
 
-  function apply() {
+  function matches(row) {
     var term = (search.value || '').trim().toLowerCase();
-    var visible = 0;
+    return (!term || row.dataset.search.indexOf(term) !== -1)
+      && (picked.severity === 'all' || row.dataset.severity === picked.severity)
+      && (picked.category === 'all' || row.dataset.category === picked.category)
+      && (picked.author === 'all' || row.dataset.author === picked.author);
+  }
 
+  function apply() {
+    var visible = [];
     rows.forEach(function (row) {
-      var hit = (!term || row.dataset.search.indexOf(term) !== -1)
-        && (picked.severity === 'all' || row.dataset.severity === picked.severity)
-        && (picked.category === 'all' || row.dataset.category === picked.category);
+      var hit = matches(row);
       row.hidden = !hit;
-      if (hit) visible++;
+      if (hit) visible.push(row);
     });
 
     // Группа без единой видимой строки прячется целиком, иначе после отбора
@@ -342,13 +370,75 @@ export const FINDINGS_SCRIPT = `
       group.hidden = !group.querySelector('.finding-row:not([hidden])');
     });
 
-    if (!term && picked.severity === 'all' && picked.category === 'all') {
+    updateAuthorSummary(visible);
+
+    if (!search.value.trim() && picked.severity === 'all'
+      && picked.category === 'all' && picked.author === 'all') {
       stat.textContent = '';
       return;
     }
-    stat.textContent = visible
-      ? 'Отобрано случаев: ' + visible.toLocaleString('ru-RU')
+    stat.textContent = visible.length
+      ? 'Отобрано случаев: ' + visible.length.toLocaleString('ru-RU')
       : 'Ничего не найдено — измените условия отбора';
+  }
+
+  /**
+   * Сводка по разработчикам считается по видимым строкам.
+   *
+   * Требование пользователя: когда включён фильтр, таблица под фильтрами
+   * обязана показывать отобранное, а не исходные итоги — иначе цифры в ней
+   * противоречат перечню под ней.
+   */
+  function updateAuthorSummary(visible) {
+    var summary = document.querySelectorAll('[data-author-row]');
+    if (!summary.length) return;
+
+    var byAuthor = {};
+    visible.forEach(function (row) {
+      var key = row.dataset.author;
+      var entry = byAuthor[key] || (byAuthor[key] = { total: 0, critical: 0, high: 0, modules: {}, rules: {} });
+      entry.total++;
+      if (row.dataset.severity === 'critical') entry.critical++;
+      if (row.dataset.severity === 'high') entry.high++;
+      if (row.dataset.module) entry.modules[row.dataset.module] = 1;
+      var rule = row.dataset.rule || '';
+      if (rule) entry.rules[rule] = (entry.rules[rule] || 0) + 1;
+    });
+
+    summary.forEach(function (tr) {
+      var entry = byAuthor[tr.dataset.authorRow];
+      tr.hidden = !entry;
+      if (!entry) return;
+      set(tr, 'total', '<b>' + entry.total.toLocaleString('ru-RU') + '</b>');
+      set(tr, 'critical', entry.critical || '');
+      set(tr, 'high', entry.high || '');
+      set(tr, 'modules', Object.keys(entry.modules).length.toLocaleString('ru-RU'));
+      set(tr, 'top', topRules(entry.rules));
+    });
+  }
+
+  function set(tr, name, html) {
+    var cell = tr.querySelector('[data-cell="' + name + '"]');
+    if (cell) cell.innerHTML = html;
+  }
+
+  function topRules(rules) {
+    var names = Object.keys(rules).sort(function (a, b) { return rules[b] - rules[a]; }).slice(0, 3);
+    return names.map(function (name) {
+      var box = document.createElement('span');
+      box.textContent = name + ' — ' + rules[name];
+      return box.innerHTML;
+    }).join('; ');
+  }
+
+  /** Чип выбирается программно: и щелчком по нему, и щелчком по имени в сводке. */
+  function pick(kind, value) {
+    var box = document.querySelector('.filter-chips[data-filter="' + kind + '"]');
+    picked[kind] = value;
+    if (!box) return;
+    box.querySelectorAll('.chip').forEach(function (chip) {
+      chip.classList.toggle('is-active', chip.dataset.value === value);
+    });
   }
 
   search.addEventListener('input', function () {
@@ -361,21 +451,34 @@ export const FINDINGS_SCRIPT = `
     box.addEventListener('click', function (event) {
       var chip = event.target.closest('.chip');
       if (!chip) return;
-      box.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('is-active'); });
-      chip.classList.add('is-active');
-      picked[kind] = chip.dataset.value;
+      pick(kind, chip.dataset.value);
       apply();
     });
   });
 
-  // Имя разработчика в сводке — это фильтр, а не ссылка на второй перечень.
+  /**
+   * Имя разработчика в сводке — это фильтр, а не текст для строки поиска.
+   *
+   * Перечень ниже бывает свёрнут, и раньше щелчок по имени не делал ничего
+   * видимого. Теперь блок раскрывается до первой отобранной строки: уровень
+   * критичности, тип замечания и всё, что над ними.
+   */
   document.addEventListener('click', function (event) {
-    var pick = event.target.closest ? event.target.closest('.author-pick') : null;
-    if (!pick) return;
-    search.value = pick.dataset.author;
+    var pickButton = event.target.closest ? event.target.closest('.author-pick') : null;
+    if (!pickButton) return;
+    var value = pickButton.dataset.author;
+    pick('author', picked.author === value ? 'all' : value);
     apply();
-    var list = document.querySelector('.finding-row:not([hidden])');
-    if (list) list.closest('details').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    var first = document.querySelector('.finding-row:not([hidden])');
+    if (!first) return;
+    var node = first.parentNode;
+    while (node && node !== document.body) {
+      if (node.tagName === 'DETAILS') node.open = true;
+      node = node.parentNode;
+    }
+    var group = first.closest('details');
+    if (group) group.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 
   // Раскрытие блока по ссылке-якорю и подготовка к печати живут в общем
@@ -403,6 +506,9 @@ export const FINDINGS_STYLES = `
 .chip.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 .author-pick { appearance: none; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; }
+.author-row[hidden] { display: none; }
+/* Где лежит код — приглушённой строкой над объектом: это рамка, а не сам адрес. */
+.where__place { font-size: 12px; color: var(--ink-faint); margin-bottom: 2px; }
 
 /*
  * Ширины колонок заданы явно. Иначе браузер отдаёт «Где» столько места,
@@ -441,7 +547,16 @@ function groupByRule(findings) {
   for (const f of findings) {
     if (!map.has(f.ruleId)) {
       map.set(f.ruleId, {
-        ruleId: f.ruleId, title: f.title, severity: f.severity, category: f.category, items: [],
+        ruleId: f.ruleId,
+        // Заголовок группы: общий, если правило его дало. Иначе заголовком
+        // служит первый случай — а он называет конкретный объект, и подпись
+        // ко всей группе получается неверной (замечание пользователя,
+        // 20.08.2026): «Имя «Документ1» без префикса» над списком, где лежат
+        // справочники и общие модули.
+        title: f.groupTitle || f.title,
+        severity: f.severity,
+        category: f.category,
+        items: [],
       });
     }
     map.get(f.ruleId).items.push(f);
@@ -501,10 +616,10 @@ function topIssues(items) {
 }
 
 function searchKey(f) {
-  // Автор и процедура входят в ключ поиска: «покажи всё, что написал такой-то»
-  // или «где встречается вот эта процедура» — первое, что спрашивают, глядя
-  // на перечень.
-  return [f.moduleTitle, f.moduleFile, f.ownerName, f.routine, f.author, f.detail]
+  // Фамилии в ключе поиска НЕТ: разработчик выбирается своим фильтром, а щелчок
+  // по имени больше не подставляет текст в строку поиска (требование
+  // пользователя, 20.08.2026). Строка поиска ищет по коду и тексту замечания.
+  return [f.moduleTitle, f.moduleFile, f.ownerName, f.routine, f.detail]
     .filter(Boolean).join(' ').toLowerCase().slice(0, 400);
 }
 
@@ -527,13 +642,21 @@ function whereCell(f) {
   const parts = [objectLine, moduleLine && moduleLine !== objectLine ? moduleLine : null, f.routine]
     .filter(Boolean)
     .map((s) => esc(s));
-  return parts.join('<br>') || esc(f.moduleTitle || '');
+  const place = `<div class="where__place">${esc(scopeName(f))}</div>`;
+  return place + (parts.join('<br>') || esc(f.moduleTitle || ''));
 }
 
 /**
- * Ориентировочная трудоёмкость по типу замечания. Итоговый расчёт с нормативами
- * приведён в разделе трудозатрат — здесь порядок величины по строке таблицы.
+ * Где лежит код — первой строкой колонки «Где».
+ *
+ * Требование пользователя (20.08.2026): одноимённые объекты конфигурации
+ * и расширения в перечне были неразличимы, а исправлять их надо в разных
+ * местах. Помещение в хранилище к конфигурации не относится — там место
+ * называет само хранилище.
  */
-function effortForRule(result, count) {
-  return Math.round(count * 2 * (result.effort?.complexityFactor || 1));
+function scopeName(f) {
+  if (f.extensionName) return `Расширение «${f.extensionName}»`;
+  if (f.moduleType === 'commit') return f.moduleTitle || 'Хранилище конфигурации';
+  return 'Конфигурация';
 }
+

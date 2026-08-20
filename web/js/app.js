@@ -773,8 +773,8 @@ function renderHistoryItem(meta) {
         <div class="hist-score__lbl">Обновляемость</div>
       </div>
       <div class="hist-score">
-        <div class="hist-score__val">${s.effortHours ?? '—'}</div>
-        <div class="hist-score__lbl">Часов</div>
+        <div class="hist-score__val">${s.findingsCount ?? '—'}</div>
+        <div class="hist-score__lbl">Замечаний</div>
       </div>
     </div>` : ''}
 

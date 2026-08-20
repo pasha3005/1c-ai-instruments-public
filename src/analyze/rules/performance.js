@@ -94,6 +94,32 @@ function expressionKind(tokens, from) {
  * переменной и ничто в нём не говорит о числе. «ОбщийПроцентОплатыИтог =
  * ОбщийПроцентОплатыИтог + СтрокаТаблицы.ПроцентОплаты» замечанием не считается.
  */
+/**
+ * Условия отбора, не использующие индекс: свой код и свой заголовок каждому.
+ *
+ * Одинаковый заголовок у четырёх разных проверок давал в отчёте четыре
+ * одинаковые строки в перечне типов: читатель видел дубли и не мог понять,
+ * чем они отличаются (замечание пользователя, 20.08.2026).
+ */
+const NONINDEXED = {
+  dottedFilter: {
+    ruleId: 'perf.query-dotted-filter',
+    title: 'Отбор через цепочку точек не использует индекс',
+  },
+  leadingWildcard: {
+    ruleId: 'perf.query-leading-wildcard',
+    title: 'ПОДОБНО с ведущим «%» не использует индекс',
+  },
+  castInWhere: {
+    ruleId: 'perf.query-cast-in-where',
+    title: 'ВЫРАЗИТЬ в условии отбора не даёт использовать индекс',
+  },
+  functionInWhere: {
+    ruleId: 'perf.query-function-in-where',
+    title: 'Функция над полем в условии отбора не даёт использовать индекс',
+  },
+};
+
 function detectStringConcatInLoop(ctx) {
   const { tokens, structure, source } = ctx;
   if (!structure.loops.length) return;
@@ -196,8 +222,8 @@ function analyzeQueries(ctx) {
       // выражение из условия ГДЕ, и фрагмент обязан показывать именно его.
       const place = queryPlace(query.text, issue.offset);
       ctx.report({
-        ruleId: `perf.query-${issue.kind}`,
-        title: 'Условие отбора не использует индекс',
+        ruleId: NONINDEXED[issue.kind]?.ruleId || 'perf.query-nonindexed-filter',
+        title: NONINDEXED[issue.kind]?.title || 'Условие отбора не использует индекс',
         severity: SEVERITY.HIGH,
         category: CATEGORY.PERFORMANCE,
         line: query.line + place.lineOffset,

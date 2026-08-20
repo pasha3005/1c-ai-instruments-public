@@ -50,6 +50,7 @@ export const POLICY_CHECKS = [
       'открывающая пометка': 'text',
       'состав': 'list',
       'маска номера задачи': 'text',
+      'пример номера задачи': 'text',
     },
   },
   {
@@ -62,10 +63,7 @@ export const POLICY_CHECKS = [
     code: 'policy.module-regions',
     scope: 'module',
     title: 'Области модуля',
-    keys: {
-      'разрешённые области': 'list',
-      'обязательные области': 'pairs',
-    },
+    keys: { 'обязательные области': 'pairs' },
   },
   {
     code: 'policy.empty-regions',
@@ -98,7 +96,6 @@ export const POLICY_CHECKS = [
     keys: {
       'аннотация замены': 'text',
       'вызов продолжения': 'text',
-      'предел строк без продолжения': 'text',
     },
   },
   {
@@ -166,7 +163,10 @@ export const POLICY_CHECKS = [
     code: 'policy.commit-ticket',
     scope: 'commit',
     title: 'Номер задачи в комментарии помещения',
-    keys: { 'маска номера задачи': 'text' },
+    keys: {
+      'маска номера задачи': 'text',
+      'пример номера задачи': 'text',
+    },
   },
 ];
 
@@ -251,7 +251,11 @@ export const BUILTIN_RULE_IDS = [
   'arch.query-in-form',
   'arch.too-many-params',
   'perf.query-autoorder',
+  'perf.query-cast-in-where',
+  'perf.query-dotted-filter',
+  'perf.query-function-in-where',
   'perf.query-full-outer-join',
+  'perf.query-leading-wildcard',
   'perf.query-in-hierarchy',
   'perf.query-many-joins',
   'perf.query-nested-subqueries',

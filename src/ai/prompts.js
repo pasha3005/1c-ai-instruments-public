@@ -129,9 +129,6 @@ export function buildFactsDigest(result) {
 
   lines.push('');
   lines.push('## Трудозатраты (расчёт инструмента)');
-  lines.push(`- Устранение замечаний: ${result.effort.remediation.hours} ч`);
-  lines.push(`- Обновление: ${result.effort.update.hours} ч`);
-  lines.push(`- Итого: ${result.effort.total.hours} ч (диапазон ${result.effort.total.optimistic}–${result.effort.total.pessimistic} ч)`);
 
   return lines.join('\n');
 }

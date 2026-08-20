@@ -146,6 +146,10 @@ export function createRuleContext({
         moduleFile: module.rel,
         moduleType: module.moduleType,
         moduleTypeRu: module.moduleTypeRu,
+        // Где лежит код: в конфигурации или в расширении. В отчёте это первая
+        // строка колонки «Где» — без неё одноимённые объекты конфигурации
+        // и расширения в перечне неразличимы.
+        extensionName: module.extensionName || null,
         ownerKind: module.ownerKind,
         ownerName: module.ownerName,
         formName: module.formName,

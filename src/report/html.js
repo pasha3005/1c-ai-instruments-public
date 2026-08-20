@@ -49,7 +49,6 @@ export function renderHtmlReport(result, recommendations) {
     { id: 'sec-security', title: 'Безопасность и права доступа', html: renderSecurity(result) },
     { id: 'sec-recommendations', title: 'Рекомендации', html: renderRecommendations(recommendations) },
     { id: 'sec-plan', title: 'План улучшений', html: renderPlan(result) },
-    { id: 'sec-effort', title: 'Оценка трудозатрат', html: renderEffort(result) },
   ].filter((s) => s.html);
 
   const sections = sectionDefs.map((s) => collapsibleSection(s.html, s.id)).join('');
@@ -1383,88 +1382,6 @@ function renderPlan(result) {
 
 // --- 12. Трудозатраты -------------------------------------------------------
 
-function renderEffort(result) {
-  const e = result.effort;
-
-  return `
-<section class="section">
-  ${SECTION_NUM}
-  <h2>Оценка трудозатрат</h2>
-  <p class="section__lead">
-    Расчёт по нормативам на устранение каждого типа замечаний с поправкой
-    на сложность конфигурации (коэффициент ${e.complexityFactor}).
-  </p>
-
-  <div class="scores">
-    <div class="score">
-      <div class="score__label">Оптимистично</div>
-      <div class="score__value">${formatNumber(e.total.optimistic)}<small> ч</small></div>
-    </div>
-    <div class="score">
-      <div class="score__label">Базовая оценка</div>
-      <div class="score__value" style="color:var(--accent)">${formatNumber(e.total.hours)}<small> ч</small></div>
-      <div class="score__note">≈ ${e.total.days} рабочих дней</div>
-    </div>
-    <div class="score">
-      <div class="score__label">Пессимистично</div>
-      <div class="score__value">${formatNumber(e.total.pessimistic)}<small> ч</small></div>
-    </div>
-    ${e.budget ? `
-    <div class="score">
-      <div class="score__label">Бюджет (${formatNumber(e.budget.hourlyRate)} ₽/ч)</div>
-      <div class="score__value" style="font-size:26px">${formatNumber(e.budget.base)}<small> ₽</small></div>
-      <div class="score__note">${formatNumber(e.budget.optimistic)} — ${formatNumber(e.budget.pessimistic)} ₽</div>
-    </div>` : ''}
-  </div>
-
-  <h3>Структура трудозатрат</h3>
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>Направление</th><th class="num">Замечаний</th><th class="num">Часов</th></tr></thead>
-    <tbody>
-      ${e.byCategory.map((c) => `
-      <tr>
-        <td>${esc(CATEGORY_RU[c.category] || categoryRuExtra(c.category))}</td>
-        <td class="num">${c.findings}</td>
-        <td class="num">${c.hours}</td>
-      </tr>`).join('')}
-      <tr>
-        <td><b>Разработка, итого</b></td>
-        <td class="num"></td>
-        <td class="num"><b>${e.remediation.developmentHours}</b></td>
-      </tr>
-      <tr>
-        <td>Анализ, тестирование, документирование, управление</td>
-        <td class="num"></td>
-        <td class="num">${e.remediation.overheadHours}</td>
-      </tr>
-      <tr>
-        <td><b>${esc(e.update.scenario)}</b></td>
-        <td class="num"></td>
-        <td class="num"><b>${e.update.hours}</b></td>
-      </tr>
-      <tr style="border-top:2px solid var(--line)">
-        <td><b>ИТОГО</b></td>
-        <td class="num"></td>
-        <td class="num"><b>${e.total.hours}</b></td>
-      </tr>
-    </tbody>
-  </table>
-  </div>
-
-  ${e.update.components ? `
-  <h4>Детализация работ по обновлению</h4>
-  <ul>
-    <li>Сравнение и объединение конфигураций — ${e.update.components.merge} ч</li>
-    <li>Тестирование после обновления — ${e.update.components.testing} ч</li>
-    <li>Адаптация расширений — ${e.update.components.extensions} ч</li>
-  </ul>` : ''}
-  <p class="muted">${esc(e.update.detail)}</p>
-
-  <div class="footnote">${esc(e.breakdownNote)}</div>
-</section>`;
-}
-
 // --- Методика ---------------------------------------------------------------
 
 function renderMethodology(result) {
@@ -1493,8 +1410,6 @@ function renderMethodology(result) {
         ${result.modifications.confidence === 'exact' ? 'сравнением с эталонной выгрузкой' : 'по косвенным признакам'}.</li>
     <li>Статический анализ выявляет проблемы, видимые в исходном коде. Он не заменяет
         нагрузочное тестирование и анализ планов запросов на реальных данных.</li>
-    <li>Оценка трудозатрат основана на нормативах и не учитывает специфику конкретных
-        бизнес-требований заказчика.</li>
   </ul>
 
   <h3 class="plain">Шкала критичности</h3>
