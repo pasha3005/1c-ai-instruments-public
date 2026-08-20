@@ -62,19 +62,14 @@ export function renderFindingsBlock(result) {
   const byAuthor = groupByAuthor(findings);
   const bySeverity = groupBySeverity(findings);
 
-  // Поиск, обе сводки и сам перечень — одно целое: перечень читают через
-  // фильтры и сводки, а не отдельно от них, поэтому весь блок сворачивается
-  // и раскрывается одним заголовком. Свёрнуто по умолчанию, как и всё здесь.
-  //
-  // Порядок задан пользователем: сначала сводка по типам — она отвечает
-  // на вопрос «что вообще нашли», — а поиск и фильтры лежат внутри сводки
-  // по разработчикам, потому что отбирают ими одно и то же: и щелчок по имени,
-  // и строка поиска правят один перечень ниже. Разработчиков нет — фильтры
-  // выводятся сами по себе, иначе искать было бы нечем.
+  // Обёртки над всем блоком нет: сводки, фильтры и перечень лежат прямо
+  // в разделе (требование пользователя 20.08.2026). Порядок: сначала сводка
+  // по типам — «что вообще нашли», — потом сводка по разработчикам, потом
+  // фильтры и сам перечень. Фильтры стоят НАД перечнем и не свёрнуты: ими
+  // пользуются, читая перечень, а не до него.
   return `
-  ${collapsible('Сводки и поиск по замечаниям', `
   ${renderRuleSummary(result, byRule)}
-  ${renderAuthorSummary(byAuthor, findings) || renderFilters(findings)}
+  ${renderAuthorSummary(byAuthor)}
 
   <h3 class="plain">Перечень замечаний</h3>
   <p class="muted wide-note" style="font-size:13.5px">
@@ -82,19 +77,21 @@ export function renderFindingsBlock(result) {
     одно исправление обычно закрывает сразу много однотипных случаев.
     У каждого случая приведён фрагмент кода, к которому относится замечание.
   </p>
-  ${bySeverity.map((level) => renderSeverityLevel(level)).join('')}`)}`;
+  ${renderFilters(findings)}
+  ${bySeverity.map((level) => renderSeverityLevel(level)).join('')}`;
 }
 
 /**
- * Поиск и фильтры.
+ * Фильтры перечня.
  *
- * Разрез по направлениям был отдельным разделом с теми же карточками — теперь
- * это чипы рядом с критичностью. Так же поступили с разработчиками: их имена
- * в сводке кликабельны и просто подставляются в поиск. Возможность посмотреть
- * «что тут по производительности» или «что написал такой-то» сохранена,
- * а второй копии перечня нет.
+ * Строки поиска здесь нет: её убрали вместе с поиском по фамилии — отбирают
+ * чипами, а не текстом (требование пользователя 20.08.2026). Четыре разреза,
+ * и первый из них — где лежит код: конфигурация либо конкретное расширение.
+ * Он первый потому, что отвечает на первый же вопрос читателя — «это наше
+ * или это в расширении».
  */
 function renderFilters(findings) {
+  const scopes = scopeList(findings);
   const severities = SEVERITY_ORDER.filter((s) => countBy(findings, 'severity', s));
   const categories = [...new Set(findings.map((f) => f.category))]
     .sort((a, b) => countBy(findings, 'category', b) - countBy(findings, 'category', a));
@@ -102,8 +99,12 @@ function renderFilters(findings) {
 
   return `
   <div class="filters no-print">
-    <input type="search" id="findingSearch" autocomplete="off"
-           placeholder="Поиск по модулю, объекту, процедуре или тексту замечания…">
+    ${scopes.length > 1 ? `
+    <div class="filter-chips" data-filter="scope">
+      <button type="button" class="chip is-active" data-value="all">Все конфигурации</button>
+      ${scopes.map((scope) => `
+      <button type="button" class="chip" data-value="${esc(scope.key)}">${esc(scope.label)} — ${scope.count}</button>`).join('')}
+    </div>` : ''}
     <div class="filter-chips" data-filter="severity">
       <button type="button" class="chip is-active" data-value="all">Все уровни</button>
       ${severities.map((s) => `
@@ -122,6 +123,35 @@ function renderFilters(findings) {
     </div>` : ''}
     <div class="filter-stat muted" id="findingStat"></div>
   </div>`;
+}
+
+/**
+ * Где лежит код: конфигурация и расширения — по одному чипу на каждое.
+ *
+ * Конфигурация идёт первой, расширения — по имени: их на проекте бывает
+ * несколько, и порядок должен быть предсказуемым.
+ */
+function scopeList(findings) {
+  const counts = new Map();
+  for (const f of findings) {
+    const key = scopeKey(f);
+    if (!counts.has(key)) counts.set(key, { key, label: scopeLabel(f), count: 0 });
+    counts.get(key).count += 1;
+  }
+  return [...counts.values()].sort((a, b) => {
+    if ((a.key === CONFIG_SCOPE) !== (b.key === CONFIG_SCOPE)) return a.key === CONFIG_SCOPE ? -1 : 1;
+    return a.label.localeCompare(b.label, 'ru');
+  });
+}
+
+const CONFIG_SCOPE = '__config__';
+
+function scopeKey(f) {
+  return f.extensionName || CONFIG_SCOPE;
+}
+
+function scopeLabel(f) {
+  return f.extensionName || 'Конфигурация';
 }
 
 /**
@@ -165,23 +195,21 @@ function renderRuleSummary(result, byRule) {
 }
 
 /**
- * Замечания по разработчикам, а вместе с ними — поиск и фильтры.
+ * Замечания по разработчикам.
  *
  * **Сортировка — по имени**, требование пользователя: сводку читают, чтобы
  * найти в ней конкретного человека, а не чтобы узнать, у кого замечаний
  * больше — это и так видно по колонке. Безымянная группа стоит последней:
  * это не человек.
  *
- * Имя кликабельно и подставляется в поиск — так открывается перечень именно
- * его замечаний, без второй копии этого перечня в документе. Поле поиска
- * и чипы уровней и направлений стоят здесь же (требование пользователя):
- * это один и тот же отбор, и разносить его по разным блокам незачем.
+ * Имя кликабельно: щелчок выставляет фильтр по разработчику над перечнем
+ * и раскрывает перечень на его замечаниях. Второй копии перечня в документе
+ * при этом не появляется.
  */
-function renderAuthorSummary(byAuthor, findings) {
+function renderAuthorSummary(byAuthor) {
   if (!byAuthor.length) return '';
 
   return collapsible('Замечания по разработчикам', `
-  ${renderFilters(findings)}
   <p class="muted wide-note" style="font-size:13.5px">
     Автор определяется по комментарию-маркеру, которым обрамлена правка,
     по единственной подписи в модуле или по префиксу собственного объекта
@@ -298,7 +326,7 @@ function renderCase(f, index) {
             data-author="${esc(authorKey(f.author))}"
             data-module="${esc(f.moduleFile || f.moduleTitle || '')}"
             data-rule="${esc(stripTrailingCount(f.groupTitle || f.title))}"
-            data-search="${esc(searchKey(f))}">
+            data-scope="${esc(scopeKey(f))}">
           <td class="num muted">${index + 1}</td>
           <td>${whereCell(f)}</td>
           <td class="nowrap">${ownerCell(f)}</td>
@@ -338,18 +366,23 @@ function ownerCell(f) {
  * Ввод задержан на 180 мс — без этого браузер подвисает на каждой букве,
  * когда строк десятки тысяч.
  */
+/**
+ * Фильтры перечня — единственный скрипт в отчёте.
+ *
+ * Отчёт остаётся самодостаточным файлом: скрипт встроен, сети не требует.
+ * Строки поиска здесь нет: отбирают чипами — где лежит код, уровень,
+ * направление, разработчик.
+ */
 export const FINDINGS_SCRIPT = `
 (function () {
-  var search = document.getElementById('findingSearch');
-  if (!search) return;
+  var box = document.querySelector('.filters');
+  if (!box) return;
   var stat = document.getElementById('findingStat');
   var rows = Array.prototype.slice.call(document.querySelectorAll('.finding-row'));
-  var picked = { severity: 'all', category: 'all', author: 'all' };
-  var timer = null;
+  var picked = { scope: 'all', severity: 'all', category: 'all', author: 'all' };
 
   function matches(row) {
-    var term = (search.value || '').trim().toLowerCase();
-    return (!term || row.dataset.search.indexOf(term) !== -1)
+    return (picked.scope === 'all' || row.dataset.scope === picked.scope)
       && (picked.severity === 'all' || row.dataset.severity === picked.severity)
       && (picked.category === 'all' || row.dataset.category === picked.category)
       && (picked.author === 'all' || row.dataset.author === picked.author);
@@ -372,8 +405,9 @@ export const FINDINGS_SCRIPT = `
 
     updateAuthorSummary(visible);
 
-    if (!search.value.trim() && picked.severity === 'all'
-      && picked.category === 'all' && picked.author === 'all') {
+    var filtered = picked.scope !== 'all' || picked.severity !== 'all'
+      || picked.category !== 'all' || picked.author !== 'all';
+    if (!filtered) {
       stat.textContent = '';
       return;
     }
@@ -385,9 +419,9 @@ export const FINDINGS_SCRIPT = `
   /**
    * Сводка по разработчикам считается по видимым строкам.
    *
-   * Требование пользователя: когда включён фильтр, таблица под фильтрами
+   * Требование пользователя: когда включён фильтр, таблица над перечнем
    * обязана показывать отобранное, а не исходные итоги — иначе цифры в ней
-   * противоречат перечню под ней.
+   * противоречат перечню.
    */
   function updateAuthorSummary(visible) {
     var summary = document.querySelectorAll('[data-author-row]');
@@ -425,30 +459,25 @@ export const FINDINGS_SCRIPT = `
   function topRules(rules) {
     var names = Object.keys(rules).sort(function (a, b) { return rules[b] - rules[a]; }).slice(0, 3);
     return names.map(function (name) {
-      var box = document.createElement('span');
-      box.textContent = name + ' — ' + rules[name];
-      return box.innerHTML;
+      var span = document.createElement('span');
+      span.textContent = name + ' — ' + rules[name];
+      return span.innerHTML;
     }).join('; ');
   }
 
   /** Чип выбирается программно: и щелчком по нему, и щелчком по имени в сводке. */
   function pick(kind, value) {
-    var box = document.querySelector('.filter-chips[data-filter="' + kind + '"]');
+    var group = document.querySelector('.filter-chips[data-filter="' + kind + '"]');
     picked[kind] = value;
-    if (!box) return;
-    box.querySelectorAll('.chip').forEach(function (chip) {
+    if (!group) return;
+    group.querySelectorAll('.chip').forEach(function (chip) {
       chip.classList.toggle('is-active', chip.dataset.value === value);
     });
   }
 
-  search.addEventListener('input', function () {
-    clearTimeout(timer);
-    timer = setTimeout(apply, 180);
-  });
-
-  document.querySelectorAll('.filter-chips').forEach(function (box) {
-    var kind = box.dataset.filter;
-    box.addEventListener('click', function (event) {
+  document.querySelectorAll('.filter-chips').forEach(function (group) {
+    var kind = group.dataset.filter;
+    group.addEventListener('click', function (event) {
       var chip = event.target.closest('.chip');
       if (!chip) return;
       pick(kind, chip.dataset.value);
@@ -457,16 +486,16 @@ export const FINDINGS_SCRIPT = `
   });
 
   /**
-   * Имя разработчика в сводке — это фильтр, а не текст для строки поиска.
+   * Имя разработчика в сводке — это фильтр.
    *
-   * Перечень ниже бывает свёрнут, и раньше щелчок по имени не делал ничего
+   * Перечень бывает свёрнут, и раньше щелчок по имени не делал ничего
    * видимого. Теперь блок раскрывается до первой отобранной строки: уровень
    * критичности, тип замечания и всё, что над ними.
    */
   document.addEventListener('click', function (event) {
-    var pickButton = event.target.closest ? event.target.closest('.author-pick') : null;
-    if (!pickButton) return;
-    var value = pickButton.dataset.author;
+    var button = event.target.closest ? event.target.closest('.author-pick') : null;
+    if (!button) return;
+    var value = button.dataset.author;
     pick('author', picked.author === value ? 'all' : value);
     apply();
 
@@ -483,18 +512,13 @@ export const FINDINGS_SCRIPT = `
 
   // Раскрытие блока по ссылке-якорю и подготовка к печати живут в общем
   // скрипте отчёта (layoutScript.js): они нужны всему документу, а этот
-  // скрипт выходит сразу, когда замечаний нет и поля поиска в отчёте нет.
+  // скрипт выходит сразу, когда замечаний нет и фильтров в отчёте нет.
 })();
 `;
 
 /** Стили фильтров и таблицы случаев. */
 export const FINDINGS_STYLES = `
-.filters { margin: 0 0 22px; display: flex; flex-direction: column; gap: 10px; }
-.filters input[type=search] {
-  width: 100%; padding: 11px 14px; font: inherit; font-size: 14.5px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink);
-}
-.filters input[type=search]:focus { outline: none; border-color: var(--accent); }
+.filters { margin: 0 0 18px; display: flex; flex-direction: column; gap: 8px; }
 .filter-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .filter-stat { font-size: 13px; min-height: 18px; }
 .chip {
@@ -613,14 +637,6 @@ function topIssues(items) {
   return groupByRule(items).slice(0, 3)
     .map((r) => `${stripTrailingCount(r.title)} — ${r.items.length}`)
     .join('; ');
-}
-
-function searchKey(f) {
-  // Фамилии в ключе поиска НЕТ: разработчик выбирается своим фильтром, а щелчок
-  // по имени больше не подставляет текст в строку поиска (требование
-  // пользователя, 20.08.2026). Строка поиска ищет по коду и тексту замечания.
-  return [f.moduleTitle, f.moduleFile, f.ownerName, f.routine, f.detail]
-    .filter(Boolean).join(' ').toLowerCase().slice(0, 400);
 }
 
 /**

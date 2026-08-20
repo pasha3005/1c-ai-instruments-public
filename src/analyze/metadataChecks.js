@@ -53,7 +53,7 @@ export async function runMetadataChecks({
     const found = policy?.rules?.get(code);
     return found && !found.disabled ? found : null;
   };
-  checkNamePrefix({ findings, objects, extensions, changeSet, policy, rule: rule('policy.name-prefix') });
+  checkNamePrefix({ findings, objects, changeSet, policy, rule: rule('policy.name-prefix') });
   checkRoleSynonym({ findings, objects, isCustom, rule: rule('policy.role-synonym-suffix') });
   await checkManagerProcedures({
     findings, objects, modules, changeSet, rule: rule('policy.manager-procedures'),
@@ -185,27 +185,31 @@ function policyFinding(rule, kind, name, extra) {
 }
 
 /**
- * Префикс доработок в именах объектов.
+ * Префикс доработок в именах объектов КОНФИГУРАЦИИ.
  *
- * Проверяются только объекты, добавленные интегратором, и собственные объекты
- * расширений: у типового объекта вендора префикса проекта нет и быть не может.
+ * Проверяются только объекты, добавленные интегратором по отношению
+ * к конфигурации поставщика: у типового объекта вендора префикса проекта нет
+ * и быть не может.
+ *
+ * **Собственные объекты расширений не проверяются** (требование пользователя
+ * 20.08.2026): объект расширения именуется с префиксом САМОГО расширения,
+ * а он на каждом проекте свой и с проектным префиксом доработок не совпадает.
+ * Замечание на такой объект было бы ложным.
+ *
  * Реквизиты и предопределённые элементы не проверяются — по регламентам они
  * наследуют префикс объекта, а какой реквизит типового объекта добавлен
  * интегратором, из перечня объектов не видно.
  */
-function checkNamePrefix({ findings, objects, extensions, changeSet, policy, rule }) {
+function checkNamePrefix({ findings, objects, changeSet, policy, rule }) {
   if (!rule) return;
   const prefix = String(rule.params['префикс'] || policy?.prefix || '').trim();
   if (!prefix) return;
 
-  const scopes = listOf(rule.params['проверять']).map((s) => s.toLowerCase());
-  const wantAdded = !scopes.length || scopes.some((s) => s.includes('добавленн'));
-  const wantExtensions = !scopes.length || scopes.some((s) => s.includes('расширен'));
   const skip = new Set(listOf(rule.params['не проверять виды']).map((s) => s.toLowerCase()));
   const lower = prefix.toLowerCase();
 
   const seen = new Set();
-  const check = (kind, name, where, extensionName = null) => {
+  const check = (kind, name, where) => {
     const key = `${kind}.${name}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -218,30 +222,21 @@ function checkNamePrefix({ findings, objects, extensions, changeSet, policy, rul
       // В группе лежат объекты разных видов: имя первого из них было бы
       // подписью ко всем (замечание пользователя, 20.08.2026).
       groupTitle: `Объект метаданных без префикса «${prefix}»`,
-      extensionName,
       detail:
         `${meta?.ru || kind} «${name}» ${where} и по регламенту проекта должен именоваться `
         + `с префиксом «${prefix}». По префиксу доработку видно в дереве конфигурации и в обновлении.`,
     }));
   };
 
-  if (wantAdded && changeSet) {
-    const index = new Map(objects.map((o) => [o.fullName, o]));
-    for (const key of changeSet.added) {
-      const object = index.get(key);
-      if (!object) continue; // Ключ модуля или подчинённого элемента, а не объекта.
-      check(object.kind, object.name, 'добавлен интегратором');
-    }
-  }
+  // Без сравнения с поставщиком добавленные объекты неизвестны: проверять
+  // нечего, и придумывать за пользователя мы не станем.
+  if (!changeSet) return;
 
-  if (!wantExtensions) return;
-  for (const extension of extensions || []) {
-    for (const key of extension.ownKeys || []) {
-      const at = key.indexOf('.');
-      if (at < 0) continue;
-      check(key.slice(0, at), key.slice(at + 1),
-        `является собственным объектом расширения «${extension.name}»`, extension.name);
-    }
+  const index = new Map(objects.map((o) => [o.fullName, o]));
+  for (const key of changeSet.added) {
+    const object = index.get(key);
+    if (!object) continue; // Ключ модуля или подчинённого элемента, а не объекта.
+    check(object.kind, object.name, 'добавлен интегратором в конфигурацию');
   }
 }
 
