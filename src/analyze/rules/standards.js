@@ -412,6 +412,40 @@ function detectTempFileNotDeleted(ctx) {
   }
 }
 
+/**
+ * Строковый литерал — часть текста ЗАПРОСА, а не фраза пользователю.
+ *
+ * Запрос почти всегда собирают конкатенацией, и отдельный кусок («"ВЫБРАТЬ"»,
+ * «" ГДЕ Товар = &Товар"») сам по себе на запрос не похож. Поэтому склеиваем
+ * соседние литералы, сцепленные знаком «+», и смотрим на текст целиком —
+ * плюс отдельно узнаём начало запроса по ключевому слову в верхнем регистре.
+ *
+ * Живой случай 20.08.2026: «Запрос.Текст = "ВЫБРАТЬ" + …» попало в отчёт как
+ * «текст показывается пользователю». Пользователь справедливо спросил, где
+ * именно это показывается.
+ */
+const QUERY_START = /^\s*(?:ВЫБРАТЬ|SELECT|УНИЧТОЖИТЬ|DROP)(?![А-Яа-яЁёA-Za-z])/;
+
+/** Имя объекта, в свойство которого кладут текст запроса. */
+const QUERY_OWNER = /(запрос|query|схемакомпоновки|текстзапроса|макеткомпоновки)/i;
+
+function partOfQueryText(tokens, index) {
+  if (QUERY_START.test(String(tokens[index].value))) return true;
+
+  // Склейка «"…" + "…" + "…"» в обе стороны: кусок запроса опознаётся только
+  // вместе с соседями.
+  const parts = [tokens[index].value];
+  for (let i = index - 1; i > 0; i -= 2) {
+    if (tokens[i]?.value !== '+' || tokens[i - 1]?.type !== TOKEN.STRING) break;
+    parts.unshift(tokens[i - 1].value);
+  }
+  for (let i = index + 1; i < tokens.length - 1; i += 2) {
+    if (tokens[i]?.value !== '+' || tokens[i + 1]?.type !== TOKEN.STRING) break;
+    parts.push(tokens[i + 1].value);
+  }
+  return looksLikeQuery(parts.join('\n'));
+}
+
 /** Методы, которыми текст показывают пользователю. */
 const USER_MESSAGE_CALLS = new Set(['сообщить', 'message']);
 /** Свойство, в которое кладут текст сообщения пользователю. */
@@ -434,7 +468,7 @@ function detectUnlocalizedUserMessage(ctx) {
     const token = tokens[i];
     if (token.type !== TOKEN.STRING) continue;
     if (!/[А-Яа-яЁё]/.test(token.value)) continue;
-    if (looksLikeQuery(token.value)) continue;
+    if (partOfQueryText(tokens, i)) continue;
 
     const before = tokens[i - 1];
     if (!before) continue;
@@ -448,7 +482,11 @@ function detectUnlocalizedUserMessage(ctx) {
     } else if (before.type === TOKEN.OPERATOR && before.value === '='
       && tokens[i - 2]?.type === TOKEN.IDENT && tokens[i - 3]?.value === '.'
       && MESSAGE_TEXT_PROPS.has(String(tokens[i - 2].value).toLowerCase())) {
-      where = `свойство ${tokens[i - 4]?.value || ''}.${tokens[i - 2].value}`;
+      // «Запрос.Текст», «СхемаКомпоновки.Текст» — свойство называется так же,
+      // как у сообщения, а пользователю такой текст не показывается.
+      const owner = String(tokens[i - 4]?.value || '');
+      if (QUERY_OWNER.test(owner)) continue;
+      where = `свойство ${owner}.${tokens[i - 2].value}`;
     }
     if (!where) continue;
 

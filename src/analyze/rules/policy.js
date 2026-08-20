@@ -20,7 +20,9 @@
 
 import { TOKEN } from '../bsl/lexer.js';
 import { SEVERITY, CATEGORY, snippetAt } from './context.js';
-import { DATE_RE, TICKET_RE, SURNAME_INITIALS_RE } from '../bsl/markerDictionary.js';
+import {
+  DATE_RE, TICKET_RE, SURNAME_INITIALS_RE, VENDOR_MARKERS, PLATFORM_MARKER,
+} from '../bsl/markerDictionary.js';
 import { listOf, pairsOf, safePattern } from '../../policy/parsePolicy.js';
 import { ticketPresence } from '../../policy/ticket.js';
 import {
@@ -82,6 +84,36 @@ function markerRe(value, fallback) {
   return new RegExp(`^\\s*//+\\s*${escapeRe(text)}`);
 }
 
+/**
+ * Пометка, как её ищет проверка формата.
+ *
+ * Ищем ЛЮБУЮ попытку поставить пометку: «//++», «// +», «//   ++». Судим
+ * потом — по строгому виду из регламента. Иначе о «//++ Иванов» программа
+ * молчала бы вовсе: под терпимое выражение он подходит, а под требование
+ * регламента — нет.
+ */
+function looseMarkerRe(wanted) {
+  const sign = String(wanted).replace(/^\s*\/\/+\s*/, '').trim().charAt(0) || '+';
+  return new RegExp(`^\\s*//+\\s*${escapeRe(sign)}+`);
+}
+
+/** Пометка ровно в том виде, какого требует регламент: «// ++ Фамилия». */
+function strictMarkerRe(wanted) {
+  return new RegExp(`^\\s*${escapeRe(String(wanted).trim())}\\s`);
+}
+
+/**
+ * Пометка поставлена вендором или платформой, а не разработчиком.
+ *
+ * «//++ НЕ УТ», «//++ НЕ УТКА» — условная сборка типовых решений: ERP, КА и УТ
+ * собираются из общих исходников. Регламент проекта к ним отношения не имеет
+ * (замечание пользователя, 20.08.2026).
+ */
+function isVendorMarker(raw, body) {
+  if (PLATFORM_MARKER.test(raw)) return true;
+  return VENDOR_MARKERS.some((re) => re.test(body));
+}
+
 function escapeRe(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -96,6 +128,12 @@ function escapeRe(value) {
 function checkChangeMarker(ctx, rule, policy) {
   if (!rule) return;
 
+  const wanted = String(rule.params['открывающая пометка'] || '// ++').trim();
+  // Ищем шире, чем требует регламент: «//++», «// +», «//  ++» — это тоже
+  // попытка поставить пометку, и о несоблюдении формата надо сказать, а не
+  // молча пройти мимо (требование пользователя 20.08.2026).
+  const loose = looseMarkerRe(wanted);
+  const strict = strictMarkerRe(wanted);
   const open = markerRe(rule.params['открывающая пометка'], '++');
   const parts = new Set(listOf(rule.params['состав']).map((p) => MARKER_PARTS.get(p.toLowerCase())).filter(Boolean));
   if (!parts.size) return;
@@ -105,8 +143,27 @@ function checkChangeMarker(ctx, rule, policy) {
   const sample = String(rule.params['пример номера задачи'] || '').trim();
 
   for (const comment of ctx.comments) {
-    if (!open.test(comment.value)) continue;
-    const body = comment.value.replace(open, '').trim();
+    if (!loose.test(comment.value)) continue;
+    const body = comment.value.replace(loose, '').trim();
+    // Пометка вендора и платформы («//++ НЕ УТ», «// Начало СтандартныеПодсистемы»):
+    // это условная сборка типового решения, а не правка разработчика. Судить
+    // по ней о регламенте проекта — значит обвинять вендора.
+    if (isVendorMarker(comment.value, body)) continue;
+
+    if (!strict.test(comment.value)) {
+      report(ctx, rule, {
+        ruleId: 'policy.change-marker-format',
+        title: `Пометка изменения оформлена не как «${wanted}»`,
+        groupTitle: `Пометка изменения оформлена не как «${wanted}»`,
+        line: comment.line,
+        detail:
+          `Регламент проекта требует записи «${wanted} » — ровно с такими пробелами. `
+          + `В коде: «${comment.value.trim().slice(0, 60)}». По единому виду пометки её находят `
+          + 'поиском по всем модулям: «//++» и «// + » в такой поиск не попадают.',
+        recommendation: `Приведите пометку к виду «${wanted} Фамилия И.О.».`,
+        snippet: snippetAt(ctx.source, comment.line),
+      });
+    }
 
     // Номер задачи разбирается отдельно от остального состава: «номера нет»
     // и «номер написан не по формату проекта» — разные ошибки и разные

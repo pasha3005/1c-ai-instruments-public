@@ -21,6 +21,7 @@ import { TOKEN } from '../bsl/lexer.js';
 import { findEnclosingLoop } from '../bsl/structure.js';
 import {
   analyzeQueryText, findNonIndexableFilters, queryPlace, queryPlaceOf, QUERY_PATTERNS,
+  isMetadataTable,
 } from '../bsl/query.js';
 import { SEVERITY, CATEGORY, snippetAt } from './context.js';
 
@@ -201,7 +202,10 @@ function analyzeQueries(ctx) {
       });
     }
 
-    if (!metrics.hasWhere && !metrics.hasTop && metrics.virtualTables === 0 && metrics.tableCount > 0) {
+    // Из таблиц БАЗЫ, а не из временных: у временной таблицы отбор уже сделан
+    // в пакете выше, и требовать у неё ГДЕ — ложное замечание.
+    const baseTables = metrics.tables.filter(isMetadataTable);
+    if (!metrics.hasWhere && !metrics.hasTop && metrics.virtualTables === 0 && baseTables.length > 0) {
       ctx.report({
         ruleId: 'perf.query-no-filter',
         title: 'Запрос без условия отбора',
@@ -209,7 +213,7 @@ function analyzeQueries(ctx) {
         category: CATEGORY.PERFORMANCE,
         line: query.line,
         detail:
-          `Запрос к таблицам (${metrics.tables.slice(0, 3).join(', ')}) не содержит ни ГДЕ, ни ПЕРВЫЕ. ` +
+          `Запрос к таблицам базы (${baseTables.slice(0, 3).join(', ')}) не содержит ни ГДЕ, ни ПЕРВЫЕ. ` +
           'На больших таблицах это приводит к полному сканированию.',
         recommendation:
           'Добавьте условие отбора по индексируемым полям либо ограничьте выборку конструкцией ПЕРВЫЕ N.',

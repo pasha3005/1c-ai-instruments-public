@@ -690,6 +690,14 @@ async function fromRepositoryByStore({ input, workRoot, progress, warnings }) {
     },
   });
   if (diffStats.massNote) warnings.push(diffStats.massNote);
+  if (diffStats.limited) {
+    warnings.push(
+      'Правки показаны не по всем помещениям периода: на разбор версий хранилища '
+      + `отведено ${Math.round(PLACEMENT_BUDGET_MS / 60000)} мин, и за это время удалось `
+      + `разобрать ${diffStats.dumps} версий. Сузьте период, чтобы увидеть правки остальных `
+      + 'помещений.',
+    );
+  }
 
   if (unknownClasses.size) {
     // Одного идентификатора мало: по нему вид не назовёт никто. Поэтому рядом
@@ -1444,8 +1452,17 @@ async function buildPlacementDiffs({ progress, commits, versionDir }) {
       cache.set(key, null);
       return null;
     }
-    dumps += 1;
     const objects = [...(needed.get(key) || [])];
+    // Пустой перечень объектов означает «ВСЕ»: на ERP это вся конфигурация
+    // и минуты работы впустую. Такое бывает у предыдущей версии помещения,
+    // в котором объекты только ДОБАВЛЯЛИСЬ: сравнивать там не с чем, а бюджет
+    // выгрузок эта версия съедала целиком — и правки следующих помещений
+    // в отчёт уже не попадали.
+    if (!objects.length) {
+      cache.set(key, null);
+      return null;
+    }
+    dumps += 1;
     progress.update('export', `хранилище «${repoName}»: версия ${version} — объектов ${objects.length}`);
     let entry = null;
     try {

@@ -502,7 +502,14 @@ function renderCommitModule(diff) {
 
   const fragments = diff.fragments || [];
   if (!fragments.length) {
-    return `<div class="dt dt--leaf">${title}<span class="dt__stat">${esc(stat)}</span></div>`;
+    // Модуль в помещении есть, а правок в нём нет — так бывает, когда поменяли
+    // свойства объекта, а код не трогали. Об этом надо СКАЗАТЬ: иначе читатель
+    // не отличит «код не менялся» от «код не показан» (замечание пользователя,
+    // 20.08.2026).
+    const why = diff.addedLines
+      ? esc(stat)
+      : 'изменений в коде нет';
+    return `<div class="dt dt--leaf">${title}<span class="dt__stat">${why}</span></div>`;
   }
 
   const hidden = diff.hiddenBlocks

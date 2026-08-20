@@ -1144,6 +1144,69 @@ ${LIGHT_VARS}
  */
 .section, .sec__body > details.collapsible, .sec__body > h3 { scroll-margin-top: 84px; }
 
+/*
+ * --- Прилипающие заголовки раскрытых блоков ---
+ *
+ * Заголовок раздела прилипает к верху окна давно; читателю нужно то же самое
+ * от блоков внутри раздела (требование пользователя 20.08.2026): прокручивая
+ * длинный перечень случаев, он должен видеть, в каком уровне критичности
+ * и в каком типе замечания находится.
+ *
+ * Два правила, из которых всё следует:
+ *
+ *  * прилипает ТОЛЬКО раскрытый блок (атрибут open). Свёрнутый — обычная строка,
+ *    и прилипать ей незачем: за ней ничего не прокручивается;
+ *  * вложенные блоки прилипают ЛЕСЕНКОЙ: каждый следующий уровень встаёт под
+ *    предыдущим, а не поверх него. Отсюда переменные stick-0, stick-1, stick-2 —
+ *    высоты, накопленные заголовками сверху.
+ *
+ * Фон у прилипшего заголовка обязателен и непрозрачен: сквозь него не должен
+ * просвечивать уезжающий код.
+ */
+:root {
+  --stick-0: 58px;  /* заголовок раздела */
+  --stick-1: 100px; /* + заголовок блока первого уровня */
+  --stick-2: 138px; /* + второго */
+}
+
+.sec__body details.collapsible[open] > summary,
+.sec__body details.dt[open] > summary {
+  position: sticky;
+  top: var(--stick-0);
+  z-index: 2;
+}
+
+.sec__body details.collapsible[open] details.collapsible[open] > summary,
+.sec__body details.collapsible[open] details.dt[open] > summary,
+.sec__body details.dt[open] details.dt[open] > summary {
+  top: var(--stick-1);
+  z-index: 1;
+}
+
+.sec__body details.collapsible[open] details.collapsible[open] details.collapsible[open] > summary,
+.sec__body details.collapsible[open] details.collapsible[open] details.dt[open] > summary,
+.sec__body details.dt[open] details.dt[open] details.dt[open] > summary {
+  top: var(--stick-2);
+  z-index: 0;
+}
+
+/* Прилипший заголовок дерева обязан быть непрозрачным. */
+.sec__body details.dt[open] > summary { background: var(--bg); }
+.sec__body details.dt--commit[open] > summary { background: var(--bg-soft); }
+
+/*
+ * Якорь и прокрутка «показать блок» не должны прятать цель под лесенкой
+ * прилипших заголовков.
+ */
+.sec__body details.collapsible, .sec__body details.dt { scroll-margin-top: var(--stick-1); }
+
+@media print {
+  /* На бумаге прилипание бессмысленно: страница не прокручивается. */
+  .sec__body details.collapsible[open] > summary,
+  .sec__body details.dt[open] > summary { position: static; }
+}
+
+
 @media (max-width: 1100px) {
   /* Меню в узком окне только съедало бы место под содержимое. */
   .layout { grid-template-columns: minmax(0, 1fr); }
