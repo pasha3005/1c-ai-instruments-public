@@ -92,6 +92,31 @@ export const POLICY_CHECKS = [
     },
   },
   {
+    code: 'policy.extension-annotations',
+    scope: 'module',
+    title: 'Аннотации расширения',
+    keys: {
+      'аннотация замены': 'text',
+      'вызов продолжения': 'text',
+      'предел строк без продолжения': 'text',
+    },
+  },
+  {
+    code: 'policy.own-routine-region',
+    scope: 'module',
+    title: 'Область собственного метода расширения',
+    keys: { 'области собственных методов': 'pairs' },
+  },
+  {
+    code: 'policy.short-names',
+    scope: 'module',
+    title: 'Сокращения в именах',
+    keys: {
+      'минимальная длина имени': 'text',
+      'разрешённые имена': 'list',
+    },
+  },
+  {
     code: 'policy.forbidden-methods',
     scope: 'module',
     title: 'Методы, которые использовать нельзя',
@@ -132,6 +157,12 @@ export const POLICY_CHECKS = [
     keys: { 'суффикс синонима роли': 'text' },
   },
   {
+    code: 'policy.manager-procedures',
+    scope: 'metadata',
+    title: 'Обязательные процедуры модуля менеджера',
+    keys: { 'обязательные процедуры': 'pairs' },
+  },
+  {
     code: 'policy.commit-ticket',
     scope: 'commit',
     title: 'Номер задачи в комментарии помещения',
@@ -160,6 +191,19 @@ export const FORMAT_RULES = new Map([
   ['отступ табуляцией', 'tabs'],
   ['один оператор в строке', 'one-statement'],
   ['язык имён: русский', 'identifier-language'],
+]);
+
+/**
+ * Аннотации расширения перед объявлением метода.
+ *
+ * По ним метод расширения отличается от собственного: заимствованный лежит
+ * в той же области, что и в модуле конфигурации, и правило размещения
+ * собственных методов на него не распространяется. Директивы компиляции
+ * (`&НаКлиенте`, `&НаСервере`) сюда не входят — они есть и у собственных.
+ */
+export const EXTENSION_ANNOTATIONS = new Set([
+  '&вместо', '&около', '&после', '&перед', '&изменениеиконтроль',
+  '&around', '&after', '&before', '&changeandvalidate',
 ]);
 
 /** Части пометки изменения, которых регламент может потребовать. */

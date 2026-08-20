@@ -9,8 +9,9 @@
  * Здесь два источника замечаний:
  *
  *  * встроенная проверка подписок на события — работает всегда;
- *  * проверки регламента проекта (префикс, синоним роли) — только когда
- *    пользователь выбрал файл регламента.
+ *  * проверки регламента проекта (префикс, синоним роли, обязательные
+ *    процедуры модуля менеджера) — только когда пользователь выбрал файл
+ *    регламента.
  *
  * Главное правило продукта соблюдается и здесь: **типовые объекты вендора
  * не проверяются**. Берутся объекты, добавленные интегратором, и собственные
@@ -21,7 +22,7 @@
 import { readText } from '../util/fsx.js';
 import { kindByTag } from '../parse/metadataKinds.js';
 import { SEVERITY, CATEGORY } from './rules/context.js';
-import { listOf } from '../policy/parsePolicy.js';
+import { listOf, pairsOf } from '../policy/parsePolicy.js';
 import { createLogger } from '../util/logger.js';
 
 const log = createLogger('analyze:metadata');
@@ -54,6 +55,9 @@ export async function runMetadataChecks({
   };
   checkNamePrefix({ findings, objects, extensions, changeSet, policy, rule: rule('policy.name-prefix') });
   checkRoleSynonym({ findings, objects, isCustom, rule: rule('policy.role-synonym-suffix') });
+  await checkManagerProcedures({
+    findings, objects, modules, changeSet, rule: rule('policy.manager-procedures'),
+  });
 
   return findings;
 }
@@ -141,10 +145,7 @@ async function checkSubscriptions({ findings, objects, modules, isCustom }) {
     const source = sources.get(module.file);
     if (source === null) continue;
 
-    const declared = new RegExp(
-      `(?:Процедура|Функция|Procedure|Function)\\s+${routine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`, 'i',
-    ).test(source);
-    if (declared) continue;
+    if (declaresRoutine(source, routine)) continue;
 
     findings.push(objectFinding('EventSubscription', subscription.name, {
       ruleId: 'std.subscription-without-handler',
@@ -157,6 +158,14 @@ async function checkSubscriptions({ findings, objects, modules, isCustom }) {
       recommendation: 'Добавьте процедуру-обработчик в общий модуль либо исправьте ссылку в подписке.',
     }));
   }
+}
+
+/** В тексте модуля объявлена процедура или функция с таким именем. */
+function declaresRoutine(source, name) {
+  if (!source) return false;
+  return new RegExp(
+    `(?:Процедура|Функция|Procedure|Function)\\s+${String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`, 'i',
+  ).test(source);
 }
 
 // --- Проверки регламента ------------------------------------------------------
@@ -248,6 +257,75 @@ function checkRoleSynonym({ findings, objects, isCustom, rule }) {
         `Синоним «${synonym || 'не задан'}» не оканчивается на «${suffix}». В списке прав проектную роль `
         + 'не отличить от типовой.',
       recommendation: `Допишите в конец синонима «${suffix}».`,
+    }));
+  }
+}
+
+/**
+ * Обязательные процедуры модуля менеджера у добавленных объектов.
+ *
+ * Регламенты требуют подключать новый документ к стандартным механизмам —
+ * печати прежде всего, — а подключение это видно в модуле менеджера:
+ * команды печати регистрирует процедура, объявленная в нём. Какому виду
+ * объекта какая процедура нужна, перечисляет сам регламент.
+ *
+ * Проверяются ТОЛЬКО объекты, добавленные интегратором. Без сравнения
+ * с поставщиком добавленные объекты неизвестны, и правило молчит: иначе
+ * на типовой конфигурации замечание получил бы каждый документ вендора.
+ */
+async function checkManagerProcedures({ findings, objects, modules, changeSet, rule }) {
+  if (!rule || !changeSet) return;
+
+  const wanted = new Map();
+  for (const pair of pairsOf(rule.params['обязательные процедуры'])) {
+    const kind = pair.from.trim().toLowerCase();
+    const names = pair.to.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!kind || !names.length) continue;
+    wanted.set(kind, [...(wanted.get(kind) || []), ...names]);
+  }
+  if (!wanted.size) return;
+
+  const managers = new Map();
+  for (const module of modules) {
+    if (module.moduleType !== 'manager' || !module.ownerKind || !module.ownerName) continue;
+    managers.set(`${module.ownerKind}.${module.ownerName}`, module);
+  }
+
+  const index = new Map(objects.map((o) => [o.fullName, o]));
+  const sources = new Map();
+
+  for (const key of changeSet.added) {
+    const object = index.get(key);
+    if (!object) continue; // Ключ модуля или подчинённого элемента, а не объекта.
+    const meta = kindByTag(object.kind);
+    const names = wanted.get(String(meta?.ru || object.kind).toLowerCase());
+    if (!names?.length) continue;
+
+    const module = managers.get(object.fullName);
+    let source = '';
+    if (module) {
+      if (!sources.has(module.file)) {
+        try {
+          sources.set(module.file, await readText(module.file));
+        } catch (err) {
+          log.debug(`Модуль менеджера ${module.rel} не прочитан: ${err.message}`);
+          sources.set(module.file, null);
+        }
+      }
+      source = sources.get(module.file);
+      if (source === null) continue; // Модуль есть, но не прочитан: обвинять не в чем.
+    }
+
+    const missing = names.filter((name) => !declaresRoutine(source, name));
+    if (!missing.length) continue;
+
+    findings.push(policyFinding(rule, object.kind, object.name, {
+      title: `${meta?.ru || object.kind} «${object.name}»: нет процедур ${missing.join(', ')}`,
+      detail:
+        `Регламент требует у добавленного объекта этого вида процедуры модуля менеджера: ${names.join(', ')}. `
+        + `${module ? `В модуле менеджера не найдены: ${missing.join(', ')}.` : 'Модуля менеджера у объекта нет вовсе.'} `
+        + 'Без них объект не подключён к стандартным механизмам и ведёт себя не так, как остальные.',
+      recommendation: `Добавьте в модуль менеджера процедуры: ${missing.join(', ')}.`,
     }));
   }
 }

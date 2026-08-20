@@ -23,7 +23,7 @@ import { SEVERITY, CATEGORY, snippetAt } from './context.js';
 import { DATE_RE, TICKET_RE, SURNAME_INITIALS_RE } from '../bsl/markerDictionary.js';
 import { listOf, pairsOf, safePattern } from '../../policy/parsePolicy.js';
 import {
-  LIMIT_KINDS, FORMAT_RULES, MARKER_PARTS, MODULE_TYPE_BY_RU,
+  LIMIT_KINDS, FORMAT_RULES, MARKER_PARTS, MODULE_TYPE_BY_RU, EXTENSION_ANNOTATIONS,
 } from '../../policy/catalog.js';
 
 export const id = 'policy';
@@ -43,6 +43,9 @@ export function run(ctx) {
   checkEmptyRegions(ctx, active('policy.empty-regions'));
   checkAddedCodeRegion(ctx, active('policy.added-code-region'));
   checkExtensionGuard(ctx, active('policy.extension-guard'));
+  checkExtensionAnnotations(ctx, active('policy.extension-annotations'));
+  checkOwnRoutineRegion(ctx, active('policy.own-routine-region'));
+  checkShortNames(ctx, active('policy.short-names'));
   checkForbiddenMethods(ctx, active('policy.forbidden-methods'));
   checkForbiddenText(ctx, active('policy.forbidden-text'));
   checkLimits(ctx, active('policy.limits'));
@@ -318,6 +321,107 @@ function checkExtensionGuard(ctx, rule) {
   });
 }
 
+/**
+ * Аннотация полной замены без продолжения вызова.
+ *
+ * Регламенты разрешают `&Вместо` в двух случаях: типовой метод заменяется
+ * целиком либо меняется его начало, а дальше вызов возвращается в типовую
+ * процедуру через `ПродолжитьВызов()`. Отличить одно от другого можно только
+ * по объёму: скопированный в расширение типовой метод длинный, осознанная
+ * замена — короткая. Поэтому у правила есть предел строк, и он проектный.
+ *
+ * Замечания на каждый `&Вместо` здесь нет намеренно: аннотация сама по себе
+ * разрешена, и обвинять разработчика в её использовании было бы неправдой.
+ */
+function checkExtensionAnnotations(ctx, rule) {
+  if (!rule || !ctx.module.extensionName) return;
+
+  const annotation = String(rule.params['аннотация замены'] || '&Вместо').trim().toLowerCase();
+  const proceed = String(rule.params['вызов продолжения'] || 'ПродолжитьВызов').trim();
+  const limit = Number(String(rule.params['предел строк без продолжения'] ?? 20).replace(',', '.'));
+  if (!annotation || !proceed || !Number.isFinite(limit) || limit <= 0) return;
+
+  const proceedName = proceed.toLowerCase();
+  for (const routine of ctx.structure.routines) {
+    if (!(routine.directives || []).some((d) => String(d).trim().toLowerCase() === annotation)) continue;
+    if (routine.lines <= limit) continue;
+    // Вызов ищется по потоку токенов, а не по тексту: в комментарии
+    // «когда-то был ПродолжитьВызов» продолжения вызова нет.
+    const continued = ctx.tokens.some((t, i) => i > routine.startIdx && i < routine.endIdx
+      && t.type === TOKEN.IDENT && String(t.value).toLowerCase() === proceedName
+      && ctx.tokens[i + 1]?.value === '(');
+    if (continued) continue;
+
+    report(ctx, rule, {
+      title: `Замена «${routine.name}» целиком: ${routine.lines} строк без ${proceed}()`,
+      line: routine.startLine,
+      detail:
+        `Метод объявлен с аннотацией ${rule.params['аннотация замены'] || '&Вместо'}, занимает ${routine.lines} строк `
+        + `и ни разу не зовёт ${proceed}(). Похоже, типовой метод скопирован в расширение целиком ради правки `
+        + 'нескольких строк: при обновлении такая копия останется прежней, а типовой метод уйдёт вперёд.',
+      recommendation:
+        `Измените начало метода и верните управление через ${proceed}() либо примените &ИзменениеИКонтроль.`,
+      snippet: snippetAt(ctx.source, routine.startLine),
+    });
+  }
+}
+
+/**
+ * Область собственного метода расширения.
+ *
+ * Заимствованный метод узнаётся по аннотации: он лежит в той же области,
+ * что и в модуле конфигурации, и место ему выбирает не разработчик.
+ * Собственному место выбирает регламент — по признаку экспортности.
+ *
+ * Модуль без единой области не проверяется: об этом говорит `std.no-regions`,
+ * а два замечания об одном и том же — шум.
+ */
+function checkOwnRoutineRegion(ctx, rule) {
+  if (!rule || !ctx.module.extensionName || ctx.partialSource) return;
+
+  let wantExport = '';
+  let wantPlain = '';
+  for (const pair of pairsOf(rule.params['области собственных методов'])) {
+    const key = pair.from.trim().toLowerCase();
+    if (key.startsWith('неэкспорт')) wantPlain = pair.to.trim();
+    else if (key.startsWith('экспорт')) wantExport = pair.to.trim();
+  }
+  if (!wantExport && !wantPlain) return;
+
+  for (const routine of ctx.structure.routines) {
+    if ((routine.directives || []).some((d) => EXTENSION_ANNOTATIONS.has(String(d).trim().toLowerCase()))) continue;
+    const stack = regionsAtLine(ctx.structure.preprocessor, routine.startLine);
+    if (!stack.length) continue;
+
+    const expected = routine.isExport ? wantExport : wantPlain;
+    if (!expected) continue;
+    if (stack.some((name) => name.toLowerCase() === expected.toLowerCase())) continue;
+
+    report(ctx, rule, {
+      title: `Собственный метод «${routine.name}» не в области «${expected}»`,
+      line: routine.startLine,
+      detail:
+        `${routine.isExport ? 'Экспортный' : 'Неэкспортный'} метод расширения по регламенту размещается `
+        + `в области «${expected}», а лежит в «${stack[stack.length - 1]}».`,
+      recommendation: `Перенесите метод в область «${expected}».`,
+      snippet: snippetAt(ctx.source, routine.startLine),
+    });
+  }
+}
+
+/** Области, внутри которых лежит строка: от внешней к внутренней. */
+function regionsAtLine(preprocessor, line) {
+  const stack = [];
+  for (const entry of preprocessor || []) {
+    if (entry.line >= line) break;
+    const text = entry.text.trim();
+    const open = /^#\s*(?:Область|Region)\s+(.+)$/i.exec(text);
+    if (open) { stack.push(open[1].trim()); continue; }
+    if (/^#\s*(?:КонецОбласти|EndRegion)/i.test(text)) stack.pop();
+  }
+  return stack;
+}
+
 // --- Списки методов, записей, пределов ---------------------------------------
 
 function checkForbiddenMethods(ctx, rule) {
@@ -430,6 +534,75 @@ function checkLimits(ctx, rule) {
         detail: `Регламент проекта ограничивает показатель «${pair.from}» значением ${limit}.`,
       });
     }
+  }
+}
+
+/**
+ * Сокращения в именах переменных и параметров.
+ *
+ * `км`, `пк`, `пв` понятны только тому, кто писал этот код, и то до конца
+ * недели. Отличить сокращение от короткого осмысленного имени алгоритмом
+ * нельзя, поэтому мерилом служит длина, а исключения перечисляет регламент:
+ * счётчики цикла на проекте бывают приняты.
+ *
+ * Замечание одно на имя, а не на каждое упоминание: переменная в модуле
+ * встречается десятки раз, и десять одинаковых строк в отчёте — шум.
+ */
+function checkShortNames(ctx, rule) {
+  if (!rule) return;
+  const min = Number(String(rule.params['минимальная длина имени'] ?? 3).replace(',', '.'));
+  if (!Number.isFinite(min) || min <= 1) return;
+
+  const allowed = new Set(listOf(rule.params['разрешённые имена']).map((s) => s.trim().toLowerCase()));
+  const seen = new Set();
+
+  const consider = (name, line, what) => {
+    const value = String(name || '').trim();
+    if (!value || value.length >= min) return;
+    const key = value.toLowerCase();
+    if (allowed.has(key) || seen.has(key)) return;
+    seen.add(key);
+
+    report(ctx, rule, {
+      title: `Сокращение в имени: «${value}»`,
+      line,
+      detail:
+        `${what} «${value}» короче ${min} символов. Регламент проекта требует называть переменные словами: `
+        + 'по сокращению не видно, что в переменной лежит.',
+      recommendation: 'Назовите переменную по смыслу — так, как её описал бы аналитик.',
+      snippet: line ? snippetAt(ctx.source, line) : undefined,
+    });
+  };
+
+  for (const routine of ctx.structure.routines) {
+    for (const param of routine.params) consider(param, routine.startLine, 'Параметр метода');
+  }
+
+  // Объявления «Перем А, Б;» и присваивания в начале строки. Присваивание
+  // ищется по первому токену строки: знак «=» в 1С означает и сравнение,
+  // а условие начинается с ключевого слова, и строка с ним отбрасывается.
+  const byLine = new Map();
+  for (let i = 0; i < ctx.tokens.length; i += 1) {
+    const token = ctx.tokens[i];
+    if (!byLine.has(token.line)) byLine.set(token.line, []);
+    byLine.get(token.line).push(token);
+
+    if (token.type !== TOKEN.KEYWORD || token.keyword !== 'var') continue;
+    for (let j = i + 1; j < ctx.tokens.length; j += 1) {
+      const next = ctx.tokens[j];
+      if (next.type === TOKEN.IDENT) { consider(next.value, next.line, 'Переменная'); continue; }
+      if (next.type === TOKEN.OPERATOR && next.value === ',') continue;
+      if (next.type === TOKEN.KEYWORD && next.keyword === 'export') continue;
+      break;
+    }
+  }
+
+  for (const line of byLine.values()) {
+    const [first, second] = line;
+    if (first?.type !== TOKEN.IDENT) continue;
+    if (second?.type !== TOKEN.OPERATOR || second.value !== '=') continue;
+    if (line.some((t) => t.type === TOKEN.KEYWORD && (t.keyword === 'then' || t.keyword === 'do'))) continue;
+    consider(first.value, first.line, 'Переменная');
   }
 }
 
