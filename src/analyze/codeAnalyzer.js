@@ -289,9 +289,19 @@ export async function analyzeCode(modules, configuration, options = {}) {
       // объявление «Процедура …»), поэтому в его собственной структуре
       // процедур не осталось — имя нужно искать в структуре ПОЛНОГО модуля,
       // разобранной до вычистки: номера строк те же, вычистка их не сдвигает.
-      findings.push(...signChangedFindings(ctx.findings, regions).map((f) => (
-        f.routine ? f : { ...f, routine: findRoutineAtLine(structure.routines, f.line)?.name || null }
-      )));
+      findings.push(...signChangedFindings(ctx.findings, regions).map((f) => {
+        if (f.routine) return f;
+        // Вид метода и наличие параметров идут вместе с именем: в отчёте
+        // у метода стоит значок «P()»/«F(x)» и скобки за именем, а взять их
+        // можно только из структуры полного модуля.
+        const found = findRoutineAtLine(structure.routines, f.line);
+        return {
+          ...f,
+          routine: found?.name || null,
+          routineKind: found?.kind || null,
+          routineHasParams: Boolean(found?.params?.length),
+        };
+      }));
       continue;
     }
 
@@ -808,6 +818,8 @@ function collectFingerprints(fingerprints, module, structure, source) {
         ownerName: module.ownerName,
         formName: module.formName,
         routine: routine.name,
+        routineKind: routine.kind || null,
+        routineHasParams: Boolean(routine.params?.length),
         line: routine.startLine,
         lines: routine.lines,
       });
@@ -843,6 +855,8 @@ function detectDuplicates(fingerprints) {
       ownerName: first.ownerName,
       formName: first.formName,
       routine: first.routine,
+      routineKind: first.routineKind || null,
+      routineHasParams: Boolean(first.routineHasParams),
       duplicates: places,
     });
   }

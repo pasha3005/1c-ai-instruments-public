@@ -332,6 +332,7 @@ function renderCase(f, index) {
           <td class="nowrap">${ownerCell(f)}</td>
           <td class="num">${f.line || '—'}</td>
           <td class="muted">
+            ${f.routine ? `<div class="what__routine">${routineLine(f)}</div>` : ''}
             ${esc(shorten(f.detail, 300))}
             ${f.snippet ? codeBlock(f.snippet) : ''}
           </td>
@@ -559,8 +560,13 @@ export const FINDINGS_STYLES = `
 .author-row[hidden], .rule-row[hidden] { display: none; }
 /* Где лежит код — приглушённой строкой над объектом: это рамка, а не сам адрес. */
 .where__place { font-size: 12px; color: var(--ink-faint); margin-bottom: 2px; }
-/* Метод: значок вида и имя со скобками — одной строкой, значок не отрывается. */
-.where__routine { margin-left: 6px; }
+/*
+ * Метод стоит шапкой колонки с описанием: имя процедуры отвечает на вопрос
+ * «где именно», но читается вместе с текстом замечания и кодом под ним,
+ * а не в адресе объекта (требование пользователя 20.08.2026).
+ */
+.what__routine { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.what__routine .where__routine { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
 
 /*
  * Ширины колонок заданы явно. Иначе браузер отдаёт «Где» столько места,
@@ -569,7 +575,7 @@ export const FINDINGS_STYLES = `
  */
 .findings-table { table-layout: fixed; width: 100%; }
 .findings-table th:nth-child(1), .findings-table td:nth-child(1) { width: 44px; }
-.findings-table th:nth-child(2), .findings-table td:nth-child(2) { width: 33%; overflow-wrap: anywhere; word-break: break-word; }
+.findings-table th:nth-child(2), .findings-table td:nth-child(2) { width: 22%; overflow-wrap: anywhere; word-break: break-word; }
 .findings-table th:nth-child(3), .findings-table td:nth-child(3) { width: 120px; }
 .findings-table th:nth-child(4), .findings-table td:nth-child(4) { width: 62px; }
 .findings-table td { font-size: 13.5px; vertical-align: top; }
@@ -686,7 +692,6 @@ function whereCell(f) {
   const parts = [objectLine, moduleLine && moduleLine !== objectLine ? moduleLine : null]
     .filter(Boolean)
     .map((line) => esc(line));
-  if (f.routine) parts.push(routineLine(f));
 
   const place = `<div class="where__place">${esc(scopeName(f))}</div>`;
   return place + (parts.join('<br>') || esc(f.moduleTitle || ''));
