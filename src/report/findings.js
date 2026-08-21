@@ -62,12 +62,12 @@ export function renderFindingsBlock(result) {
   const byAuthor = groupByAuthor(findings);
   const bySeverity = groupBySeverity(findings);
 
-  // Обёртки над всем блоком нет: сводки, фильтры и перечень лежат прямо
-  // в разделе (требование пользователя 20.08.2026). Порядок: сначала сводка
-  // по типам — «что вообще нашли», — потом сводка по разработчикам, потом
-  // фильтры и сам перечень. Фильтры стоят НАД перечнем и не свёрнуты: ими
-  // пользуются, читая перечень, а не до него.
+  // Обёртки над всем блоком нет: фильтры, сводки и перечень лежат прямо
+  // в разделе. **Фильтры стоят ПЕРВЫМИ** (требование пользователя 20.08.2026):
+  // они управляют всем, что ниже, — и обеими сводками, и самим перечнем.
+  // Ставить их посередине значило бы, что верхние таблицы живут своей жизнью.
   return `
+  ${renderFilters(findings)}
   ${renderRuleSummary(result, byRule)}
   ${renderAuthorSummary(byAuthor)}
 
@@ -77,7 +77,6 @@ export function renderFindingsBlock(result) {
     одно исправление обычно закрывает сразу много однотипных случаев.
     У каждого случая приведён фрагмент кода, к которому относится замечание.
   </p>
-  ${renderFilters(findings)}
   ${bySeverity.map((level) => renderSeverityLevel(level)).join('')}`;
 }
 
@@ -180,11 +179,11 @@ function renderRuleSummary(result, byRule) {
     </tr></thead>
     <tbody>
       ${byRule.map((r) => `
-      <tr>
+      <tr class="rule-row" data-rule-row="${esc(r.ruleId)}">
         <td><a href="#rule-${esc(slug(r.ruleId))}">${esc(stripTrailingCount(r.title))}</a></td>
         <td>${esc(CATEGORY_RU[r.category] || r.category)}</td>
         <td>${badge(r.severity)}</td>
-        <td class="num">${formatNumber(r.items.length)}</td>
+        <td class="num" data-cell="count">${formatNumber(r.items.length)}</td>
       </tr>`).join('')}
     </tbody>
   </table>
@@ -326,6 +325,7 @@ function renderCase(f, index) {
             data-author="${esc(authorKey(f.author))}"
             data-module="${esc(f.moduleFile || f.moduleTitle || '')}"
             data-rule="${esc(stripTrailingCount(f.groupTitle || f.title))}"
+            data-rule-id="${esc(f.ruleId)}"
             data-scope="${esc(scopeKey(f))}">
           <td class="num muted">${index + 1}</td>
           <td>${whereCell(f)}</td>
@@ -403,6 +403,7 @@ export const FINDINGS_SCRIPT = `
       group.hidden = !group.querySelector('.finding-row:not([hidden])');
     });
 
+    updateRuleSummary(visible);
     updateAuthorSummary(visible);
 
     var filtered = picked.scope !== 'all' || picked.severity !== 'all'
@@ -414,6 +415,31 @@ export const FINDINGS_SCRIPT = `
     stat.textContent = visible.length
       ? 'Отобрано случаев: ' + visible.length.toLocaleString('ru-RU')
       : 'Ничего не найдено — измените условия отбора';
+  }
+
+  /**
+   * Сводка по типам считается по видимым строкам.
+   *
+   * Требование пользователя: фильтр управляет всем, что ниже него. Тип,
+   * от которого после отбора не осталось ни одного случая, из сводки
+   * убирается — иначе таблица обещает случаи, которых в перечне нет.
+   */
+  function updateRuleSummary(visible) {
+    var rows = document.querySelectorAll('[data-rule-row]');
+    if (!rows.length) return;
+
+    var counts = {};
+    visible.forEach(function (row) {
+      var id = row.dataset.ruleId || '';
+      if (id) counts[id] = (counts[id] || 0) + 1;
+    });
+
+    rows.forEach(function (tr) {
+      var count = counts[tr.dataset.ruleRow] || 0;
+      tr.hidden = !count;
+      var cell = tr.querySelector('[data-cell="count"]');
+      if (cell) cell.textContent = count.toLocaleString('ru-RU');
+    });
   }
 
   /**
@@ -530,7 +556,7 @@ export const FINDINGS_STYLES = `
 .chip.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 .author-pick { appearance: none; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; }
-.author-row[hidden] { display: none; }
+.author-row[hidden], .rule-row[hidden] { display: none; }
 /* Где лежит код — приглушённой строкой над объектом: это рамка, а не сам адрес. */
 .where__place { font-size: 12px; color: var(--ink-faint); margin-bottom: 2px; }
 
