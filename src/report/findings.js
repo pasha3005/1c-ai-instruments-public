@@ -559,6 +559,8 @@ export const FINDINGS_STYLES = `
 .author-row[hidden], .rule-row[hidden] { display: none; }
 /* Где лежит код — приглушённой строкой над объектом: это рамка, а не сам адрес. */
 .where__place { font-size: 12px; color: var(--ink-faint); margin-bottom: 2px; }
+/* Метод: значок вида и имя со скобками — одной строкой, значок не отрывается. */
+.where__routine { margin-left: 6px; }
 
 /*
  * Ширины колонок заданы явно. Иначе браузер отдаёт «Где» столько места,
@@ -567,7 +569,7 @@ export const FINDINGS_STYLES = `
  */
 .findings-table { table-layout: fixed; width: 100%; }
 .findings-table th:nth-child(1), .findings-table td:nth-child(1) { width: 44px; }
-.findings-table th:nth-child(2), .findings-table td:nth-child(2) { width: 22%; overflow-wrap: anywhere; word-break: break-word; }
+.findings-table th:nth-child(2), .findings-table td:nth-child(2) { width: 33%; overflow-wrap: anywhere; word-break: break-word; }
 .findings-table th:nth-child(3), .findings-table td:nth-child(3) { width: 120px; }
 .findings-table th:nth-child(4), .findings-table td:nth-child(4) { width: 62px; }
 .findings-table td { font-size: 13.5px; vertical-align: top; }
@@ -681,11 +683,33 @@ function whereCell(f) {
   const objectLine = kindRu && f.ownerName ? `${kindRu}.${f.ownerName}` : (f.moduleTypeRu || f.moduleTitle || '');
   const moduleLine = f.formName ? `${f.moduleTypeRu} «${f.formName}»` : f.moduleTypeRu;
 
-  const parts = [objectLine, moduleLine && moduleLine !== objectLine ? moduleLine : null, f.routine]
+  const parts = [objectLine, moduleLine && moduleLine !== objectLine ? moduleLine : null]
     .filter(Boolean)
-    .map((s) => esc(s));
+    .map((line) => esc(line));
+  if (f.routine) parts.push(routineLine(f));
+
   const place = `<div class="where__place">${esc(scopeName(f))}</div>`;
   return place + (parts.join('<br>') || esc(f.moduleTitle || ''));
+}
+
+/**
+ * Строка метода: значок вида и скобки за именем.
+ *
+ * Значок — тот же, что в дереве помещений: у процедуры «P()», у функции
+ * «F(x)». Скобки за именем говорят, есть ли параметры: «(…)» либо «()» —
+ * без пробела, как метод и записан в коде (требование пользователя
+ * 20.08.2026). Вид метода известен не всегда: правило может назвать метод,
+ * которого нет в разборе структуры, — тогда значка нет, а скобки не рисуются:
+ * выдумывать за код нельзя.
+ */
+function routineLine(f) {
+  const name = esc(f.routine);
+  if (!f.routineKind) return name;
+  const label = f.routineKind === 'function' ? 'F(x)' : 'P()';
+  const title = f.routineKind === 'function' ? 'функция' : 'процедура';
+  const args = f.routineHasParams ? '(…)' : '()';
+  return `<span class="rt-mark rt-mark--${esc(f.routineKind)}" title="${title}">${label}</span>`
+    + `<span class="where__routine">${name}${args}</span>`;
 }
 
 /**

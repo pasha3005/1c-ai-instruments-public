@@ -133,7 +133,13 @@ export function createRuleContext({
       // Процедура/функция, которой принадлежит строка замечания — для колонки
       // «где» в отчёте: вид.объект → вид модуля → имя процедуры. Строится здесь,
       // а не в каждом правиле, ровно по той же причине, что и фрагмент кода.
-      const routine = finding.line ? findRoutineAtLine(structure.routines, finding.line) : null;
+      const atLine = finding.line ? findRoutineAtLine(structure.routines, finding.line) : null;
+      // Правило может назвать метод само — тогда ищем его по имени: вид
+      // (процедура или функция) и наличие параметров нужны отчёту в колонке
+      // «Где», а знает о них только разбор структуры модуля.
+      const routine = finding.routine
+        ? structure.routines.find((r) => r.name === finding.routine) || atLine
+        : atLine;
 
       findings.push({
         ...finding,
@@ -154,6 +160,11 @@ export function createRuleContext({
         ownerName: module.ownerName,
         formName: module.formName,
         routine: finding.routine || routine?.name || null,
+        // Вид метода и наличие параметров: в колонке «Где» у процедуры стоит
+        // значок «P()», у функции — «F(x)», а за именем — «(…)» либо «()».
+        // Метод не нашёлся — значок не рисуется: выдумывать вид нельзя.
+        routineKind: routine?.kind || null,
+        routineHasParams: Boolean(routine?.params?.length),
       });
     },
   };
