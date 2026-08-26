@@ -13,7 +13,7 @@ import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES, 
 import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
 import {
-  buildReview, readReviewFile, writeReviewFile, unresolvedCount,
+  buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount,
 } from '../update/mergeReview.js';
 import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
@@ -739,6 +739,22 @@ export function buildRouter() {
     } catch {
       body = {};
     }
+    // Согласие на запись в базу принимается, только когда спорных мест
+    // не осталось. Кнопка в интерфейсе до этого недоступна, но кнопка —
+    // не защита: между показом вопроса и ответом проходит сколько угодно
+    // времени, и проверить надо здесь.
+    if (body.ok === true) {
+      const result = await updateStore.getResult(params.id);
+      const left = result
+        ? unresolvedCount(result, await updateStore.getReviewState(params.id))
+        : 0;
+      if (left > 0) {
+        sendError(res, 409, `Спорных мест, требующих решения, ещё ${left}. `
+          + 'Разберите их в окне «Разобрать спорные места» и подтвердите снова.');
+        return;
+      }
+    }
+
     const accepted = progress.answer({ ok: body.ok === true });
     if (!accepted) {
       sendError(res, 409, 'Ответ уже принят');
@@ -857,12 +873,12 @@ export function buildRouter() {
       } else if (action === 'accept') {
         await updateStore.setReviewDecision(params.id, rel, { mode: 'accepted' });
       } else {
-        const file = await readReviewFile(result, await updateStore.getReviewState(params.id), rel);
-        if (file.auto == null) {
+        const auto = await readAutoResult(result, rel);
+        if (auto == null) {
           sendError(res, 400, 'Автоматический результат для этого файла не сохранён — возвращать нечего');
           return;
         }
-        await writeReviewFile(result, rel, file.auto);
+        await writeReviewFile(result, rel, auto);
         await updateStore.setReviewDecision(params.id, rel, null);
       }
 

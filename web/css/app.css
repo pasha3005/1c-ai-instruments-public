@@ -653,6 +653,9 @@ body {
 .ask__title { font-size: 17px; font-weight: 640; margin-bottom: 8px; }
 .ask__text { color: var(--ink-mid); margin-bottom: 10px; }
 .ask__warn { color: var(--ink-soft); font-size: 13.5px; line-height: 1.6; margin-bottom: 16px; }
+/* Почему кнопка записи недоступна — объяснение под ней, а не в подсказке
+   браузера: неактивная кнопка без причины выглядит неисправной. */
+.ask__hint { color: var(--warn); font-size: 13px; margin-top: 10px; }
 .ask__actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .run-actions {
@@ -966,15 +969,34 @@ body {
  * Страница шире остальных: три колонки кода в 1120 пикселях нечитаемы,
  * а сравнивают здесь построчно.
  */
-.view--wide { max-width: none; }
-.is-wide .wrap { max-width: 1600px; }
-.hero--tight { margin-bottom: 14px; }
+/*
+ * Разбор спорных мест занимает окно целиком и НЕ прокручивается сам:
+ * прокручиваются его части — дерево, колонки кода, поле результата. Иначе
+ * на полном экране страница уезжала вверх вместе с окнами кода, и сравнивать
+ * приходилось, придерживая прокрутку (замечено 26.08.2026).
+ */
+.is-wide { height: 100vh; overflow: hidden; }
+.is-wide body,
+body.is-wide { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+body.is-wide .appfoot { display: none; }
+body.is-wide .wrap {
+  max-width: none;
+  flex: 1;
+  min-height: 0;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+}
+body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.hero--tight { margin-bottom: 12px; flex: 0 0 auto; }
 
 .mgw {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 @media (max-width: 1100px) {
   .mgw { grid-template-columns: 1fr; }
@@ -986,11 +1008,12 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
-  position: sticky;
-  top: 74px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.mgw__tree-head { padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.mgw__tree-body { max-height: calc(100vh - 220px); overflow: auto; padding: 8px; }
+.mgw__tree-head { padding: 12px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.mgw__tree-body { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 
 .mgw__legend {
   display: flex;
@@ -1092,8 +1115,12 @@ body {
   border-radius: var(--radius);
   padding: 14px;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.mgw__file { margin-bottom: 10px; }
+.mgw__file { margin-bottom: 10px; flex: 0 0 auto; }
 .mgw__file-title {
   display: flex;
   align-items: center;
@@ -1103,7 +1130,16 @@ body {
 }
 .mgw__file-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 4px; overflow-wrap: anywhere; }
 
-.mgw__places { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+/* Участков у большого модуля десятки — полоса не должна съедать окна кода. */
+.mgw__places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex: 0 0 auto;
+  max-height: 92px;
+  overflow: auto;
+}
 .mgp {
   display: inline-flex;
   align-items: center;
@@ -1125,11 +1161,13 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
+  flex: 1 1 55%;
+  min-height: 0;
 }
 @media (max-width: 900px) {
   .mgw__panes { grid-template-columns: 1fr; }
 }
-.mgw__pane { min-width: 0; }
+.mgw__pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .mgw__pane-head {
   display: flex;
   align-items: center;
@@ -1152,8 +1190,8 @@ body {
 .mgw__pane-note { font-weight: 400; color: var(--ink-faint); display: flex; gap: 6px; }
 
 .mgw__code {
-  height: 42vh;
-  min-height: 260px;
+  flex: 1;
+  min-height: 120px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
@@ -1175,12 +1213,18 @@ body {
 .mgc tr.is-here .mgc__t { color: var(--ink); }
 
 /* ---------- Результат ---------- */
-.mgw__result { margin-top: 14px; }
+.mgw__result {
+  margin-top: 14px;
+  flex: 1 1 45%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .mgw__result textarea {
   width: 100%;
-  height: 34vh;
-  min-height: 220px;
-  resize: vertical;
+  flex: 1;
+  min-height: 100px;
+  resize: none;
   font: 12.5px/1.55 var(--mono);
   color: var(--ink);
   background: var(--bg);
@@ -1202,4 +1246,28 @@ body {
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 12px;
+  flex: 0 0 auto;
 }
+.mgw__empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+
+/* Узкий экран: окну целиком не хватает высоты — возвращаем обычную прокрутку. */
+@media (max-height: 620px), (max-width: 1100px) {
+  body.is-wide { height: auto; overflow: auto; display: block; }
+  body.is-wide .wrap { display: block; }
+  body.is-wide .view.is-active { display: block; }
+  body.is-wide .appfoot { display: block; }
+  .mgw { display: block; }
+  .mgw__tree { margin-bottom: 14px; }
+  .mgw__tree-body { max-height: 40vh; }
+  .mgw__code { height: 40vh; }
+  .mgw__result textarea { height: 34vh; resize: vertical; }
+}
+
+/* Заголовок окна разбора: название слева, возврат к обновлению справа. */
+.mgw__hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.mgw__hero h1 { font-size: 22px; margin-bottom: 4px; }

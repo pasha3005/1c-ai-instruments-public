@@ -636,10 +636,18 @@
           и прогонит проверки платформы. Базе нужен <b>монопольный доступ</b>.
           <b>Резервная копия должна быть сделана заранее.</b>
         </div>
+        <!--
+          Кнопка разбора стоит ПЕРЕД кнопкой записи и подписана числом
+          неразобранных мест: пока их не ноль, записывать нечего, и первое,
+          что нужно сделать, — открыть окно разбора. Кнопка записи до этого
+          недоступна, а сервер такое согласие всё равно не примет.
+        -->
         <div class="ask__actions">
+          <button class="btn btn--primary" id="uAskReview" type="button" hidden>Разобрать спорные места</button>
           <button class="btn btn--danger-solid" id="uAskYes" type="button">Да, записать в базу</button>
-          <button class="btn" id="uAskNo" type="button">Не сейчас — я разберу спорные места</button>
+          <button class="btn" id="uAskNo" type="button">Не сейчас</button>
         </div>
+        <div class="ask__hint" id="uAskHint" hidden></div>
       </div>
 
       <div class="run-actions" id="uRunActions">
@@ -1110,9 +1118,17 @@
     Человеку остаётся то, где решение может принять только он.
   -->
   <section class="view view--wide" data-view="merge">
-    <div class="hero hero--tight">
-      <h1>Разбор спорных мест</h1>
-      <p id="mgLead">Загрузка…</p>
+    <div class="hero hero--tight mgw__hero">
+      <div>
+        <h1>Разбор спорных мест</h1>
+        <p id="mgLead">Загрузка…</p>
+      </div>
+      <!--
+        Пока разбор не закончен, кнопка ведёт назад обычным образом; когда
+        разбирать больше нечего — она главная на странице: конвейер стоит
+        и ждёт подтверждения именно там.
+      -->
+      <button class="btn" id="mgBack" type="button">К обновлению</button>
     </div>
 
     <div class="mgw" id="mgWork" hidden>
@@ -1180,7 +1196,7 @@
           </div>
         </div>
 
-        <div class="empty" id="mgEmpty">
+        <div class="empty mgw__empty" id="mgEmpty">
           Выберите место в дереве слева: сверху появится ваш код и код новой поставки,
           снизу — результат объединения, который можно править прямо здесь.
         </div>

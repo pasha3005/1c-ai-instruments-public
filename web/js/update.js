@@ -28,6 +28,8 @@ const state = {
   restored: false,
   /** Сколько спорных мест ещё не разобрано. null — ещё не спрашивали. */
   left: null,
+  /** Вопрос, на котором стоит конвейер: от него зависит вид блока ответа. */
+  question: null,
 };
 
 /** Поля формы обновления, восстанавливаемые из последнего прогона. */
@@ -61,6 +63,7 @@ export function initUpdate() {
   });
   $('#uSaveReport').addEventListener('click', () => saveReportAs());
   $('#uReviewBtn').addEventListener('click', () => switchView('merge'));
+  $('#uAskReview').addEventListener('click', () => switchView('merge'));
   $('#uLoadBtn').addEventListener('click', () => loadIntoBase());
   $('#uAskYes').addEventListener('click', () => answer(true));
   $('#uAskNo').addEventListener('click', () => answer(false));
@@ -84,6 +87,21 @@ export async function openUpdateReview() {
   if (!state.currentId) return;
   await openMerge(state.currentId);
   await refreshReviewState();
+}
+
+/**
+ * Вернулись из окна разбора на страницу обновления.
+ *
+ * Пока человек разбирал места, конвейер стоял на вопросе, а число
+ * неразобранных менялось: и кнопку записи, и пояснение под ней надо привести
+ * к тому, что есть сейчас.
+ */
+export async function refreshUpdateAfterReview() {
+  if (!state.currentId) return;
+  await refreshAsk();
+  if ($('#uResultActions').hidden) return;
+  await refreshReviewState();
+  $('#uLoadBtn').hidden = state.left > 0;
 }
 
 /**
@@ -250,7 +268,9 @@ function applySnapshot(snapshot) {
 
   // Снимок состояния приходит и при переподключении: если конвейер стоит
   // с вопросом, вопрос надо показать заново — иначе он будет ждать вечно.
-  if (snapshot.pending?.question) showAsk(snapshot.pending.question);
+  // Но только если он ещё не показан: снимок приходит на КАЖДОЕ событие,
+  // а показ вопроса ходит на сервер за числом неразобранных мест.
+  if (snapshot.pending?.question && $('#uAsk').hidden) showAsk(snapshot.pending.question);
 
   const running = snapshot.stages?.find((s) => s.status === 'running');
   if (running && !state.cancelling) {
@@ -268,19 +288,59 @@ function applySnapshot(snapshot) {
  * Спрашивается здесь, а не флажком на форме: между запуском и этим моментом
  * проходит всё объединение, и решение принимается уже зная, сколько мест
  * потребовало вмешательства.
+ *
+ * **Если спорные места не разобраны, прогон СТОИТ ЗДЕСЬ и ждёт** (требование
+ * пользователя 26.08.2026). Вопрос показан сразу, но кнопка записи в нём
+ * недоступна, пока не разобрано последнее место; рядом — кнопка, ведущая
+ * в окно разбора. Разобрав всё, человек возвращается сюда и подтверждает,
+ * и прогон идёт дальше уже с его решениями.
  */
-function showAsk(question) {
+async function showAsk(question) {
+  state.question = question || {};
   $('#uAskTitle').textContent = question?.title || 'Загрузить результат в информационную базу?';
   $('#uAskText').textContent = [question?.text, question?.infobase ? `База: ${question.infobase}` : '']
     .filter(Boolean).join(' ');
   $('#uAsk').hidden = false;
-  $('#uAskYes').disabled = false;
   $('#uAskNo').disabled = false;
   $('#uAsk').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await refreshAsk();
+}
+
+/**
+ * Перечитать, сколько мест осталось, и привести вопрос в соответствие.
+ *
+ * Зовётся и при показе вопроса, и при каждом возврате из окна разбора:
+ * пока человек там работал, число менялось, а вопрос на странице обновления
+ * остался прежним.
+ */
+async function refreshAsk() {
+  if ($('#uAsk').hidden) return;
+  const review = state.question?.kind === 'review' ? await refreshReviewState() : null;
+  const left = review ? state.left : 0;
+
+  const reviewBtn = $('#uAskReview');
+  reviewBtn.hidden = state.question?.kind !== 'review';
+  reviewBtn.textContent = left
+    ? `Разобрать спорные места (${formatNumber(left)})`
+    : 'Посмотреть спорные места';
+
+  $('#uAskYes').disabled = left > 0;
+  $('#uAskYes').textContent = left > 0
+    ? 'Записать в базу — сначала разберите места'
+    : 'Да, записать в базу';
+
+  const hint = $('#uAskHint');
+  hint.hidden = left === 0;
+  hint.textContent = left
+    ? `Не разобрано мест: ${formatNumber(left)}. Пока хоть одно не разобрано, записывать `
+      + 'в базу нельзя: в таком месте в выгрузке лежит ваша версия участка, а правка '
+      + 'поставщика в нём потеряна. Прогон ждёт — он никуда не денется.'
+    : '';
 }
 
 function hideAsk() {
   $('#uAsk').hidden = true;
+  state.question = null;
 }
 
 async function answer(ok) {

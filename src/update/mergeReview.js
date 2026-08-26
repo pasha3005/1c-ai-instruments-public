@@ -26,6 +26,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { VERSION_FILES } from './mergeConfig.js';
 import { pathExists } from '../util/fsx.js';
+import { highlightBslLines, highlightXmlLines } from '../report/bslHighlight.js';
 
 /** Действия, при которых решение остаётся за человеком. */
 const MANUAL_ACTIONS = new Set([
@@ -106,8 +107,12 @@ function places(element) {
       oursStartLine: item.oursStartLine || 0,
       theirsStartLine: item.theirsStartLine || 0,
       baseStartLine: item.baseStartLine || 0,
-      result: item.result?.lines || [],
-      ours: item.ours?.lines || [],
+      text: {
+        ours: item.ours?.lines || [],
+        theirs: item.theirs?.lines || [],
+        base: item.base?.lines || [],
+        result: item.result?.lines || [],
+      },
     });
   }
   for (const item of element.conflicts || []) {
@@ -119,8 +124,13 @@ function places(element) {
       oursStartLine: item.oursStartLine || 0,
       theirsStartLine: item.theirsStartLine || 0,
       baseStartLine: item.baseStartLine || 0,
-      result: [],
-      ours: item.ours?.lines || [],
+      // При нерешённом месте в выгрузке лежит наша версия — она же и результат.
+      text: {
+        ours: item.ours?.lines || [],
+        theirs: item.theirs?.lines || [],
+        base: item.base?.lines || [],
+        result: item.ours?.lines || [],
+      },
     });
   }
   return out.sort((a, b) => (a.oursStartLine || 0) - (b.oursStartLine || 0));
@@ -237,19 +247,110 @@ export async function readReviewFile(result, state, rel) {
     current = null;
   }
 
+  // Каждое место ищется в тексте ПО СОДЕРЖИМОМУ, а не по номеру строки.
+  // Номер участка задан в координатах объединения — своих у каждой стороны, —
+  // и подсветить по нему значило бы показать в левой колонке одну строку,
+  // а в правой другую. Живой случай 26.08.2026: слева подсвечивался
+  // «#КонецОбласти», справа — настоящая правка.
+  const places = (file.places || []).map((place) => ({
+    ...place,
+    range: {
+      ours: locate(ours, place.text.ours, place.oursStartLine),
+      theirs: locate(theirs, place.text.theirs, place.theirsStartLine),
+      base: locate(base, place.text.base, place.baseStartLine),
+      result: locate(current, place.text.result, place.oursStartLine),
+    },
+    // Сами строки участка окну не нужны: он показывает файлы целиком.
+    text: undefined,
+  }));
+
   return {
     ...file,
+    places,
     decision: state.files?.[rel] || null,
-    base,
-    theirs,
-    ours,
-    auto,
+    // Читаемые колонки уходят уже подсвеченными: раскрашивать их в браузере
+    // значило бы держать там второй лексер 1С.
+    base: renderSide(base, ext),
+    theirs: renderSide(theirs, ext),
+    ours: renderSide(ours, ext),
+    // Автоматический результат целиком не отдаётся — возврат к нему делает
+    // сервер. Окну достаточно знать, есть ли к чему возвращаться.
+    hasAuto: auto != null,
     current,
     // Двоичный файл в окне не правится: показать его текстом нечем, а записать
     // обратно «почти то же самое» значило бы испортить макет или картинку.
     editable: current !== null && !isBinary(current),
     versionsMissing: !dir,
   };
+}
+
+/**
+ * Автоматический результат объединения одного файла — тот, что программа
+ * записала сама. Нужен кнопке «Вернуть вариант программы»; окну целиком
+ * не отдаётся, чтобы не гонять по сети ещё одну копию модуля.
+ */
+export async function readAutoResult(result, rel) {
+  const file = reviewFiles(result).find((f) => f.rel === rel);
+  if (!file) throw new Error('Этот файл не значится среди спорных мест прогона');
+  return readVersion(versionsDir(result, file), VERSION_FILES.auto, path.extname(rel) || '.txt');
+}
+
+/** Насколько большой файл ещё имеет смысл подсвечивать. */
+const HIGHLIGHT_LIMIT = 2_000_000;
+
+/**
+ * Одна читаемая колонка: подсвеченные строки либо честное «версии нет».
+ *
+ * Подсветка та же, что в отчёте о качестве кода, — на том же лексере
+ * (`highlightBslLines`). Требование пользователя 26.08.2026: код всегда
+ * оформляется одинаково, где бы он ни показывался.
+ */
+function renderSide(text, ext) {
+  if (text == null) return null;
+  if (isBinary(text)) return { lines: [], binary: true };
+  const plain = () => String(text).replace(/\r\n?/g, '\n').split('\n');
+  if (text.length > HIGHLIGHT_LIMIT) return { lines: plain().map(escapeHtml) };
+  if (ext === '.bsl') return { lines: highlightBslLines(text) };
+  if (ext === '.xml' || ext === '.xsd' || ext === '.html' || ext === '.htm') {
+    return { lines: highlightXmlLines(text) };
+  }
+  return { lines: plain().map(escapeHtml) };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Где в тексте лежит участок — поиск по строкам, а не по номеру.
+ *
+ * Сравниваются обрезанные строки: отступ у сторон бывает разный, а участок
+ * от этого другим не становится. Из нескольких совпадений берётся ближайшее
+ * к подсказке — номеру строки из объединения: у повторяющихся строк
+ * («КонецПроцедуры», пустая) совпадений много, и ближайшее почти всегда то.
+ *
+ * @returns {{start: number, end: number}|null} строки 1-based, обе включительно
+ */
+export function locate(text, fragment, hintLine = 0) {
+  if (text == null) return null;
+  const needle = (fragment || []).map((l) => String(l).trim()).filter((l, i, a) => !(i === a.length - 1 && !l));
+  if (!needle.length) return hintLine ? { start: hintLine, end: hintLine, empty: true } : null;
+
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n').map((l) => l.trim());
+  let best = null;
+  for (let i = 0; i + needle.length <= lines.length; i += 1) {
+    let hit = true;
+    for (let j = 0; j < needle.length; j += 1) {
+      if (lines[i + j] !== needle[j]) { hit = false; break; }
+    }
+    if (!hit) continue;
+    const start = i + 1;
+    const distance = Math.abs(start - (hintLine || start));
+    if (!best || distance < best.distance) best = { start, end: i + needle.length, distance };
+    if (distance === 0) break;
+  }
+  return best ? { start: best.start, end: best.end } : null;
 }
 
 /** Нулевой байт в тексте означает, что файл не текстовый. */

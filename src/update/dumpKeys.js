@@ -20,6 +20,20 @@ import { kindByDir, ruName } from '../parse/metadataKinds.js';
 export const ROOT_KEY = 'Configuration';
 
 /**
+ * Модули самой конфигурации: файл выгрузки → суффикс ключа.
+ *
+ * Имена файлов совпадают с суффиксами, но перечень нужен явный: всё
+ * остальное в `Ext/` — служебные файлы поставки, у которых ключа нет.
+ */
+const ROOT_MODULES = {
+  'OrdinaryApplicationModule.bsl': 'OrdinaryApplicationModule',
+  'ManagedApplicationModule.bsl': 'ManagedApplicationModule',
+  'ApplicationModule.bsl': 'ApplicationModule',
+  'SessionModule.bsl': 'SessionModule',
+  'ExternalConnectionModule.bsl': 'ExternalConnectionModule',
+};
+
+/**
  * @typedef {object} DumpEntry
  * @property {string} rel путь относительно каталога выгрузки
  * @property {string} objectKey ключ объекта: «Catalog.Номенклатура» либо ROOT_KEY
@@ -169,13 +183,24 @@ function suffixFor(tail) {
  * в перечне отличий, у поставщика ровно такой же, как у нас, — значит его
  * содержимое известно точно.
  *
+ * Модули САМОЙ конфигурации (`Ext/OrdinaryApplicationModule.bsl`) ключ тоже
+ * имеют: отчёт сравнения печатает их свойствами корневого узла («Модуль
+ * обычного приложения - Изменено»), и без обратного перевода такой файл
+ * считался неизвестным и объявлялся спорным, хотя менял его один поставщик.
+ * Служебные файлы поставки (`ParentConfigurations.bin`,
+ * `MobileClientSignature.bin`) ключа не имеют и иметь не могут: их пишет
+ * платформа, руками их не правят.
+ *
  * @returns {string|null} null — файл не сопоставляется ни с одним ключом
- *   (корневые модули, служебные файлы): о таких судить нельзя.
+ *   (служебные файлы поставки): о таких судить по отчёту нельзя.
  */
 export function dumpInfoKey(rel) {
   const parts = String(rel).replace(/\\/g, '/').split('/');
   if (parts.length < 2) return null;
-  if (parts[0] === 'Ext') return null;
+  if (parts[0] === 'Ext') {
+    const suffix = ROOT_MODULES[parts.slice(1).join('/')];
+    return suffix ? `${ROOT_KEY}.${suffix}` : null;
+  }
 
   const kind = kindByDir(parts[0]);
   if (!kind) return null;

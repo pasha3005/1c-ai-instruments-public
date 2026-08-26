@@ -6,7 +6,9 @@
  */
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
-import { initUpdate, showUpdateStages, reloadUpdateHistory, openUpdateReview } from './update.js';
+import {
+  initUpdate, showUpdateStages, reloadUpdateHistory, openUpdateReview, refreshUpdateAfterReview,
+} from './update.js';
 import { initMerge } from './merge.js';
 import { initQuality, showQualityStages, reloadQualityHistory } from './quality.js';
 import {
@@ -137,6 +139,9 @@ export function switchView(name) {
   document.body.classList.toggle('is-wide', name === 'merge');
   if (name === 'history') loadHistory();
   if (name === 'merge') openUpdateReview();
+  // Возврат из разбора: конвейер мог всё это время стоять на вопросе,
+  // а число неразобранных мест изменилось.
+  if (previous === 'merge' && name === 'update') refreshUpdateAfterReview();
   if (name === 'update-history') reloadUpdateHistory();
   if (name === 'quality-history') reloadQualityHistory();
   if (name === 'about') loadAbout();

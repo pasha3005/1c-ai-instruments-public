@@ -453,7 +453,7 @@ async function mergeContents(state, rel) {
       autoFromVendor: merge.fromVendor,
     });
     await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
-    element.versions = await saveConflictVersions(state, rel, { merged: mergedBuf });
+    element.versions = await saveConflictVersions(state, rel, { merged: mergedBuf, ours: oursBuf });
     return;
   }
 
@@ -466,7 +466,9 @@ async function mergeContents(state, rel) {
       autoKeptOurs: merge.keptOurs,
     });
     await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
-    element.versions = await saveConflictVersions(state, rel, { kind: 'auto', merged: mergedBuf });
+    element.versions = await saveConflictVersions(state, rel, {
+      kind: 'auto', merged: mergedBuf, ours: oursBuf,
+    });
     return;
   }
 
@@ -620,7 +622,7 @@ function cut(lines) {
  * путь 260 знаками, поэтому файлы раскладываются по номерам, а соответствие
  * номера и пути пишется в «список.txt».
  */
-async function saveConflictVersions(state, rel, { kind = 'manual', merged = null } = {}) {
+async function saveConflictVersions(state, rel, { kind = 'manual', merged = null, ours = null } = {}) {
   if (!state.conflictRoot) return null;
   const counter = kind === 'auto' ? 'autoSaved' : 'manualSaved';
   const limit = kind === 'auto' ? RESOLVED_FILES_LIMIT : CONFLICT_FILES_LIMIT;
@@ -639,7 +641,10 @@ async function saveConflictVersions(state, rel, { kind = 'manual', merged = null
     ]) {
       if (!treeOf(state, tree).files.has(rel)) continue;
       if (tree === 'base' && state.unknown.has(rel)) continue;
-      const buf = await read(state, tree, rel);
+      // «Основная конфигурация» — это наш файл ДО объединения. С диска его
+      // читать уже нельзя: результат объединения записан туда же и раньше,
+      // и в окне разбора левая колонка показывала бы не нашу версию, а итог.
+      const buf = tree === 'main' && ours ? ours : await read(state, tree, rel);
       await fs.writeFile(path.join(dir, `${name}${ext}`), buf);
     }
     // Автоматический результат кладётся рядом неизменным: окно разбора

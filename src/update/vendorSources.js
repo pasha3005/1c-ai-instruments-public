@@ -32,23 +32,35 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { splitLines, joinLines, changedHunks } from './diff3.js';
-import { dumpInfoKey, describeDumpPath, ROOT_KEY } from './dumpKeys.js';
+import { dumpInfoKey, describeDumpPath, childObjectLine, ROOT_KEY } from './dumpKeys.js';
 import { createLogger } from '../util/logger.js';
 
 const log = createLogger('vendor-restore');
 
 /**
- * Корневые файлы конфигурации, о которых отчёт сравнения молчит.
+ * Свои файлы конфигурации, о которых отчёт сравнения судить не даёт.
  *
- * Конфигуратор печатает изменения свойств самой конфигурации и её корневых
- * модулей вне узла объекта, и надёжно привязать их к файлу нельзя. Считать
- * такой файл совпадающим с поставкой опаснее всего: `Configuration.xml`
- * хранит состав конфигурации, и «взять целиком из новой поставки» означало бы
- * выбросить из состава все наши объекты.
+ * `Configuration.xml` хранит свойства конфигурации и её СОСТАВ. Свойства
+ * отчёт называет («Версия - Изменено»), состав — тоже, перечнем добавленных
+ * и удалённых объектов; собрать из этого прежний файл поставщика можно точно
+ * (`restoreConfigurationXml`), и только если отчёт сообщил о правке САМОЙ
+ * конфигурации — какого-то её свойства помимо состава, — файл честно уходит
+ * в «неизвестно».
+ *
+ * Корневые МОДУЛИ конфигурации с 26.08.2026 в этот список не входят: у них
+ * появился ключ (`dumpInfoKey`), и они разбираются наравне с остальными
+ * модулями — либо отчёт их не называет, и тогда у поставщика они наши, либо
+ * называет со строками правок, и тогда текст поставщика собирается точно.
+ * Раньше всё содержимое `Ext/` объявлялось неизвестным огулом, и пользователь
+ * получал в спорные места «Модуль обычного приложения», который не трогал.
+ *
+ * Служебные файлы поставки (`ParentConfigurations.bin` — цепочка поддержки,
+ * `MobileClientSignature.bin` — подпись мобильного клиента) не правятся
+ * руками вовсе: их пишет платформа. Ключа у них нет, отчёт о них молчит,
+ * и «молчит» здесь значит именно «у поставщика они такие же».
  */
-function alwaysUnknown(rel) {
-  const normalized = String(rel).replace(/\\/g, '/');
-  return normalized === 'Configuration.xml' || normalized.startsWith('Ext/');
+function rootPropertiesChanged(compare) {
+  return (compare?.details?.get(ROOT_KEY) || []).length > 0;
 }
 
 /**
@@ -73,6 +85,7 @@ export async function restoreVendorTree({
   const added = compare?.sets?.added || new Set();
   const removed = compare?.sets?.removed || new Set();
   const moduleLines = compare?.moduleLines || new Map();
+  const rootUnknown = rootPropertiesChanged(compare);
 
   /** Файлы, содержимое которых у поставщика известно и отличается от нашего. */
   const restored = new Map();
@@ -83,6 +96,8 @@ export async function restoreVendorTree({
 
   const stats = {
     sameAsOurs: 0, restoredModules: 0, approxModules: 0, unknown: 0, ourOwn: 0, deletedByUs: 0,
+    /** Собран ли состав конфигурации: 1 — да, 0 — файл ушёл в «неизвестно». */
+    restoredRoot: 0,
   };
 
   let seen = 0;
@@ -99,10 +114,21 @@ export async function restoreVendorTree({
       continue;
     }
 
-    if (alwaysUnknown(rel)) {
-      unknown.add(rel);
-      files.set(rel, size);
-      stats.unknown += 1;
+    // Свойства и состав конфигурации: собираются из перечня добавленных
+    // и удалённых объектов, а не объявляются неизвестными огулом.
+    if (rel === 'Configuration.xml') {
+      const rebuilt = rootUnknown
+        ? null
+        : await restoreConfigurationXml(path.join(mainDir, rel), added, removed);
+      if (rebuilt) {
+        restored.set(rel, rebuilt);
+        files.set(rel, rebuilt.length);
+        stats.restoredRoot += 1;
+      } else {
+        unknown.add(rel);
+        files.set(rel, size);
+        stats.unknown += 1;
+      }
       continue;
     }
 
@@ -172,6 +198,80 @@ export async function restoreVendorTree({
       return fs.readFile(path.join(mainDir, rel));
     },
   };
+}
+
+/**
+ * Configuration.xml поставщика: наш файл, у которого состав приведён к прежнему.
+ *
+ * Свойства самой конфигурации мы не меняли — иначе отчёт назвал бы их, и файл
+ * ушёл бы в «неизвестно» ещё до вызова. Значит от нашего файла поставка
+ * отличается ровно составом: объекты, добавленные интегратором, у поставщика
+ * отсутствуют, а удалённые им — присутствуют. И то и другое отчёт перечисляет
+ * исчерпывающе, так что сборка получается точной, а не приблизительной.
+ *
+ * Почему нельзя просто счесть файл совпадающим с нашим: тогда объединение
+ * увидело бы «тронул только поставщик» и взяло бы Configuration.xml новой
+ * поставки ЦЕЛИКОМ — вместе с составом, где наших объектов нет. Конфигурация
+ * загрузилась бы без единой доработки.
+ *
+ * @returns {Promise<Buffer|null>} null — файл не прочитан либо в нём нет
+ *   блока ChildObjects: судить о таком нельзя.
+ */
+export async function restoreConfigurationXml(file, added, removed) {
+  let text;
+  try {
+    text = await fs.readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const patched = vendorChildObjects(text, added, removed);
+  if (!patched) return null;
+  return Buffer.from(patched, 'utf8');
+}
+
+/**
+ * Состав конфигурации, каким он был у поставщика.
+ *
+ * Экспортируется ради теста: ошибка здесь ломает загрузку всей конфигурации,
+ * а проявляется только на живой базе.
+ */
+export function vendorChildObjects(text, added = new Set(), removed = new Set()) {
+  const shape = splitLines(text);
+  const lines = shape.lines;
+  const openIdx = lines.findIndex((line) => line.includes('<ChildObjects>'));
+  const closeIdx = lines.findIndex((line) => line.includes('</ChildObjects>'));
+  if (openIdx === -1 || closeIdx === -1 || closeIdx < openIdx) return null;
+
+  const drop = new Set();
+  for (const key of added) {
+    const item = childObjectLine(key);
+    if (item) drop.add(item.xml);
+  }
+
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (i > openIdx && i < closeIdx && drop.has(lines[i].trim())) continue;
+    out.push(lines[i]);
+  }
+
+  // Объекты, удалённые интегратором, у поставщика были — возвращаем их
+  // к однородным соседям, как это делает конфигуратор.
+  const close = out.findIndex((line) => line.includes('</ChildObjects>'));
+  const indent = /^(s*)/.exec(out[close] || '')?.[1] || '		';
+  for (const key of removed) {
+    const item = childObjectLine(key);
+    if (!item) continue;
+    if (out.some((line) => line.trim() === item.xml)) continue;
+    let at = -1;
+    for (let i = 0; i < close; i += 1) {
+      if (out[i].trim().startsWith(`<${item.kind}>`)) at = i;
+    }
+    const insertAt = at === -1 ? close : at + 1;
+    const lineIndent = at === -1 ? `${indent}	` : /^(s*)/.exec(out[at])?.[1] || indent;
+    out.splice(insertAt, 0, `${lineIndent}${item.xml}`);
+  }
+
+  return joinLines(out, shape);
 }
 
 async function readTextSafe(tree, rel) {

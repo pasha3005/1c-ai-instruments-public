@@ -36,6 +36,17 @@ const state = {
   loadedText: '',
   /** Куда возвращаться по кнопке «Назад к обновлению». */
   back: null,
+  /**
+   * Какие узлы дерева раскрыты.
+   *
+   * Хранится здесь, а не в разметке: дерево перерисовывается после каждого
+   * выбора файла и каждого решения, и без явного состояния оно схлопывалось
+   * прямо под рукой — щёлкнув по файлу, пользователь терял список, из которого
+   * выбирал (замечено 26.08.2026).
+   */
+  open: new Set(),
+  /** Отмеченный участок: подсветка и прокрутка колонок. */
+  place: -1,
 };
 
 export function initMerge(onBack) {
@@ -56,6 +67,11 @@ export function initMerge(onBack) {
       renderRight();
     });
   });
+
+  $('#mgBack').addEventListener('click', () => state.back?.());
+
+  // Колонки прокручиваются вместе — как в окне сравнения конфигуратора.
+  linkScroll($('#mgOurs'), $('#mgTheirs'));
 
   $('#mgSave').addEventListener('click', () => decide('save'));
   $('#mgAccept').addEventListener('click', () => decide('accept'));
@@ -97,6 +113,12 @@ async function loadReview() {
   const t = state.review.totals;
   $('#mgWork').hidden = false;
   $('#mgLead').innerHTML = lead(t);
+
+  const back = $('#mgBack');
+  back.classList.toggle('btn--primary', t.left === 0 && t.manual > 0);
+  back.textContent = t.left === 0 && t.manual > 0
+    ? 'Всё разобрано — вернуться к обновлению'
+    : 'К обновлению';
   renderTree();
 
   if (state.file) await openFile(state.file.rel);
@@ -128,11 +150,30 @@ function renderTree() {
     return;
   }
 
+  // Узел с неразобранными местами раскрыт сам — но только пока пользователь
+  // не решил иначе: его выбор всегда сильнее нашей догадки.
+  for (const object of objects) {
+    if (!state.touched?.has(object.key) && object.files.some(needsWork)) state.open.add(object.key);
+    if (state.file && object.files.some((f) => f.rel === state.file.rel)) state.open.add(object.key);
+  }
+
   box.innerHTML = objects.map(renderObject).join('');
+
+  $$('details[data-key]', box).forEach((node) => {
+    node.addEventListener('toggle', () => {
+      (state.touched ||= new Set()).add(node.dataset.key);
+      if (node.open) state.open.add(node.dataset.key);
+      else state.open.delete(node.dataset.key);
+    });
+  });
 
   $$('[data-rel]', box).forEach((node) => {
     node.addEventListener('click', () => openFile(node.dataset.rel));
   });
+}
+
+function needsWork(file) {
+  return file.status === 'manual' && !file.decision;
 }
 
 function matchesFilter(file) {
@@ -142,9 +183,8 @@ function matchesFilter(file) {
 }
 
 function renderObject(object) {
-  const left = object.files.filter((f) => f.status === 'manual' && !f.decision).length;
   return `
-  <details class="mgt" ${left ? 'open' : ''}>
+  <details class="mgt" data-key="${escapeHtml(object.key)}" ${state.open.has(object.key) ? 'open' : ''}>
     <summary>
       <span class="mgt__title">${escapeHtml(object.title || object.key)}</span>
       <span class="mgt__stat">${object.files.length}</span>
@@ -191,6 +231,7 @@ async function openFile(rel) {
   }
 
   const file = state.file;
+  state.place = -1;
   $('#mgEmpty').hidden = true;
   $('#mgPanes').hidden = false;
   $('#mgResultBox').hidden = false;
@@ -214,8 +255,12 @@ async function openFile(rel) {
 
   $('#mgResultNote').textContent = resultNote(file);
   $('#mgSave').disabled = !file.editable;
-  $('#mgRevert').disabled = file.auto == null;
+  $('#mgRevert').disabled = !file.hasAuto;
   renderTree();
+
+  // Первое место открывается сразу: файл открывают ради него, а искать
+  // правку глазами в модуле на три тысячи строк — не работа человека.
+  if ((file.places || []).length) selectPlace(0);
 }
 
 function resultNote(file) {
@@ -238,14 +283,16 @@ function renderRight() {
   const isBase = state.side === 'base';
   $('#mgRightTitle').textContent = isBase ? 'Текущая поставка' : 'Новая поставка';
   renderCode('#mgTheirs', isBase ? file.base : file.theirs);
+  if (state.place >= 0) selectPlace(state.place);
 }
 
 /**
  * Перечень мест внутри файла.
  *
  * У модуля их бывает десяток, и каждое — своя история: где, как разобрано
- * и почему именно так. Щелчок прокручивает обе колонки к нужной строке —
- * это и есть навигация по файлу, номера строк сами по себе не говорят ничего.
+ * и почему именно так. Щелчок ведёт ко всем трём окнам сразу: обе колонки
+ * встают на нужный участок, а в результате объединения то же место
+ * выделяется — искать его там глазами не нужно.
  */
 function renderPlaces(file) {
   const box = $('#mgPlaces');
@@ -264,14 +311,29 @@ function renderPlaces(file) {
     </button>`).join('');
 
   $$('[data-place]', box).forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const place = places[Number(btn.dataset.place)];
-      $$('[data-place]', box).forEach((b) => b.classList.toggle('is-active', b === btn));
-      scrollCode('#mgOurs', place.oursStartLine);
-      scrollCode('#mgTheirs', state.side === 'base' ? place.baseStartLine : place.theirsStartLine);
-      showWhy(place);
-    });
+    btn.addEventListener('click', () => selectPlace(Number(btn.dataset.place)));
   });
+}
+
+/**
+ * Отметить участок во всех трёх окнах.
+ *
+ * Участок ищется ПО СОДЕРЖИМОМУ (сервер, `locate`), а не по номеру строки:
+ * номера у сторон свои, и подсветка по ним показывала в левой колонке одну
+ * строку, а в правой — другую.
+ */
+function selectPlace(index) {
+  const place = state.file?.places?.[index];
+  if (!place) return;
+  state.place = index;
+  $$('#mgPlaces [data-place]').forEach((b) => {
+    b.classList.toggle('is-active', Number(b.dataset.place) === index);
+  });
+
+  markRange('#mgOurs', place.range?.ours);
+  markRange('#mgTheirs', state.side === 'base' ? place.range?.base : place.range?.theirs);
+  selectInResult(place.range?.result);
+  showWhy(place);
 }
 
 function showWhy(place) {
@@ -282,29 +344,89 @@ function showWhy(place) {
 // ------------------------------------------------------------- Колонки кода
 
 /**
- * Текст с номерами строк. Ровно так же, как в отчёте: номер слева, код справа,
- * без подсветки синтаксиса — колонки читают, сравнивая строки, и раскраска
- * здесь мешала бы видеть, где они расходятся.
+ * Текст с номерами строк и подсветкой синтаксиса.
+ *
+ * Строки приходят с сервера уже раскрашенными — тем же лексером и теми же
+ * классами, что в отчёте о качестве кода (`highlightBslLines`). Держать
+ * второй лексер 1С в браузере ради этого было бы расточительством, а видеть
+ * код по-разному в двух местах одной программы — небрежностью.
  */
-function renderCode(selector, text) {
+function renderCode(selector, side) {
   const box = $(selector);
-  if (text == null) {
+  if (side == null) {
     box.innerHTML = '<div class="empty">Этой версии нет: файл в ней отсутствовал либо не сохранён.</div>';
     return;
   }
-  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
-  box.innerHTML = `<table class="mgc"><tbody>${lines.map((line, i) => `
-    <tr id="${box.id}-l${i + 1}"><td class="mgc__n">${i + 1}</td><td class="mgc__t">${escapeHtml(line) || '&nbsp;'}</td></tr>`).join('')}</tbody></table>`;
+  if (side.binary) {
+    box.innerHTML = '<div class="empty">Двоичный файл — показать его текстом нечем.</div>';
+    return;
+  }
+  box.innerHTML = `<table class="mgc"><tbody>${side.lines.map((html, i) => `
+    <tr id="${box.id}-l${i + 1}"><td class="mgc__n">${i + 1}</td><td class="mgc__t">${html || '&nbsp;'}</td></tr>`).join('')}</tbody></table>`;
 }
 
-function scrollCode(selector, line) {
+/** Подсветить участок целиком и прокрутить к нему. */
+function markRange(selector, range) {
   const box = $(selector);
-  if (!line) return;
-  const row = document.getElementById(`${box.id}-l${line}`);
-  if (!row) return;
   $$('tr.is-here', box).forEach((tr) => tr.classList.remove('is-here'));
-  row.classList.add('is-here');
-  box.scrollTop = Math.max(0, row.offsetTop - box.clientHeight / 3);
+  if (!range?.start) return;
+  const first = document.getElementById(`${box.id}-l${range.start}`);
+  for (let line = range.start; line <= (range.end || range.start); line += 1) {
+    document.getElementById(`${box.id}-l${line}`)?.classList.add('is-here');
+  }
+  if (first) scrollPane(box, first.offsetTop);
+}
+
+/**
+ * То же место в результате объединения.
+ *
+ * Результат лежит в поле ввода — раскрасить в нём строку нечем, поэтому
+ * участок ВЫДЕЛЯЕТСЯ, как это делает любой редактор при переходе к найденному.
+ */
+function selectInResult(range) {
+  const box = $('#mgResult');
+  if (!range?.start) return;
+  const lines = box.value.split('\n');
+  let from = 0;
+  for (let i = 0; i < range.start - 1 && i < lines.length; i += 1) from += lines[i].length + 1;
+  let to = from;
+  for (let i = range.start - 1; i < (range.end || range.start) && i < lines.length; i += 1) {
+    to += lines[i].length + 1;
+  }
+  try {
+    box.setSelectionRange(from, Math.max(from, to - 1));
+  } catch {
+    /* поле может быть скрыто — выделять нечего */
+  }
+  const lineHeight = parseFloat(getComputedStyle(box).lineHeight) || 19;
+  scrollPane(box, (range.start - 1) * lineHeight);
+}
+
+/** Прокрутка так, чтобы участок оказался в верхней трети окна. */
+function scrollPane(box, offsetTop) {
+  box.scrollTop = Math.max(0, offsetTop - box.clientHeight / 3);
+}
+
+/**
+ * Одновременная прокрутка двух колонок — как в окне сравнения 1С.
+ *
+ * Синхронизируется и по вертикали, и по горизонтали: в колонках лежит один
+ * и тот же код в двух версиях, и разъехавшиеся окна сравнивать невозможно.
+ * Флаг нужен, чтобы прокрутка, наведённая нами, не вызвала обратную —
+ * иначе колонки начинают дёргать друг друга.
+ */
+function linkScroll(a, b) {
+  let busy = false;
+  const tie = (from, to) => from.addEventListener('scroll', () => {
+    if (busy) return;
+    busy = true;
+    to.scrollTop = from.scrollTop;
+    to.scrollLeft = from.scrollLeft;
+    // Флаг снимается следующим кадром: событие прокрутки приходит асинхронно.
+    requestAnimationFrame(() => { busy = false; });
+  });
+  tie(a, b);
+  tie(b, a);
 }
 
 // ------------------------------------------------------------- Решение
@@ -340,7 +462,7 @@ async function decide(action) {
     buttons.forEach((id) => { $(id).disabled = false; });
     if (state.file) {
       $('#mgSave').disabled = !state.file.editable;
-      $('#mgRevert').disabled = state.file.auto == null;
+      $('#mgRevert').disabled = !state.file.hasAuto;
     }
   }
 }

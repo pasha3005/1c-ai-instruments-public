@@ -43,6 +43,7 @@ import { TIMEOUTS } from '../config.js';
 import { ensureDir, pathExists, readText, rmrf } from '../util/fsx.js';
 import { toClientArgs } from './connection.js';
 import { tagByRu } from '../parse/metadataKinds.js';
+import { ROOT_KEY } from '../update/dumpKeys.js';
 import { createLogger } from '../util/logger.js';
 import { rethrowIfCancelled } from '../util/cancel.js';
 
@@ -67,6 +68,14 @@ const MARK_ONLY_VENDOR = '<--'; // есть только у поставщика
  */
 const MODULE_PROPERTY = new Map([
   ['модуль', ''],
+  // Модули самой конфигурации. Без них правка корневого модуля не находила
+  // своего файла, и файл уходил в «прежнее значение поставщика неизвестно» —
+  // то есть объявлялся дважды изменённым, хотя менял его только поставщик.
+  ['модуль обычного приложения', 'OrdinaryApplicationModule'],
+  ['модуль управляемого приложения', 'ManagedApplicationModule'],
+  ['модуль приложения', 'ApplicationModule'],
+  ['модуль сеанса', 'SessionModule'],
+  ['модуль внешнего соединения', 'ExternalConnectionModule'],
   ['модуль объекта', 'ObjectModule'],
   ['модуль менеджера', 'ManagerModule'],
   ['модуль набора записей', 'RecordSetModule'],
@@ -375,6 +384,20 @@ const VENDOR_ONLY_LINES = /только (?:в конфигурации пост�
 /** Узел «Состав» подсистемы: под ним перечисляются чужие объекты. */
 const COMPOSITION_NODE = /^(Состав|Командный интерфейс|Подсистемы)$/i;
 
+/**
+ * Корневой узел отчёта: «Конфигурация.УправлениеПредприятием».
+ *
+ * Видом метаданных «Конфигурация» не является (`tagByRu` про неё не знает),
+ * поэтому раньше узел считался безымянным свойством, и всё, что печатается
+ * под ним — модули самой конфигурации и её собственные свойства, — терялось.
+ * Терялось не молча: восстановление поставки объявляло такие файлы
+ * «неизвестными», и они попадали пользователю в спорные места, хотя менял их
+ * только поставщик. Живой случай 26.08.2026 (УНФ 3.0.13.374 → 3.0.14.115):
+ * «Модуль обычного приложения», «ParentConfigurations.bin»,
+ * «MobileClientSignature.bin» и версия конфигурации.
+ */
+const ROOT_NODE = /^Конфигурация.[^.]+$/i;
+
 /** Сколько участков правки хранить по одному модулю. */
 const REGIONS_PER_MODULE = 200;
 
@@ -476,6 +499,13 @@ export function parseCompareReport(text) {
         : marker === MARK_ONLY_MAIN ? 'added' : 'removed';
 
       if (!parsed) {
+        // Корень конфигурации: под ним печатаются её модули и свойства,
+        // и владелец у них — сама конфигурация.
+        if (change === 'modified' && !inComposition && ROOT_NODE.test(label)) {
+          currentObject = ROOT_KEY;
+          stack.push({ indent, composition: false });
+          continue;
+        }
         // Узел-свойство: «Состав», «Командный интерфейс», «По умолчанию».
         stack.push({ indent, composition: inComposition || COMPOSITION_NODE.test(label) });
         continue;
