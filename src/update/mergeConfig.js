@@ -44,6 +44,7 @@ import { merge3, splitLines, joinLines, twoWayHunks, changedHunks } from './diff
 import { autoResolve } from './autoResolve.js';
 import { describeDumpPath, objectTitle, childObjectLine, ROOT_KEY } from './dumpKeys.js';
 import { buildXmlOutline, describeXmlRange } from './xmlOutline.js';
+import { mergeSupportTables } from './supportTable.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
 import { analyzeStructure, findRoutineAtLine } from '../analyze/bsl/structure.js';
 import { ensureDir, pathExists, readText } from '../util/fsx.js';
@@ -86,6 +87,15 @@ const ELEMENTS_PER_OBJECT = 50;
 const OBJECTS_PER_GROUP = 500;
 /** Каталог с тремя версиями каждого конфликтного файла. */
 export const CONFLICT_DIR = 'Конфликты';
+
+/**
+ * Файл, в котором лежит вся настройка поддержки.
+ *
+ * Имя обманчиво: там не только цепочка родительских конфигураций, но и правило
+ * поддержки КАЖДОГО объекта, и флаги самой конфигурации — включая «возможность
+ * изменения». Подробности разбора — `supportTable.js`.
+ */
+const SUPPORT_FILE = 'Ext/ParentConfigurations.bin';
 
 /**
  * Имена файлов внутри каталога версий.
@@ -209,6 +219,13 @@ async function mergeOne(state, rel) {
   const inBase = state.base.files.has(rel) && !state.unknown.has(rel);
   const inTarget = state.target.files.has(rel);
 
+  // Настройка поддержки не подчиняется общим правилам объединения: режим
+  // не наследуется от поставки ни при каких условиях.
+  if (rel === SUPPORT_FILE) {
+    await mergeSupport(state, rel, { inMain, inTarget });
+    return;
+  }
+
   if (state.mode === 'keys') {
     await mergeByObject(state, rel, { inMain, inTarget });
     return;
@@ -317,6 +334,82 @@ async function mergeOne(state, rel) {
 
   // Остался случай «есть только в старой поставке» — удалён обеими сторонами.
   state.totals.unchanged += 1;
+}
+
+/**
+ * Настройка поддержки: правила объектов остаются НАШИМИ всегда.
+ *
+ * Требование пользователя дословно (27.08.2026): «не изменяй режим ни для
+ * конфигурации, ни для объектов метаданных». Взяв этот файл у поставки —
+ * а по общим правилам объединения так и выходило, ведь мы его не меняли, —
+ * программа ставит всю конфигурацию на поддержку без права правки: у вендора
+ * каждый объект «не редактируется», а возможность изменения выключена.
+ * Доработанные объекты после такого обновления открываются «только для
+ * чтения», и вернуть режим можно лишь руками по каждому объекту.
+ *
+ * Из поставки берутся только сведения о релизе и записи для объектов, которых
+ * у нас нет вовсе. Не вышло разобрать файл — он остаётся нашим байт в байт:
+ * прежний номер релиза в «Настройке поддержки» — мелочь, испорченная настройка
+ * поддержки на 86 тысяч объектов — нет.
+ */
+async function mergeSupport(state, rel, { inMain, inTarget }) {
+  // Своей настройки поддержки нет — конфигурация на поддержке не стоит.
+  // Принести её из поставки значило бы поставить конфигурацию на поддержку,
+  // чего никто не просил.
+  if (!inMain) {
+    if (inTarget) {
+      state.totals.ourOwn += 1;
+      record(state, rel, {
+        action: 'kept-support',
+        note: 'Ваша конфигурация на поддержке не стоит, и обновление её туда не ставит: '
+          + 'настройка поддержки из новой поставки не переносится.',
+      });
+    }
+    return;
+  }
+
+  if (!inTarget) {
+    state.totals.ourOwn += 1;
+    return;
+  }
+
+  let merged = null;
+  try {
+    merged = mergeSupportTables(
+      (await read(state, 'main', rel)).toString('utf8'),
+      (await read(state, 'target', rel)).toString('utf8'),
+    );
+  } catch (err) {
+    merged = { ok: false, reason: err.message };
+  }
+
+  if (!merged.ok) {
+    state.totals.keptOurs += 1;
+    state.notes.push(
+      `Настройка поддержки оставлена вашей без изменений: ${merged.reason}. `
+      + 'Правила поддержки объектов и возможность изменения не тронуты, но в «Настройке '
+      + 'поддержки» останется прежний номер релиза поставщика — поправьте его в конфигураторе.',
+    );
+    record(state, rel, {
+      action: 'kept-support',
+      note: `Файл оставлен вашим целиком: ${merged.reason}.`,
+    });
+    return;
+  }
+
+  await writeFile(state, rel, Buffer.from(merged.text, 'utf8'));
+  state.totals.keptOurs += 1;
+  record(state, rel, {
+    action: 'kept-support',
+    note: `Правила поддержки сохранены полностью (${merged.kept} объектов), `
+      + `новых объектов поставки внесено ${merged.added}, релиз поставщика — ${merged.release}. `
+      + 'Возможность изменения конфигурации и режим каждого объекта не менялись.',
+  });
+  state.notes.push(
+    `Настройка поддержки сохранена: правила ${merged.kept} объектов остались вашими, `
+    + `добавлено ${merged.added} новых объектов поставки, релиз поставщика записан `
+    + `как ${merged.release}.`,
+  );
 }
 
 /**
