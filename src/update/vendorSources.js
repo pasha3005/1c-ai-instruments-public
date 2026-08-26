@@ -86,6 +86,7 @@ export async function restoreVendorTree({
   const removed = compare?.sets?.removed || new Set();
   const moduleLines = compare?.moduleLines || new Map();
   const rootUnknown = rootPropertiesChanged(compare);
+  const changedProps = changedProperties(compare);
 
   /** Файлы, содержимое которых у поставщика известно и отличается от нашего. */
   const restored = new Map();
@@ -133,7 +134,19 @@ export async function restoreVendorTree({
     }
 
     const key = dumpInfoKey(rel);
-    const changed = key ? modified.has(key) : false;
+    let changed = key ? modified.has(key) : false;
+
+    // Описание объекта — особый случай. Узел объекта отчёт помечает изменённым
+    // и тогда, когда изменились ОДНИ ЕГО МОДУЛИ: «*** Документ.АвансовыйОтчет»
+    // и под ним только «Модуль объекта - Различаются значения». Свойств
+    // и реквизитов отчёт при этом не называет ни одного — значит описание
+    // объекта у нас и у поставщика совпадает, и объявлять его неизвестным
+    // не за что. Из-за этого пользователь получал в спорные места тип
+    // реквизита, которого не касался (живой случай 27.08.2026, сверено с его
+    // же отчётом сравнения).
+    if (changed && entry.isObjectFile && !(changedProps.get(objectKey) || []).length) {
+      changed = false;
+    }
 
     if (!changed) {
       // Отличий у файла нет — значит у поставщика он ровно такой же.
@@ -197,7 +210,7 @@ export async function restoreVendorTree({
      * у поставщика мы не знаем: участок в НЕтронутом свойстве изменил один
      * поставщик, и его версию можно взять смело.
      */
-    changedProps: changedProperties(compare),
+    changedProps,
     stats,
     async read(rel) {
       const ready = restored.get(rel);
