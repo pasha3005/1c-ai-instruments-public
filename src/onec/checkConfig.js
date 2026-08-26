@@ -1,15 +1,14 @@
 /**
- * Проверки конфигурации средствами платформы: синтаксический контроль,
- * применимость расширений, обновление конфигурации базы данных.
+ * Проверки конфигурации средствами платформы: проверка модулей, применимость
+ * расширений, обновление конфигурации базы данных.
  *
  * Выполняются только после загрузки объединённой выгрузки в базу и только
  * по подтверждению пользователя: всё здесь работает с живой базой.
  *
- * **Набор ключей у `/CheckConfig` разный в разных версиях платформы.**
- * Поэтому команда не составляется «как в документации» раз и навсегда:
- * сначала пробуется полный набор, и если конфигуратор ругается на параметры,
- * набор сокращается до заведомо старого. Это дешевле, чем гадать, с какой
- * сборки появился очередной ключ, и не ломается на машине заказчика.
+ * **Проверка модулей — это `/CheckModules`, а не `/CheckConfig`.** Первое —
+ * «Конфигурация → Проверка модулей» в конфигураторе: компилируется ли код.
+ * Второе — «Проверить конфигурацию»: полный аудит с десятком настроек.
+ * После обновления нужен первый вопрос.
  *
  * **Код возврата 0 ничего не значит** — как и везде у конфигуратора. Итог
  * читается из журнала `/Out`.
@@ -36,91 +35,116 @@ function authArgs({ user, password }) {
 }
 
 /**
- * Полный набор проверок. Первым идёт синтаксический контроль всех контекстов
- * исполнения — ради него всё и затевается: обновление могло принести код,
- * который не компилируется в связке с доработкой.
- */
-const CHECK_OPTIONS_FULL = [
-  '-ConfigLogIntegrity',
-  '-IncorrectReferences',
-  '-ThinClient',
-  '-WebClient',
-  '-Server',
-  '-ExternalConnection',
-  '-ExtendedModulesCheck',
-];
-
-/** То, что понимает любая 8.3: на случай отказа по неизвестному параметру. */
-const CHECK_OPTIONS_MIN = ['-ConfigLogIntegrity', '-IncorrectReferences'];
-
-/**
- * Признак того, что конфигуратор не понял командную строку.
- *
- * Проверено на 8.5.1.1150: **несуществующий ключ платформа просто игнорирует**
- * (код 0, журнал «Ошибок не обнаружено»), поэтому сокращённый набор в реальности
- * почти никогда не понадобится. Оставлен на случай сборок, которые ругаются:
- * молча пропустить проверку хуже, чем повторить её урезанной.
- */
-const BAD_ARGS = /неверн[а-яё]* парамет|неизвестн[а-яё]* парамет|unknown\s+(option|parameter)|invalid\s+(option|parameter)/i;
-
-/**
  * Итоговые строки конфигуратора, которые сами по себе замечаниями не являются.
  *
  * «Ошибок не обнаружено» содержит слово «ошибок» и без этой оговорки попадало
  * бы в перечень замечаний — то есть успешная проверка выглядела бы проваленной.
  * Поймано на живом стенде.
  */
-const NOT_A_FINDING = /^(ошибок не обнаружено|ошибки не обнаружены|no errors|ошибок\s*[:=]\s*0)/i;
+const NOT_A_FINDING = /^(ошибок не обнаружено|ошибки не обнаружены|синтаксических ошибок не обнаружено|no errors|ошибокs*[:=]s*0)/i;
 
 /**
- * Синтаксический контроль конфигурации и расширений.
+ * Признак того, что конфигуратор не понял командную строку.
+ *
+ * Проверено на 8.5.1.1150: **несуществующий ключ платформа просто игнорирует**
+ * (код 0, журнал «Ошибок не обнаружено»). Оставлено для команд, которых
+ * в старых сборках нет вовсе, — молча пропустить проверку хуже, чем сказать
+ * об этом вслух.
+ */
+const BAD_ARGS = /неверн[а-яё]* парамет|неизвестн[а-яё]* парамет|unknowns+(option|parameter)|invalids+(option|parameter)/i;
+
+/**
+ * Контексты исполнения — только для РАСШИРЕННОЙ проверки.
+ *
+ * Замеры на демо-базе УНФ 3.0.13.374, платформа 8.5.1.1150:
+ *
+ *   /CheckModules без ключей ................................. 5 с
+ *   /CheckModules -AllExtensions ............................. 6 с
+ *   /CheckModules + шесть контекстов ....................... 473 с
+ *   /CheckModules + контексты + -ExtendedModulesCheck ...... 287 с
+ *   /CheckConfig (для сравнения) ............................ 53 с
+ *
+ * Находят они при этом разное: без ключей платформа отвечает
+ * «Синтаксических ошибок не обнаружено!», с контекстами показывает код,
+ * который не соберётся в конкретном контексте («Переменная не определена
+ * (…Клиент)»). Дорогое — контексты, а не разбор типов.
+ */
+const MODULE_CONTEXTS = [
+  '-ThinClient',
+  '-WebClient',
+  '-Server',
+  '-ExternalConnection',
+  '-ThickClientManagedApplication',
+  '-ThickClientOrdinaryApplication',
+];
+
+/**
+ * Ключи команды. Вынесены отдельно ради теста: цена ошибки здесь — минуты
+ * ожидания на каждом прогоне, а увидеть её можно только на живой базе.
+ */
+export function checkModulesOptions({ scope = 'main', extended = false } = {}) {
+  return [
+    ...(extended ? [...MODULE_CONTEXTS, '-ExtendedModulesCheck'] : []),
+    ...(scope === 'extensions' ? ['-AllExtensions'] : []),
+  ];
+}
+
+/**
+ * Проверка модулей — то же, что «Конфигурация → Проверка модулей»
+ * в конфигураторе.
+ *
+ * **Это НЕ `/CheckConfig`.** `/CheckConfig` — «Проверить конфигурацию»:
+ * там и неразрешимые ссылки, и целостность, и логическая проверка, и настроек
+ * у неё десяток. Пользователь просил именно проверку модулей (26.08.2026),
+ * и он прав: после обновления важно, компилируется ли код, а не полный аудит
+ * конфигурации.
+ *
+ * **Без ключей — и это не упрощение.** Пункт меню «Проверка модулей» настроек
+ * не имеет и отрабатывает быстро; ровно так же ведёт себя `/CheckModules`
+ * без единого ключа: 5 секунд на демо-базе УНФ. Контексты исполнения
+ * и `-ExtendedModulesCheck` находят больше, но стоят минут и десятков минут —
+ * прогон при этом выглядит зависшим, что пользователь и наблюдал 26.08.2026.
+ * Поэтому они уехали под флаг «Расширенная проверка модулей», снятый
+ * по умолчанию.
  *
  * @param {object} params
- * @param {'main'|'extensions'} [params.scope] что проверять
+ * @param {'main'|'extensions'} [params.scope] конфигурация или все расширения
+ * @param {boolean} [params.extended] контексты исполнения и разбор типов (долго)
  * @returns {Promise<{ok: boolean, options: string[], log: string, errors: object[]}>}
  */
-export async function checkConfig({
-  platform, conn, user, password, workDir, scope = 'main',
+export async function checkModules({
+  platform, conn, user, password, workDir, scope = 'main', extended = false,
 }) {
   const logPath = path.join(workDir, `check-${scope}.log`);
+  const options = checkModulesOptions({ scope, extended });
 
-  for (const options of [CHECK_OPTIONS_FULL, CHECK_OPTIONS_MIN]) {
-    const args = [
-      'DESIGNER',
-      ...toClientArgs(conn),
-      ...authArgs({ user, password }),
-      '/CheckConfig',
-      ...options,
-      ...(scope === 'extensions' ? ['-AllExtensions'] : []),
-      ...COMMON_FLAGS,
-      '/Out', logPath,
-    ];
+  const args = [
+    'DESIGNER',
+    ...toClientArgs(conn),
+    ...authArgs({ user, password }),
+    '/CheckModules',
+    ...options,
+    ...COMMON_FLAGS,
+    '/Out', logPath,
+  ];
 
-    let result;
-    try {
-      result = await run(platform.client, args, {
-        timeout: TIMEOUTS.configExport,
-        allowNonZeroExit: true,
-      });
-    } catch (err) {
-      rethrowIfCancelled(err);
-      return {
-        ok: false, options, log: `Конфигуратор не выполнил проверку: ${err.message}`, errors: [],
-      };
-    }
-
-    const text = await readLogSafe(logPath);
-    if (BAD_ARGS.test(text) && options !== CHECK_OPTIONS_MIN) {
-      log.warn('Конфигуратор не принял расширенный набор проверок, повторяем сокращённым');
-      continue;
-    }
-
-    const errors = parseCheckLog(text);
-    log.info(`Проверка (${scope}): код ${result.code}, замечаний ${errors.length}`);
-    return { ok: errors.length === 0, options, log: text, errors };
+  let result;
+  try {
+    result = await run(platform.client, args, {
+      timeout: TIMEOUTS.configExport,
+      allowNonZeroExit: true,
+    });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    return {
+      ok: false, options, log: `Конфигуратор не выполнил проверку модулей: ${err.message}`, errors: [],
+    };
   }
 
-  return { ok: false, options: [], log: '', errors: [] };
+  const text = await readLogSafe(logPath);
+  const errors = parseCheckLog(text);
+  log.info(`Проверка модулей (${scope}): код ${result.code}, замечаний ${errors.length}`);
+  return { ok: errors.length === 0, options, log: text, errors };
 }
 
 /**

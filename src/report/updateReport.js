@@ -690,12 +690,12 @@ function renderChecks(result) {
     : `<b class="bad">не выполнено</b>${result.dbUpdateError ? ` — ${esc(result.dbUpdateError)}` : ''}`}</td>
         </tr>
         <tr>
-          <td>Синтаксический контроль конфигурации</td>
+          <td>Проверка модулей конфигурации</td>
           <td>${config ? verdict(config) : '<span class="muted">не выполнялся: конфигурация типовая</span>'}</td>
         </tr>
         ${extensionsSyntax ? `
         <tr>
-          <td>Синтаксический контроль расширений</td>
+          <td>Проверка модулей расширений</td>
           <td>${verdict(extensionsSyntax)}</td>
         </tr>` : ''}
         <tr>
@@ -719,8 +719,8 @@ function renderChecks(result) {
     ${checks.manual.map((item) => `<div>${esc(fixLine(item))}</div>`).join('')}
   </div>` : ''}
 
-  ${renderCheckErrors('Синтаксический контроль конфигурации', config?.errors)}
-  ${renderCheckErrors('Синтаксический контроль расширений', extensionsSyntax?.errors)}
+  ${renderCheckErrors('Проверка модулей конфигурации', config?.errors)}
+  ${renderCheckErrors('Проверка модулей расширений', extensionsSyntax?.errors)}
   ${renderCheckErrors('Применимость расширений', extensions.errors)}`;
 }
 

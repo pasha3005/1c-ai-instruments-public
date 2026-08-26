@@ -47,7 +47,14 @@ const state = {
   open: new Set(),
   /** Отмеченный участок: подсветка и прокрутка колонок. */
   place: -1,
+  /** Отложенная перекраска поля результата. */
+  paintTimer: null,
+  /** Какая группа открыта: `merge` — спорные места, `checks` — ошибки проверок. */
+  group: 'merge',
 };
+
+/** Насколько большой текст ещё имеет смысл подсвечивать на лету. */
+const EDITOR_HIGHLIGHT_LIMIT = 400_000;
 
 export function initMerge(onBack) {
   state.back = onBack;
@@ -68,7 +75,23 @@ export function initMerge(onBack) {
     });
   });
 
+  $$('#mgWork .mgw__groups .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      state.group = chip.dataset.group;
+      state.file = null;
+      state.open = new Set();
+      state.touched = new Set();
+      $$('#mgWork .mgw__groups .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
+      $('#mgEmpty').hidden = false;
+      $('#mgPanes').hidden = true;
+      $('#mgResultBox').hidden = true;
+      loadReview();
+    });
+  });
+
+  $('#mgSkip').addEventListener('click', () => decide('skip'));
   $('#mgBack').addEventListener('click', () => state.back?.());
+  initEditor();
 
   // Колонки прокручиваются вместе — как в окне сравнения конфигуратора.
   linkScroll($('#mgOurs'), $('#mgTheirs'));
@@ -76,6 +99,21 @@ export function initMerge(onBack) {
   $('#mgSave').addEventListener('click', () => decide('save'));
   $('#mgAccept').addEventListener('click', () => decide('accept'));
   $('#mgRevert').addEventListener('click', () => decide('revert'));
+}
+
+/**
+ * Какую группу открыть при следующем входе в окно.
+ *
+ * Нужно разделу обновления: конвейер может стоять и на спорных местах,
+ * и на ошибках проверок, и кнопка должна вести именно туда.
+ */
+export function openMergeGroup(group) {
+  const next = group === 'checks' ? 'checks' : 'merge';
+  if (state.group === next) return;
+  state.group = next;
+  state.file = null;
+  state.open = new Set();
+  state.touched = new Set();
 }
 
 /** Открыть окно для прогона. Вызывается при переходе на страницу. */
@@ -110,43 +148,65 @@ async function loadReview() {
     return;
   }
 
-  const t = state.review.totals;
+  const t = groupData().totals;
   $('#mgWork').hidden = false;
   $('#mgLead').innerHTML = lead(t);
 
   const back = $('#mgBack');
-  back.classList.toggle('btn--primary', t.left === 0 && t.manual > 0);
-  back.textContent = t.left === 0 && t.manual > 0
-    ? 'Всё разобрано — вернуться к обновлению'
-    : 'К обновлению';
+  const done = t.left === 0 && t.manual > 0;
+  back.classList.toggle('btn--primary', done);
+  back.textContent = done ? 'Всё разобрано — вернуться к обновлению' : 'К обновлению';
+
+  // Переключатель групп показывает, где сколько осталось: иначе неясно,
+  // нужно ли вообще заглядывать во вторую вкладку.
+  const counts = {
+    merge: state.review?.totals?.left ?? 0,
+    checks: state.review?.checks?.totals?.left ?? 0,
+  };
+  $$('#mgWork .mgw__groups .chip').forEach((chip) => {
+    const key = chip.dataset.group;
+    const base = key === 'checks' ? 'Ошибки проверок' : 'Объединение';
+    chip.textContent = counts[key] ? `${base} (${formatNumber(counts[key])})` : base;
+    chip.classList.toggle('is-active', key === state.group);
+  });
   renderTree();
 
-  if (state.file) await openFile(state.file.rel);
+  if (state.file) await openFile(state.file.key);
 }
 
 function lead(t) {
+  const checks = state.group === 'checks';
   const parts = [];
   parts.push(t.auto
-    ? `<b>Программа объединила сама: ${formatNumber(t.auto)}</b>`
-    : 'Объединять самой было нечего');
+    ? `<b>${checks ? 'Исправлено программой' : 'Программа объединила сама'}: ${formatNumber(t.auto)}</b>`
+    : (checks ? 'Исправлять самой было нечего' : 'Объединять самой было нечего'));
   parts.push(t.left
     ? `<b style="color:var(--warn)">ждут вашего решения: ${formatNumber(t.left)}</b>`
-    : '<b style="color:var(--good)">неразобранных мест не осталось</b>');
+    : `<b style="color:var(--good)">${checks ? 'неразобранных замечаний не осталось' : 'неразобранных мест не осталось'}</b>`);
   if (t.decided) parts.push(`разобрано вами: ${formatNumber(t.decided)}`);
-  const tail = state.review.dumpAlive
-    ? ''
-    : ' · <b style="color:var(--danger)">каталог выгрузки удалён — править нечего</b>';
+  const tail = !checks && state.review && !state.review.dumpAlive
+    ? ' · <b style="color:var(--danger)">каталог выгрузки удалён — править нечего</b>'
+    : '';
   return parts.join(' · ') + tail;
+}
+
+/** Данные открытой группы: спорные места объединения либо ошибки проверок. */
+function groupData() {
+  const empty = { objects: [], totals: { files: 0, manual: 0, auto: 0, decided: 0, left: 0 } };
+  if (state.group === 'checks') return state.review?.checks || empty;
+  return state.review || empty;
 }
 
 function renderTree() {
   const box = $('#mgTree');
-  const objects = (state.review?.objects || [])
+  const objects = (groupData().objects || [])
     .map((object) => ({ ...object, files: object.files.filter(matchesFilter) }))
     .filter((object) => object.files.length);
 
   if (!objects.length) {
-    box.innerHTML = '<div class="empty">Спорных мест этого рода нет.</div>';
+    box.innerHTML = state.group === 'checks'
+      ? '<div class="empty">Ошибок проверок этого рода нет.</div>'
+      : '<div class="empty">Спорных мест этого рода нет.</div>';
     return;
   }
 
@@ -154,7 +214,9 @@ function renderTree() {
   // не решил иначе: его выбор всегда сильнее нашей догадки.
   for (const object of objects) {
     if (!state.touched?.has(object.key) && object.files.some(needsWork)) state.open.add(object.key);
-    if (state.file && object.files.some((f) => f.rel === state.file.rel)) state.open.add(object.key);
+    if (state.file && object.files.some((f) => fileKey(f) === state.file.key)) {
+      state.open.add(object.key);
+    }
   }
 
   box.innerHTML = objects.map(renderObject).join('');
@@ -197,12 +259,12 @@ function renderObject(object) {
 
 function renderFile(file) {
   const mark = fileMark(file);
-  const active = state.file?.rel === file.rel ? ' is-active' : '';
+  const active = state.file?.key === fileKey(file) ? ' is-active' : '';
   const count = file.status === 'manual'
     ? file.conflictCount || 0
     : file.resolvedCount || 0;
   return `
-  <button class="mgt__file${active}" type="button" data-rel="${escapeHtml(file.rel)}">
+  <button class="mgt__file${active}" type="button" data-rel="${escapeHtml(fileKey(file))}">
     <i class="mgi mgi--${mark}" aria-hidden="true"></i>
     <span class="mgt__file-name">${escapeHtml(file.element || file.rel)}</span>
     ${count ? `<span class="mgt__stat">${formatNumber(count)}</span>` : ''}
@@ -219,18 +281,32 @@ function fileMark(file) {
   return file.decision ? 'done' : 'manual';
 }
 
+/** Чем адресуется место: спорное — путём файла, ошибка проверки — своим кодом. */
+function fileKey(file) {
+  return state.group === 'checks' ? file.id : file.rel;
+}
+
 // ---------------------------------------------------------------- Файл
 
-async function openFile(rel) {
+/**
+ * Открыть место: спорное — по пути файла, ошибку проверки — по опознавателю.
+ *
+ * Дальше всё одинаково, потому что и работа одинакова: увидеть две версии
+ * и написать нужную. Различаются подписи колонок и набор кнопок под ними.
+ */
+async function openFile(key) {
   setNote('');
   try {
-    state.file = await api.updateReviewFile(state.updateId, rel);
+    state.file = state.group === 'checks'
+      ? await api.updateReviewCheck(state.updateId, key)
+      : await api.updateReviewFile(state.updateId, key);
   } catch (err) {
     setNote(err.message, true);
     return;
   }
 
   const file = state.file;
+  file.key = key;
   state.place = -1;
   $('#mgEmpty').hidden = true;
   $('#mgPanes').hidden = false;
@@ -238,13 +314,14 @@ async function openFile(rel) {
 
   $('#mgFileTitle').innerHTML = `
     <i class="mgi mgi--${fileMark(file)}" aria-hidden="true"></i>
-    ${escapeHtml(file.objectTitle || '')} · ${escapeHtml(file.element || '')}`;
-  $('#mgFileSub').innerHTML = `
-    <span class="mono">${escapeHtml(file.rel)}</span> · ${escapeHtml(file.actionRu || '')}
-    ${file.note ? ` · ${escapeHtml(file.note)}` : ''}`;
+    ${escapeHtml(file.objectTitle || file.title || '')} · ${escapeHtml(file.element || '')}`;
+  $('#mgFileSub').innerHTML = state.group === 'checks'
+    ? `${file.rel ? `<span class="mono">${escapeHtml(file.rel)}</span> · ` : ''}`
+      + `${escapeHtml(file.reason || file.why || '')}`
+    : `<span class="mono">${escapeHtml(file.rel)}</span> · ${escapeHtml(file.actionRu || '')}`
+      + `${file.note ? ` · ${escapeHtml(file.note)}` : ''}`;
 
   renderPlaces(file);
-  renderCode('#mgOurs', file.ours);
   renderRight();
 
   const text = file.current ?? '';
@@ -252,18 +329,36 @@ async function openFile(rel) {
   box.value = text;
   box.readOnly = !file.editable;
   state.loadedText = text;
+  $('#mgResultHl').textContent = text;
+  repaintEditor();
 
   $('#mgResultNote').textContent = resultNote(file);
   $('#mgSave').disabled = !file.editable;
+  $('#mgRevert').hidden = state.group === 'checks';
   $('#mgRevert').disabled = !file.hasAuto;
+  $('#mgAccept').hidden = state.group === 'checks';
+  $('#mgSkip').hidden = state.group !== 'checks' || file.status !== 'manual';
   renderTree();
 
   // Первое место открывается сразу: файл открывают ради него, а искать
   // правку глазами в модуле на три тысячи строк — не работа человека.
   if ((file.places || []).length) selectPlace(0);
+  else if (file.line) markRange('#mgOurs', { start: file.line, end: file.line });
 }
 
 function resultNote(file) {
+  if (state.group === 'checks') {
+    if (!file.editable) {
+      return 'файл этого места не найден — исправьте в конфигураторе либо пропустите';
+    }
+    if (file.decision) {
+      return { edited: 'вы уже правили это место', skipped: 'пропущено вами' }[file.decision.mode]
+        || 'принято вами';
+    }
+    return file.status === 'auto'
+      ? 'исправлено программой — проверьте'
+      : 'исправьте здесь либо пометьте замечание пропущенным';
+  }
   if (!file.editable) {
     return file.current == null
       ? 'файла нет в выгрузке — править нечего'
@@ -277,11 +372,34 @@ function resultNote(file) {
     : 'здесь лежит ваша версия: правку поставщика надо перенести самому';
 }
 
+/**
+ * Правая колонка и цвета отличий в обеих.
+ *
+ * Левая колонка перерисовывается вместе с правой: цвет отличия — свойство
+ * ПАРЫ, а не файла. Переключив правую на текущую поставку, человек ждёт
+ * увидеть отличия именно от неё.
+ */
 function renderRight() {
   const file = state.file;
   if (!file) return;
+
+  // У ошибки проверки слева то, что правим (расширение либо модуль базы),
+  // справа — код обновлённой конфигурации, ради которого всё и затевалось.
+  if (state.group === 'checks') {
+    $('#mgOursTitle').textContent = file.kind === 'extension' ? 'Расширение' : 'Модуль конфигурации';
+    $('#mgRightTitle').textContent = 'Обновлённая конфигурация';
+    $('#mgSides').hidden = true;
+    renderCode('#mgOurs', file.ours);
+    renderCode('#mgTheirs', file.theirs);
+    if (file.line) markRange('#mgOurs', { start: file.line, end: file.line });
+    return;
+  }
+
+  $('#mgSides').hidden = false;
   const isBase = state.side === 'base';
+  $('#mgOursTitle').textContent = 'Основная конфигурация';
   $('#mgRightTitle').textContent = isBase ? 'Текущая поставка' : 'Новая поставка';
+  renderCode('#mgOurs', file.ours, isBase ? file.oursMarksBase : file.ours?.marks);
   renderCode('#mgTheirs', isBase ? file.base : file.theirs);
   if (state.place >= 0) selectPlace(state.place);
 }
@@ -351,18 +469,23 @@ function showWhy(place) {
  * второй лексер 1С в браузере ради этого было бы расточительством, а видеть
  * код по-разному в двух местах одной программы — небрежностью.
  */
-function renderCode(selector, side) {
+function renderCode(selector, side, marks = null) {
   const box = $(selector);
   if (side == null) {
-    box.innerHTML = '<div class="empty">Этой версии нет: файл в ней отсутствовал либо не сохранён.</div>';
+    box.innerHTML = '<div class="empty">Этой версии нет: '
+      + 'платформа не печатает прежнее значение поставщика, а файл .cf не указан.</div>';
     return;
   }
   if (side.binary) {
     box.innerHTML = '<div class="empty">Двоичный файл — показать его текстом нечем.</div>';
     return;
   }
-  box.innerHTML = `<table class="mgc"><tbody>${side.lines.map((html, i) => `
-    <tr id="${box.id}-l${i + 1}"><td class="mgc__n">${i + 1}</td><td class="mgc__t">${html || '&nbsp;'}</td></tr>`).join('')}</tbody></table>`;
+  const kinds = marks || side.marks || [];
+  box.innerHTML = `<table class="mgc"><tbody>${side.lines.map((html, i) => {
+    const kind = kinds[i] ? ` class="d-${kinds[i]}"` : '';
+    return `<tr id="${box.id}-l${i + 1}"${kind}><td class="mgc__n">${i + 1}</td>`
+      + `<td class="mgc__t">${html || '&nbsp;'}</td></tr>`;
+  }).join('')}</tbody></table>`;
 }
 
 /** Подсветить участок целиком и прокрутить к нему. */
@@ -429,29 +552,112 @@ function linkScroll(a, b) {
   tie(b, a);
 }
 
+// ------------------------------------------------------------- Поле результата
+
+/**
+ * Подсветка того, что человек правит.
+ *
+ * Раскрасить текст внутри `textarea` нечем, поэтому под ним лежит слой
+ * с тем же текстом, уже подсвеченным, а сам ввод прозрачен — приём известный
+ * и единственный, который не превращает поле в самодельный редактор.
+ *
+ * Красит ТОТ ЖЕ лексер, что и всё остальное, — на сервере (`/api/highlight`).
+ * Второй лексер 1С в браузере рано или поздно разошёлся бы с первым во мнении
+ * о том, что здесь ключевое слово. Запрос идёт с задержкой после того, как
+ * человек перестал набирать, а не на каждое нажатие; пока ответа нет, слой
+ * показывает прежнюю раскраску — текст под кареткой от этого не прыгает.
+ */
+function initEditor() {
+  const box = $('#mgResult');
+  const layer = $('#mgResultHl');
+
+  const sync = () => {
+    layer.scrollTop = box.scrollTop;
+    layer.scrollLeft = box.scrollLeft;
+  };
+  box.addEventListener('scroll', sync);
+  box.addEventListener('focus', () => $('#mgEditor').classList.add('is-focused'));
+  box.addEventListener('blur', () => {
+    $('#mgEditor').classList.remove('is-focused');
+    repaintEditor();
+  });
+  box.addEventListener('input', () => {
+    // Пока подсветка не пришла, слой должен хотя бы совпадать по числу строк:
+    // иначе прокрутка слоя и поля разъезжаются на глазах.
+    layer.textContent = box.value;
+    sync();
+    clearTimeout(state.paintTimer);
+    state.paintTimer = setTimeout(repaintEditor, 350);
+  });
+}
+
+/** Перекрасить слой под полем ввода. */
+async function repaintEditor() {
+  const box = $('#mgResult');
+  const layer = $('#mgResultHl');
+  const text = box.value;
+  const ext = extOf(state.file?.rel || '');
+
+  if (!state.file?.editable || text.length > EDITOR_HIGHLIGHT_LIMIT) {
+    $('#mgEditor').classList.add('is-plain');
+    return;
+  }
+  $('#mgEditor').classList.remove('is-plain');
+
+  try {
+    const { lines } = await api.highlight(text, ext);
+    // За время запроса человек мог набрать ещё — тогда раскраска устарела
+    // и ставить её нельзя: слой разъедется с текстом.
+    if (box.value !== text) return;
+    layer.innerHTML = lines.join('\n');
+  } catch {
+    layer.textContent = text;
+  }
+  layer.scrollTop = box.scrollTop;
+  layer.scrollLeft = box.scrollLeft;
+}
+
+function extOf(rel) {
+  const dot = String(rel).lastIndexOf('.');
+  return dot === -1 ? '' : String(rel).slice(dot).toLowerCase();
+}
+
 // ------------------------------------------------------------- Решение
 
 async function decide(action) {
   const file = state.file;
   if (!file) return;
 
+  if (action === 'skip' && !confirm(
+    'Пометить это замечание пропущенным?\n\n'
+    + 'Оно останется в отчёте, но обновление продолжится, не дожидаясь его исправления.\n'
+    + 'Так поступают с замечаниями, которые есть и в чистой типовой конфигурации.',
+  )) return;
+
   if (action === 'revert' && !confirm(
     'Вернуть вариант, записанный программой?\n\nВаши правки этого файла будут потеряны, '
     + 'а место снова станет неразобранным.',
   )) return;
 
-  const buttons = ['#mgSave', '#mgAccept', '#mgRevert'];
+  const buttons = ['#mgSave', '#mgAccept', '#mgRevert', '#mgSkip'];
   buttons.forEach((id) => { $(id).disabled = true; });
   setNote('Сохранение…');
   try {
-    const body = { rel: file.rel, action };
+    const body = state.group === 'checks'
+      ? { check: file.id, action }
+      : { rel: file.rel, action };
     if (action === 'save') body.text = $('#mgResult').value;
     const answer = await api.updateReviewDecide(state.updateId, body);
+    const done = state.group === 'checks'
+      ? 'Разобранных ошибок не осталось — можно продолжать обновление.'
+      : 'Неразобранных мест не осталось — можно загружать конфигурацию.';
     const message = action === 'revert'
       ? 'Возвращён вариант программы — место снова ждёт вашего решения.'
-      : (answer.left
-        ? `Сохранено. Осталось разобрать: ${formatNumber(answer.left)}.`
-        : 'Сохранено. Неразобранных мест не осталось — можно загружать конфигурацию.');
+      : action === 'skip'
+        ? `Замечание помечено пропущенным. Осталось разобрать: ${formatNumber(answer.left || 0)}.`
+        : (answer.left
+          ? `Сохранено. Осталось разобрать: ${formatNumber(answer.left)}.`
+          : `Сохранено. ${done}`);
     // Сообщение выставляется ПОСЛЕ перечитывания: оно перерисовывает файл
     // и само сбрасывает подпись, и «Сохранено» иначе гаснет сразу же.
     await loadReview();

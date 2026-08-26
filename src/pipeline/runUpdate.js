@@ -44,7 +44,7 @@ import { resolvePlatform } from '../onec/platform.js';
 import { parseConnection, validateConnection } from '../onec/connection.js';
 import { exportConfiguration, exportExtensions, countExtensions } from '../onec/collector.js';
 import { loadConfigFromFiles } from '../onec/designer.js';
-import { checkConfig, checkExtensionsApplicable, updateDbConfig } from '../onec/checkConfig.js';
+import { checkModules, checkExtensionsApplicable, updateDbConfig } from '../onec/checkConfig.js';
 import {
   prepareVendorConfig, exportCfToXml, readConfigurationProperties,
 } from '../analyze/vendorConfig.js';
@@ -59,6 +59,8 @@ import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfi
 import { unresolvedCount } from '../update/mergeReview.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
+import { mergeExtensionSources } from '../update/extensionMerge.js';
+import { checksLeft, buildCheckItems } from '../update/checkReview.js';
 import { renderUpdateReport } from '../report/updateReport.js';
 import * as store from '../store/updateStore.js';
 import { ensureDir, pathExists, rmrf, dirSize, humanSize } from '../util/fsx.js';
@@ -70,6 +72,14 @@ const log = createLogger('update');
 
 /** Сколько раз чинить расширения и повторять проверку применимости. */
 const FIX_ROUNDS = 3;
+
+/**
+ * Сколько кругов «разобрать ошибки → проверить заново» допускается.
+ *
+ * Предел нужен не ради экономии: если человек правит одно и то же без конца,
+ * обновление всё равно должно завершиться, а не висеть в ожидании.
+ */
+const CHECK_REVIEW_ROUNDS = 4;
 
 /**
  * @param {object} params
@@ -463,11 +473,10 @@ async function applyTypical({
     progress.message(`Обновление конфигурации базы данных не выполнено: ${err.message}`, 'warn');
   }
 
-  startWrite(progress, 'check', 'Синтаксический контроль расширений');
-  result.checks = await runChecks({
-    platform, conn, input, workRoot, mergedDir: '', progress, typical: true,
+  startWrite(progress, 'check', 'Проверка модулей расширений');
+  await checksWithReview({
+    updateId, platform, conn, input, workRoot, mergedDir: '', progress, result, typical: true,
   });
-  reportChecks(progress, result.checks);
 
   await runUpdateHandlers({ platform, conn, input, workRoot, progress, result });
 }
@@ -927,7 +936,14 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
   const baseTree = await restoreVendorTree({
     mainDir: exported.dir,
     mainFiles: main.files,
-    compare: { sets: vendor.changeSet, moduleLines: vendor.changeSet?.moduleLines },
+    // Подробности (изменённые свойства, реквизиты, табличные части) нужны
+    // не только отчёту: по ним объединение разбирает XML, прежнего состояния
+    // которого у поставщика мы не знаем.
+    compare: {
+      sets: vendor.changeSet,
+      moduleLines: vendor.changeSet?.moduleLines,
+      details: vendor.details || null,
+    },
     targetTree,
     onProgress: (text) => progress.update('vendor-old', text),
   });
@@ -1092,11 +1108,10 @@ async function applyToBase({
   }
 
   // --- Проверки ---
-  startWrite(progress, 'check', 'Синтаксический контроль конфигурации и расширений');
-  result.checks = await runChecks({
-    platform, conn, input, workRoot, mergedDir: result.mergedDir, progress,
+  startWrite(progress, 'check', 'Проверка модулей и применимость расширений');
+  await checksWithReview({
+    updateId, platform, conn, input, workRoot, mergedDir: result.mergedDir, progress, result,
   });
-  reportChecks(progress, result.checks);
 
   await runUpdateHandlers({ platform, conn, input, workRoot, progress, result });
 }
@@ -1137,7 +1152,144 @@ async function cleanupUpdateDump({ progress, workRoot, keep, keepResult }) {
 }
 
 /**
- * Синтаксический контроль и применимость расширений — с починкой и повтором.
+ * Проверки платформы с разбором ошибок и повтором.
+ *
+ * Требование пользователя 26.08.2026: не просто показать ошибки в отчёте,
+ * а дать их исправить прямо здесь — и проверить заново. Круг такой:
+ *
+ *   проверить → остались места, требующие решения? → ждать разбора
+ *   → перезагрузить исправленное в базу → проверить заново.
+ *
+ * Круг повторяется, пока не останется ничего, кроме помеченного пропущенным.
+ * Пропуск — это тоже решение: часть замечаний платформы к обновлению
+ * отношения не имеет, они есть и в чистой типовой конфигурации.
+ *
+ * Кругов не больше `CHECK_REVIEW_ROUNDS`: если человек правит одно и то же
+ * без конца, обновление всё равно должно завершиться, а не висеть.
+ */
+async function checksWithReview({
+  updateId, platform, conn, input, workRoot, mergedDir, progress, result, typical = false,
+}) {
+  let checks = null;
+
+  for (let round = 1; round <= CHECK_REVIEW_ROUNDS; round += 1) {
+    throwIfCancelled();
+    checks = await runChecks({
+      platform, conn, input, workRoot, mergedDir, progress, typical,
+    });
+    // Окну разбора нужен корень выгрузки: по нему оно находит модули,
+    // на которые указывает платформа.
+    checks.mergedDir = mergedDir || '';
+    checks.round = round;
+    result.checks = checks;
+    await save(updateId, result);
+    reportChecks(progress, checks);
+
+    const left = checksLeft(checks, await store.getReviewState(updateId));
+    if (!left) return checks;
+
+    if (round === CHECK_REVIEW_ROUNDS) {
+      progress.message(
+        `Ошибок проверок, требующих решения, осталось ${left}, а кругов разбора уже ${round}. `
+        + 'Дальше обновление продолжается: остальное разберите в конфигураторе.',
+        'warn',
+      );
+      return checks;
+    }
+
+    progress.warn('check', `ошибок, требующих решения: ${left}`);
+    progress.message(
+      `Проверки платформы нашли ${left} мест, требующих решения. Прогон приостановлен: `
+      + 'откройте «Разобрать ошибки проверок» — там видно, что программа исправила сама '
+      + '(перенос доработок расширения на изменённые методы), а что осталось вам. Место можно '
+      + 'исправить прямо там либо пометить пропущенным, если замечание к обновлению '
+      + 'отношения не имеет. Нажмёте «Проверить заново» — исправленное загрузится в базу '
+      + 'и проверки пойдут по новому кругу.',
+      'warn',
+    );
+
+    const answer = await progress.ask('check', {
+      title: 'Разберите ошибки проверок — и прогон продолжится',
+      kind: 'checks',
+      updateId,
+      manual: left,
+      infobase: conn.display,
+      text: `Проверки платформы нашли ${left} мест, требующих решения. Исправьте их в окне `
+        + 'разбора или пометьте пропущенными — и прогон пойдёт дальше.',
+    });
+
+    if (!answer?.ok) {
+      progress.message(
+        'Разбор ошибок отложен. Исправить их можно позже — в конфигураторе либо повторным '
+        + 'прогоном обновления.',
+      );
+      return checks;
+    }
+
+    await reloadFixed({ platform, conn, input, workRoot, mergedDir, progress, checks });
+  }
+
+  return checks;
+}
+
+/**
+ * Загружает в базу то, что человек исправил в окне разбора.
+ *
+ * Конфигурация грузится целиком, только если правили её модули: это минуты,
+ * и платить их ради правки в одном расширении незачем. Расширения грузятся
+ * поимённо — те, чьи файлы человек трогал.
+ */
+async function reloadFixed({ platform, conn, input, workRoot, mergedDir, progress, checks }) {
+  const dirs = new Map();
+  let mainTouched = false;
+
+  for (const item of buildCheckItems(checks)) {
+    if (item.kind === 'extension' && item.file) {
+      const root = extensionRoot(item.file, item.rel);
+      if (root) dirs.set(item.extension, root);
+    } else if (item.kind === 'module' && item.scope === 'config') {
+      mainTouched = true;
+    }
+  }
+
+  if (mainTouched && mergedDir) {
+    startWrite(progress, 'check', 'Загрузка исправленной конфигурации');
+    try {
+      await loadConfigFromFiles({
+        platform, conn, srcDir: mergedDir, user: input.user, password: input.password,
+        logFile: path.join(workRoot, 'designer-recheck.log'),
+      });
+    } catch (err) {
+      if (isCancelled(err)) throw err;
+      progress.message(`Исправленная конфигурация не загрузилась: ${err.message}`, 'warn');
+    }
+  }
+
+  for (const [name, dir] of dirs) {
+    progress.update('check', `загрузка исправленного расширения «${name}»`);
+    try {
+      await loadConfigFromFiles({
+        platform, conn, srcDir: dir, extension: name,
+        user: input.user, password: input.password,
+        logFile: path.join(workRoot, `designer-ext-recheck-${name}.log`),
+      });
+    } catch (err) {
+      if (isCancelled(err)) throw err;
+      progress.message(`Расширение «${name}» не загрузилось: ${err.message}`, 'warn');
+    }
+  }
+}
+
+/** Корень выгрузки расширения: путь файла минус путь внутри выгрузки. */
+function extensionRoot(file, rel) {
+  if (!file || !rel) return null;
+  const normalized = String(file).replace(/\\/g, '/');
+  const tail = `/${String(rel).replace(/\\/g, '/')}`;
+  return normalized.endsWith(tail) ? normalized.slice(0, -tail.length) : null;
+}
+
+/**
+ * Проверка модулей и применимость расширений — с починкой и повтором.
  *
  * Требование пользователя: «если ты видишь, что проверки применимости
  * не прошли, ты их устраняешь, и снова загружаешь XML файлы в базу, и снова
@@ -1146,7 +1298,16 @@ async function cleanupUpdateDump({ progress, workRoot, keep, keepResult }) {
  * (`update/fixExtensions.js`); всё остальное честно уходит в отчёт.
  */
 async function runChecks({ platform, conn, input, workRoot, mergedDir, progress, typical = false }) {
-  const checks = { rounds: [], fixed: [], manual: [], typical };
+  const wantModules = input.checkModules !== false;
+  const wantExtensions = input.checkExtensions !== false;
+  const checks = {
+    rounds: [], fixed: [], manual: [], typical, wantModules, wantExtensions,
+  };
+
+  if (!wantModules && !wantExtensions) {
+    progress.skip('check', 'проверки отключены на форме');
+    return checks;
+  }
 
   // Основную конфигурацию проверяем только там, где её меняли мы. После типового
   // обновления она ровно такая, какой её выпустил вендор: замечания в ней есть
@@ -1154,23 +1315,30 @@ async function runChecks({ platform, conn, input, workRoot, mergedDir, progress,
   // замечания к типовому решению, исправлять их никто не будет, а в отчёте они
   // выглядели бы следствием обновления. Требование пользователя (11.08.2026):
   // «нет смысла проверять конфигурацию, она типовая».
-  if (!typical) {
-    const config = await checkConfig({
+  if (wantModules && !typical) {
+    progress.update('check', 'проверка модулей конфигурации');
+    const config = await checkModules({
       platform, conn, user: input.user, password: input.password, workDir: workRoot,
+      extended: input.extendedCheck === true,
     });
     checks.config = config;
-    progress.update('check', `синтаксический контроль конфигурации: замечаний ${config.errors.length}`);
+    progress.update('check', `проверка модулей конфигурации: замечаний ${config.errors.length}`);
   }
 
   // Расширения проверяются всегда: их писали не в 1С, и обновление ломает
   // именно их. Отдельный вызов с `-AllExtensions`, а не часть проверки
   // конфигурации: платформа считает это разными проверками.
-  const extensionsSyntax = await checkConfig({
-    platform, conn, user: input.user, password: input.password, workDir: workRoot,
-    scope: 'extensions',
-  });
-  checks.extensionsSyntax = extensionsSyntax;
-  progress.update('check', `синтаксический контроль расширений: замечаний ${extensionsSyntax.errors.length}`);
+  if (wantModules) {
+    progress.update('check', 'проверка модулей расширений');
+    const extensionsSyntax = await checkModules({
+      platform, conn, user: input.user, password: input.password, workDir: workRoot,
+      scope: 'extensions', extended: input.extendedCheck === true,
+    });
+    checks.extensionsSyntax = extensionsSyntax;
+    progress.update('check', `проверка модулей расширений: замечаний ${extensionsSyntax.errors.length}`);
+  }
+
+  if (!wantExtensions) return checks;
 
   // Считаем расширения ДО проверки применимости: на базе без расширений
   // журнал `/CheckCanApplyConfigurationExtensions` пуст точно так же, как
@@ -1201,9 +1369,9 @@ async function runChecks({ platform, conn, input, workRoot, mergedDir, progress,
     if (applicable.ok || !applicable.available) break;
     if (round === FIX_ROUNDS) break;
 
-    // Починка аннотаций сверяет расширение с текстами основной конфигурации,
-    // а их даёт только XML-выгрузка. При типовом обновлении её нет намеренно,
-    // поэтому здесь честный отказ, а не тихое «ничего не нашлось».
+    // Починка сверяет расширение с текстами основной конфигурации, а их даёт
+    // только XML-выгрузка. При типовом обновлении её нет намеренно, поэтому
+    // здесь честный отказ, а не тихое «ничего не нашлось».
     if (!mergedDir) {
       checks.manual.push({
         reason: 'Расширения не применяются. Проверить, какие аннотации потеряли цель, '
@@ -1221,14 +1389,28 @@ async function runChecks({ platform, conn, input, workRoot, mergedDir, progress,
     });
     if (!dumped.extensions.length) break;
 
+    // Сначала — самое ценное: заимствованный метод, который поставщик изменил
+    // в новом релизе. Его можно объединить трёхсторонне, как обычный модуль:
+    // старая поставка есть, новая есть, наша версия лежит в расширении.
+    const merged = await mergeExtensionSources({
+      extensions: dumped.extensions,
+      mainDir: mergedDir,
+      vendorDir: checks.vendorDir || null,
+      onProgress: (text) => progress.update('check', text),
+    });
+    checks.extensionMerges = [...(checks.extensionMerges || []), ...merged.resolved];
+    checks.extensionConflicts = [...(checks.extensionConflicts || []), ...merged.conflicts];
+
     const fix = await fixExtensionAnnotations({
       extensions: dumped.extensions, mainDir: mergedDir,
     });
     checks.fixed.push(...fix.fixed);
     checks.manual.push(...fix.manual);
-    if (!fix.changedExtensions.length) break;
 
-    for (const name of fix.changedExtensions) {
+    const changed = [...new Set([...fix.changedExtensions, ...merged.changedExtensions])];
+    if (!changed.length) break;
+
+    for (const name of changed) {
       const dir = dumped.extensions.find((e) => e.name === name)?.dir;
       if (!dir) continue;
       progress.update('check', `загрузка исправленного расширения «${name}»`);

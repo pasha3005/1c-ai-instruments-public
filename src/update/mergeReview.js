@@ -25,6 +25,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { VERSION_FILES } from './mergeConfig.js';
+import { changedHunks, splitLines } from './diff3.js';
 import { pathExists } from '../util/fsx.js';
 import { highlightBslLines, highlightXmlLines } from '../report/bslHighlight.js';
 
@@ -264,15 +265,23 @@ export async function readReviewFile(result, state, rel) {
     text: undefined,
   }));
 
+  // Цвета отличий считаются на паре, которую человек видит рядом: слева всегда
+  // наша версия, справа — та, на которую он переключил правую колонку.
+  const vsTheirs = diffMarks(ours, theirs);
+  const vsBase = diffMarks(ours, base);
+
   return {
     ...file,
     places,
     decision: state.files?.[rel] || null,
     // Читаемые колонки уходят уже подсвеченными: раскрашивать их в браузере
     // значило бы держать там второй лексер 1С.
-    base: renderSide(base, ext),
-    theirs: renderSide(theirs, ext),
-    ours: renderSide(ours, ext),
+    base: renderSide(base, ext, vsBase.right),
+    theirs: renderSide(theirs, ext, vsTheirs.right),
+    ours: renderSide(ours, ext, vsTheirs.left),
+    // Левая колонка красится по той версии, что стоит справа: переключив
+    // правую на текущую поставку, человек ждёт отличий именно от неё.
+    oursMarksBase: vsBase.left,
     // Автоматический результат целиком не отдаётся — возврат к нему делает
     // сервер. Окну достаточно знать, есть ли к чему возвращаться.
     hasAuto: auto != null,
@@ -305,16 +314,49 @@ const HIGHLIGHT_LIMIT = 2_000_000;
  * (`highlightBslLines`). Требование пользователя 26.08.2026: код всегда
  * оформляется одинаково, где бы он ни показывался.
  */
-function renderSide(text, ext) {
+function renderSide(text, ext, marks = []) {
   if (text == null) return null;
   if (isBinary(text)) return { lines: [], binary: true };
-  const plain = () => String(text).replace(/\r\n?/g, '\n').split('\n');
-  if (text.length > HIGHLIGHT_LIMIT) return { lines: plain().map(escapeHtml) };
-  if (ext === '.bsl') return { lines: highlightBslLines(text) };
-  if (ext === '.xml' || ext === '.xsd' || ext === '.html' || ext === '.htm') {
-    return { lines: highlightXmlLines(text) };
+  return { lines: highlightLines(text, ext), marks };
+}
+
+/** Подсветка по виду файла. Слишком большой файл отдаётся без раскраски. */
+export function highlightLines(text, ext) {
+  const plain = () => String(text).replace(/\r\n?/g, '\n').split('\n').map(escapeHtml);
+  if (String(text).length > HIGHLIGHT_LIMIT) return plain();
+  if (ext === '.bsl') return highlightBslLines(text);
+  if (/^\.(xml|xsd|html?|svg)$/i.test(ext)) return highlightXmlLines(text);
+  return plain();
+}
+
+/**
+ * Цвета отличий — как в окне сравнения конфигуратора.
+ *
+ * Зелёным то, что в правой версии появилось; красным то, что из неё пропало;
+ * синим — строки, которые изменились. Считается обычным построчным сравнением
+ * (тот же диф Майерса, что и в объединении), поэтому цвет стоит ровно там, где
+ * стороны действительно разошлись, а не «по номеру строки».
+ *
+ * @returns {{left: string[], right: string[]}} по метке на строку: '', 'add',
+ *   'del' либо 'chg'. Индекс — номер строки минус один.
+ */
+export function diffMarks(leftText, rightText) {
+  if (leftText == null || rightText == null) return { left: [], right: [] };
+  const left = splitLines(leftText).lines;
+  const right = splitLines(rightText).lines;
+  const marks = { left: new Array(left.length).fill(''), right: new Array(right.length).fill('') };
+
+  const hunks = changedHunks(left, right);
+  if (!hunks) return marks;
+
+  for (const hunk of hunks) {
+    const removed = hunk.baseEnd - hunk.baseStart;
+    const added = hunk.sideEnd - hunk.sideStart;
+    const both = removed > 0 && added > 0;
+    for (let i = hunk.baseStart; i < hunk.baseEnd; i += 1) marks.left[i] = both ? 'chg' : 'del';
+    for (let i = hunk.sideStart; i < hunk.sideEnd; i += 1) marks.right[i] = both ? 'chg' : 'add';
   }
-  return { lines: plain().map(escapeHtml) };
+  return marks;
 }
 
 function escapeHtml(value) {

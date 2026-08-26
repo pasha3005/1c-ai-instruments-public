@@ -40,7 +40,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { merge3, splitLines, joinLines, twoWayHunks } from './diff3.js';
+import { merge3, splitLines, joinLines, twoWayHunks, changedHunks } from './diff3.js';
 import { autoResolve } from './autoResolve.js';
 import { describeDumpPath, objectTitle, childObjectLine, ROOT_KEY } from './dumpKeys.js';
 import { buildXmlOutline, describeXmlRange } from './xmlOutline.js';
@@ -145,6 +145,12 @@ export async function mergeConfigurations({
     target: targetTree,
     /** Файлы, содержимое которых у поставщика неизвестно (восстановление из базы). */
     unknown: base.unknown || new Set(),
+    /**
+     * Свойства, которые интегратор изменил относительно поставщика: ключ
+     * объекта → подписи свойств из отчёта сравнения. По ним разбирается XML,
+     * прежнего состояния которого у поставщика мы не знаем.
+     */
+    changedProps: base.changedProps || new Map(),
     touchedObjects,
     objects: new Map(),
     totals: {
@@ -343,6 +349,17 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
   }
 
   state.totals.keptOurs += 1;
+
+  // Отчёт сравнения НАЗЫВАЕТ свойства, которые изменил интегратор, — он просто
+  // не печатает их прежние значения. Этого достаточно, чтобы разобрать файл
+  // по свойствам: участок, лежащий в свойстве, которого интегратор не касался,
+  // изменил один поставщик — его правку можно взять смело. Спорным остаётся
+  // только участок в свойстве, названном отчётом.
+  if (path.extname(rel).toLowerCase() === '.xml') {
+    const resolved = await resolveUnknownXml(state, rel);
+    if (resolved) return;
+  }
+
   state.totals.manual += 1;
   const element = record(state, rel, {
     action: 'manual-two-way',
@@ -352,6 +369,136 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
   });
   await attachTwoWay(state, rel, element);
   element.versions = await saveConflictVersions(state, rel);
+}
+
+/**
+ * Разбор XML объекта, прежнее состояние которого у поставщика неизвестно.
+ *
+ * Что известно точно: перечень свойств, которые интегратор изменил
+ * относительно поставщика (отчёт `/CompareCfg` называет их поимённо —
+ * «Синоним», «Реквизит «Договор»», «Табличная часть «Оплаты»»). Значит про
+ * каждый участок расхождения с новой поставкой можно сказать, лежит он
+ * в тронутом нами свойстве или нет:
+ *
+ *   не тронуто нами → расхождение внёс ОДИН поставщик → берём его версию;
+ *   тронуто нами    → дважды изменённое место → решает человек.
+ *
+ * Без этого разбора весь файл целиком объявлялся спорным, и пользователь
+ * получал в ручную работу версию конфигурации и типы реквизитов, которых
+ * не касался (живой случай 26.08.2026 на УНФ 3.0.13.374 → 3.0.14.115).
+ *
+ * Перечня свойств нет — разбирать нечем, и файл честно уходит человеку целиком.
+ *
+ * @returns {Promise<boolean>} true — файл разобран здесь, дальше идти не нужно
+ */
+async function resolveUnknownXml(state, rel) {
+  const objectKey = describeDumpPath(rel).objectKey;
+  const labels = state.changedProps?.get(objectKey);
+  if (!labels || !labels.length) return false;
+
+  const oursBuf = await read(state, 'main', rel);
+  const theirsBuf = await read(state, 'target', rel);
+  if (isUtf16(oursBuf) || isUtf16(theirsBuf)) return false;
+
+  const oursText = oursBuf.toString('utf8');
+  const theirsText = theirsBuf.toString('utf8');
+  const shape = splitLines(oursText);
+  const ours = shape.lines;
+  const theirs = splitLines(theirsText).lines;
+
+  const hunks = changedHunks(ours, theirs);
+  if (!hunks || !hunks.length) return false;
+
+  const outline = buildXmlOutline(oursText);
+  const theirsOutline = buildXmlOutline(theirsText);
+
+  const out = [];
+  let cursor = 0;
+  const taken = [];
+  const kept = [];
+
+  for (const hunk of hunks) {
+    out.push(...ours.slice(cursor, hunk.baseStart));
+    cursor = hunk.baseEnd;
+
+    // Путь смотрим с обеих сторон: у вставки поставщика нашей стороны нет,
+    // а у удаления — его. Спорным участок считается, если хоть один из путей
+    // ведёт в тронутое нами свойство: ошибиться в эту сторону дешевле.
+    const oursPath = describeXmlRange(outline, hunk.baseStart + 1, hunk.baseEnd || hunk.baseStart + 1);
+    const theirsPath = describeXmlRange(
+      theirsOutline, hunk.sideStart + 1, hunk.sideEnd || hunk.sideStart + 1,
+    );
+    const where = oursPath || theirsPath;
+    const mine = touchesOurProperty(oursPath, labels) || touchesOurProperty(theirsPath, labels);
+
+    if (mine) {
+      out.push(...ours.slice(hunk.baseStart, hunk.baseEnd));
+      kept.push({ hunk, where });
+    } else {
+      out.push(...theirs.slice(hunk.sideStart, hunk.sideEnd));
+      taken.push({ hunk, where });
+    }
+  }
+  out.push(...ours.slice(cursor));
+
+  if (taken.length) {
+    await writeFile(state, rel, Buffer.from(joinLines(out, shape), 'utf8'));
+  }
+
+  const element = record(state, rel, {
+    action: kept.length ? 'conflict' : 'auto-resolved',
+    note: kept.length
+      ? 'Часть отличий от новой поставки лежит в свойствах, которые вы изменили относительно '
+        + 'поставщика: их прежнее значение платформа не печатает, поэтому решение за вами. '
+        + 'Остальное взято из новой поставки.'
+      : 'Ни одно отличие от новой поставки не лежит в свойствах, которые вы меняли, — '
+        + 'значит их внёс один поставщик. Взяты его значения.',
+  });
+  element.conflictCount = kept.length;
+  element.resolvedCount = taken.length;
+  element.conflicts = kept.slice(0, CONFLICTS_PER_FILE).map(({ hunk, where }) => ({
+    where,
+    oursStartLine: hunk.baseStart + 1,
+    theirsStartLine: hunk.sideStart + 1,
+    base: cut([]),
+    ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
+    theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+  }));
+  element.resolved = taken.slice(0, RESOLVED_PER_FILE).map(({ hunk, where }) => ({
+    where,
+    how: 'свойство менял только поставщик',
+    why: 'Это свойство вы относительно поставщика не меняли — отчёт сравнения его не называет. '
+      + 'Значит расхождение с новой поставкой внёс он один, и его версия принята.',
+    oursStartLine: hunk.baseStart + 1,
+    theirsStartLine: hunk.sideStart + 1,
+    base: cut([]),
+    ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
+    theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+    result: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+  }));
+
+  if (kept.length) state.totals.conflicted += 1;
+  state.totals.autoResolved += taken.length;
+  element.versions = await saveConflictVersions(state, rel, {
+    kind: kept.length ? 'manual' : 'auto',
+    merged: taken.length ? Buffer.from(joinLines(out, shape), 'utf8') : null,
+    ours: oursBuf,
+  });
+  return true;
+}
+
+/**
+ * Лежит ли участок в свойстве, которое интегратор менял.
+ *
+ * Сравниваются подписи: отчёт даёт «Реквизит «Договор»», путь по XML —
+ * «Состав → Реквизит «Договор» → Свойства → Тип». Совпадение по вхождению
+ * подписи в путь, а не по равенству: отчёт называет свойство, а путь ведёт
+ * вглубь него.
+ */
+function touchesOurProperty(where, labels) {
+  if (!where) return false;
+  const path = where.toLowerCase();
+  return labels.some((label) => label && path.includes(String(label).toLowerCase()));
 }
 
 /**

@@ -191,6 +191,13 @@ export async function restoreVendorTree({
     source: 'restored',
     files,
     unknown,
+    /**
+     * Свойства, изменённые интегратором: ключ объекта → подписи из отчёта.
+     * По ним объединение разбирает XML, прежнего состояния которого
+     * у поставщика мы не знаем: участок в НЕтронутом свойстве изменил один
+     * поставщик, и его версию можно взять смело.
+     */
+    changedProps: changedProperties(compare),
     stats,
     async read(rel) {
       const ready = restored.get(rel);
@@ -272,6 +279,21 @@ export function vendorChildObjects(text, added = new Set(), removed = new Set())
   }
 
   return joinLines(out, shape);
+}
+
+/** Подписи изменённых свойств из отчёта сравнения: ключ объекта → перечень. */
+function changedProperties(compare) {
+  const out = new Map();
+  const details = compare?.details;
+  if (!details) return out;
+  for (const [key, items] of details) {
+    const labels = (items || [])
+      .filter((item) => item.change === 'modified' || item.change === 'added')
+      .map((item) => item.label)
+      .filter(Boolean);
+    if (labels.length) out.set(key, labels);
+  }
+  return out;
 }
 
 async function readTextSafe(tree, rel) {

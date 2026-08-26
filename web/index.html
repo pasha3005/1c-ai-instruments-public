@@ -568,6 +568,33 @@
       </div>
 
       <div class="checks">
+        <!--
+          Проверки платформы вынесены на форму по просьбе пользователя
+          (26.08.2026): «Проверка модулей» на конфигурации размера ERP занимает
+          минуты и десятки минут, и решать, платить ли за неё, должен человек,
+          а не программа. По умолчанию обе включены: пропустить проверку —
+          осознанный шаг, а не значение по умолчанию.
+        -->
+        <label class="check">
+          <input type="checkbox" id="uCheckModules" checked>
+          <span>Выполнять проверку модулей конфигурации и расширений
+            <em>То же, что «Конфигурация → Проверка модулей» в конфигураторе: компилируется ли
+            код во всех контекстах исполнения. На демо-базе УНФ — около минуты, на конфигурации
+            размера ERP заметно дольше.</em></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="uCheckExtensions" checked>
+          <span>Выполнять проверку возможности применения расширений
+            <em>Отдельная проверка, и только для расширений: сможет ли платформа наложить их
+            на конфигурацию, которая после обновления стала другой. Именно она падает, когда
+            поставщик переписал заимствованный метод. Секунды.</em></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="uExtendedCheck">
+          <span>Расширенная проверка модулей
+            <em>Разбирает типы выражений и обращения к их методам. Находит больше, но стоит
+            дорого: на демо-базе УНФ 287 секунд против нескольких. Снят по умолчанию.</em></span>
+        </label>
         <label class="check">
           <input type="checkbox" id="uKeepDump">
           <span>Сохранить выгрузку после обновления
@@ -1134,10 +1161,25 @@
     <div class="mgw" id="mgWork" hidden>
       <aside class="mgw__tree">
         <div class="mgw__tree-head">
+          <!--
+            Две группы одного окна: спорные места объединения и ошибки, которые
+            нашли проверки платформы. Разбирают их одинаково — дерево, две
+            колонки, правимый результат, — поэтому и окно одно.
+          -->
+          <div class="mgw__groups" role="group" aria-label="Что разбираем">
+            <button class="chip is-active" type="button" data-group="merge">Объединение</button>
+            <button class="chip" type="button" data-group="checks">Ошибки проверок</button>
+          </div>
           <div class="mgw__legend">
             <span><i class="mgi mgi--auto" aria-hidden="true"></i>объединено программой</span>
             <span><i class="mgi mgi--manual" aria-hidden="true"></i>решение за вами</span>
             <span><i class="mgi mgi--done" aria-hidden="true"></i>разобрано вами</span>
+          </div>
+          <!-- Цвета отличий — те же, что в окне сравнения конфигуратора. -->
+          <div class="mgw__legend mgw__legend--diff">
+            <span><i class="d-add" aria-hidden="true"></i>появилось справа</span>
+            <span><i class="d-del" aria-hidden="true"></i>пропало справа</span>
+            <span><i class="d-chg" aria-hidden="true"></i>изменено</span>
           </div>
           <div class="mgw__filters" role="group" aria-label="Что показывать">
             <button class="chip is-active" type="button" data-filter="all">Все</button>
@@ -1165,7 +1207,7 @@
         <div class="mgw__panes" id="mgPanes" hidden>
           <div class="mgw__pane">
             <div class="mgw__pane-head">
-              <span>Основная конфигурация</span>
+              <span id="mgOursTitle">Основная конфигурация</span>
               <span class="mgw__pane-note">ваша версия до объединения</span>
             </div>
             <div class="mgw__code" id="mgOurs"></div>
@@ -1173,7 +1215,7 @@
           <div class="mgw__pane">
             <div class="mgw__pane-head">
               <span id="mgRightTitle">Новая поставка</span>
-              <span class="mgw__pane-note">
+              <span class="mgw__pane-note" id="mgSides">
                 <button class="chip chip--sm is-active" type="button" data-side="theirs">Новая поставка</button>
                 <button class="chip chip--sm" type="button" data-side="base">Текущая поставка</button>
               </span>
@@ -1187,11 +1229,25 @@
             <span>Результат объединения — он и будет загружен в конфигурацию</span>
             <span class="mgw__pane-note" id="mgResultNote"></span>
           </div>
-          <textarea id="mgResult" spellcheck="false" wrap="off"></textarea>
+          <!--
+            Раскрасить текст внутри поля ввода нечем, поэтому под ним лежит
+            слой с тем же текстом, уже подсвеченным, а сам ввод прозрачен.
+            Метрики шрифта у слоёв обязаны совпадать до пикселя.
+          -->
+          <div class="mgw__editor" id="mgEditor">
+            <pre id="mgResultHl" aria-hidden="true"></pre>
+            <textarea id="mgResult" spellcheck="false" wrap="off"></textarea>
+          </div>
           <div class="mgw__actions">
             <button class="btn btn--primary" id="mgSave" type="button">Сохранить результат</button>
             <button class="btn" id="mgAccept" type="button">Оставить как есть</button>
             <button class="btn" id="mgRevert" type="button">Вернуть вариант программы</button>
+            <!--
+              Пропуск есть только у ошибок проверок: часть замечаний платформы
+              к обновлению отношения не имеет — они есть и в чистой типовой
+              конфигурации, и требовать их исправить было бы неправдой.
+            -->
+            <button class="btn" id="mgSkip" type="button" hidden>Пропустить это замечание</button>
             <span class="save-note" id="mgNote" hidden></span>
           </div>
         </div>

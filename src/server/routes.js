@@ -14,7 +14,11 @@ import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
 import {
   buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount,
+  highlightLines,
 } from '../update/mergeReview.js';
+import {
+  buildCheckReview, readCheckItem, writeCheckItem, checksLeft,
+} from '../update/checkReview.js';
 import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
 import * as updateStore from '../store/updateStore.js';
@@ -659,6 +663,11 @@ export function buildRouter() {
       // По умолчанию сняты: не сохранять выгрузку и не открывать базу ради формы.
       keepDump: body.keepDump === true,
       openResultsForm: body.openResultsForm === true,
+      // А эти по умолчанию ВКЛЮЧЕНЫ: пропустить проверку платформы — осознанный
+      // шаг. Прежние прогоны поля не знали, и `!== false` держит их включёнными.
+      checkModules: body.checkModules !== false,
+      checkExtensions: body.checkExtensions !== false,
+      extendedCheck: body.extendedCheck === true,
     };
 
     await updateStore.createRun(updateId, input);
@@ -815,8 +824,12 @@ export function buildRouter() {
     }
     const state = await updateStore.getReviewState(params.id);
     const review = buildReview(result, state);
+    // Ошибки проверок платформы — вторая группа того же окна: разбирают их
+    // так же, только исправляют не спорное место, а замечание платформы.
+    const checks = buildCheckReview(result.checks, state);
     sendJson(res, 200, {
       updateId: params.id,
+      checks,
       mergedDir: result.mergedDir || '',
       conflictDir: result.conflictDir || '',
       // Каталога выгрузки может уже не быть: после загрузки в базу со снятым
@@ -828,6 +841,30 @@ export function buildRouter() {
     });
   });
 
+  /**
+   * Подсветка текста, который человек правит прямо в окне.
+   *
+   * Отдельным маршрутом, потому что лексер 1С один и живёт на сервере: держать
+   * в браузере второй — значит рано или поздно получить два разных мнения
+   * о том, что здесь ключевое слово. Клиент зовёт это с задержкой, а не
+   * на каждое нажатие.
+   */
+  router.post('/api/highlight', async (req, res) => {
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+    const text = typeof body.text === 'string' ? body.text : '';
+    if (text.length > 4_000_000) {
+      sendError(res, 413, 'Слишком большой текст для подсветки');
+      return;
+    }
+    sendJson(res, 200, { lines: highlightLines(text, String(body.ext || '')) });
+  });
+
   router.get('/api/updates/:id/review/file', async (req, res, { params, query }) => {
     const result = await updateStore.getResult(params.id);
     if (!result) {
@@ -836,6 +873,11 @@ export function buildRouter() {
     }
     try {
       const state = await updateStore.getReviewState(params.id);
+      const id = query.get('check');
+      if (id) {
+        sendJson(res, 200, await readCheckItem(result.checks, state, id));
+        return;
+      }
       sendJson(res, 200, await readReviewFile(result, state, String(query.get('rel') || '')));
     } catch (err) {
       sendError(res, 400, err.message);
@@ -865,7 +907,36 @@ export function buildRouter() {
     }
 
     const rel = String(body.rel || '');
-    const action = ['save', 'accept', 'revert'].includes(body.action) ? body.action : 'save';
+    const action = ['save', 'accept', 'revert', 'skip'].includes(body.action) ? body.action : 'save';
+
+    // Ошибка проверки платформы: правится тот же текст, но живёт она не в
+    // выгрузке объединения, а там, куда указала платформа, — и у неё есть
+    // своё решение «пропустить»: часть замечаний к обновлению отношения
+    // не имеет, они есть и в чистой типовой конфигурации.
+    if (body.check) {
+      const id = String(body.check);
+      try {
+        if (action === 'save') {
+          await writeCheckItem(result.checks, id, String(body.text ?? ''));
+          await updateStore.setCheckDecision(params.id, id, { mode: 'edited' });
+        } else if (action === 'skip') {
+          await updateStore.setCheckDecision(params.id, id, { mode: 'skipped' });
+        } else if (action === 'accept') {
+          await updateStore.setCheckDecision(params.id, id, { mode: 'accepted' });
+        } else {
+          await updateStore.setCheckDecision(params.id, id, null);
+        }
+        const state = await updateStore.getReviewState(params.id);
+        log.info(`Обновление ${params.id}: ${action} по ошибке проверки ${id}`);
+        sendJson(res, 200, {
+          ok: true, action, ...buildCheckReview(result.checks, state).totals,
+        });
+      } catch (err) {
+        sendError(res, 400, err.message);
+      }
+      return;
+    }
+
     try {
       if (action === 'save') {
         await writeReviewFile(result, rel, String(body.text ?? ''));

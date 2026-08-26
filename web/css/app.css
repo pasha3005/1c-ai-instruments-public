@@ -1271,3 +1271,105 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   gap: 16px;
 }
 .mgw__hero h1 { font-size: 22px; margin-bottom: 4px; }
+
+/*
+ * Подсветка синтаксиса в окнах кода.
+ *
+ * Классы и цвета те же, что в отчёте (`report/styles.js`): один и тот же код
+ * не должен выглядеть в программе иначе, чем в отчёте. Значения повторены
+ * здесь, а не подключены из отчёта, потому что таблицы стилей у них разные:
+ * отчёт самодостаточен и уезжает отдельным файлом.
+ */
+:root {
+  --code-comment: #6fc57e;
+  --code-keyword: #79a6ff;
+  --code-directive: #e0a868;
+}
+.tok-comment { color: var(--code-comment); }
+.tok-keyword { color: var(--code-keyword); font-weight: 620; }
+.tok-string { color: var(--ink-soft); }
+.tok-directive { color: var(--code-directive); }
+
+/*
+ * Цвета отличий — как в окне сравнения конфигуратора: зелёным то, что
+ * появилось в правой версии, красным то, что из неё пропало, синим —
+ * изменённые строки. Фон, а не цвет текста: подсветка синтаксиса должна
+ * оставаться читаемой поверх.
+ */
+.mgc tr.d-add  .mgc__t { background: color-mix(in srgb, var(--good) 20%, transparent); }
+.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, var(--danger) 20%, transparent); }
+.mgc tr.d-chg  .mgc__t { background: color-mix(in srgb, #4a7fd4 26%, transparent); }
+.mgc tr.d-add  .mgc__n { color: var(--good); }
+.mgc tr.d-del  .mgc__n { color: var(--danger); }
+.mgc tr.d-chg  .mgc__n { color: #79a6ff; }
+/* Выбранный участок поверх цвета отличия: рамка слева, а не другой фон. */
+.mgc tr.is-here .mgc__t { box-shadow: inset 3px 0 0 var(--accent); }
+.mgc tr.is-here .mgc__n { color: var(--accent); font-weight: 700; }
+
+.mgw__legend--diff span i {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.mgw__legend--diff .d-add { background: color-mix(in srgb, var(--good) 45%, transparent); }
+.mgw__legend--diff .d-del { background: color-mix(in srgb, var(--danger) 45%, transparent); }
+.mgw__legend--diff .d-chg { background: color-mix(in srgb, #4a7fd4 55%, transparent); }
+
+/*
+ * Поле результата — тоже с подсветкой.
+ *
+ * Раскрасить текст внутри `textarea` нельзя, поэтому под ним лежит слой
+ * с тем же текстом, уже раскрашенным, а сам ввод делается прозрачным.
+ * Метрики шрифта у слоёв обязаны совпадать до пикселя — иначе каретка
+ * разъезжается с текстом.
+ */
+.mgw__editor {
+  position: relative;
+  flex: 1;
+  min-height: 100px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.mgw__editor pre,
+.mgw__editor textarea {
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  font: 12.5px/1.55 var(--mono);
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.mgw__editor pre {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  color: var(--ink-mid);
+  pointer-events: none;
+}
+.mgw__editor textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink);
+  overflow: auto;
+}
+.mgw__editor textarea::selection { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.mgw__editor textarea:focus { outline: none; }
+.mgw__editor.is-focused { border-color: var(--accent); }
+/* Пока подсветки нет (двоичный файл, слишком большой) — текст видно как есть. */
+.mgw__editor.is-plain textarea { color: var(--ink); }
+.mgw__editor.is-plain pre { display: none; }
+
+/* Переключатель групп окна разбора: объединение и ошибки проверок. */
+.mgw__groups { display: flex; gap: 6px; margin-bottom: 10px; }
+.mgw__groups .chip { flex: 1; text-align: center; }

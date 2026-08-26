@@ -108,6 +108,25 @@ export async function setReviewDecision(id, rel, decision) {
   return next;
 }
 
+/**
+ * Решение по одной ошибке проверки платформы.
+ *
+ * Живёт в том же файле, что и разбор спорных мест, но своим разделом:
+ * ключи там разные (путь файла против опознавателя ошибки), и мешать их
+ * в одной таблице значило бы, что «пропущено» и «разобрано» когда-нибудь
+ * встретятся под одним ключом.
+ */
+export async function setCheckDecision(id, key, decision) {
+  const dir = await ensureDir(runDir(id));
+  const state = await getReviewState(id);
+  const checks = { ...(state.checks || {}) };
+  if (decision) checks[key] = { ...decision, at: new Date().toISOString() };
+  else delete checks[key];
+  const next = { ...state, checks };
+  await writeJson(path.join(dir, FILES.review), next);
+  return next;
+}
+
 export async function saveReport(id, html) {
   const dir = await ensureDir(runDir(id));
   await fs.writeFile(path.join(dir, FILES.html), html, 'utf8');

@@ -220,8 +220,7 @@ export async function exportCfToXml({
     await ensureDir(tempDbDir);
     await ensureDir(outDir);
 
-    onProgress?.('Разворачивание .cf: загрузка во временную пустую базу — '
-      + 'иначе выгрузить его в XML нечем (может занять несколько минут)');
+    onProgress?.('Разворачивание .cf во временной базе (несколько минут)');
     if (platform.ibcmd) {
       await run(platform.ibcmd, [
         'infobase', 'create',

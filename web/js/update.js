@@ -11,7 +11,7 @@
  */
 
 import { api, subscribeToUpdate } from './api.js';
-import { openMerge } from './merge.js';
+import { openMerge, openMergeGroup } from './merge.js';
 import { switchView } from './app.js';
 import {
   $, $$, escapeHtml, setNote, renderStages, formatDuration, formatNumber,
@@ -43,6 +43,9 @@ const UPDATE_FIELDS = {
   reportTheme: '#uReportTheme',
   keepDump: '#uKeepDump',
   openResultsForm: '#uOpenResultsForm',
+  checkModules: '#uCheckModules',
+  checkExtensions: '#uCheckExtensions',
+  extendedCheck: '#uExtendedCheck',
 };
 
 export function initUpdate() {
@@ -63,7 +66,10 @@ export function initUpdate() {
   });
   $('#uSaveReport').addEventListener('click', () => saveReportAs());
   $('#uReviewBtn').addEventListener('click', () => switchView('merge'));
-  $('#uAskReview').addEventListener('click', () => switchView('merge'));
+  $('#uAskReview').addEventListener('click', (event) => {
+    openMergeGroup(event.currentTarget.dataset.group || 'merge');
+    switchView('merge');
+  });
   $('#uLoadBtn').addEventListener('click', () => loadIntoBase());
   $('#uAskYes').addEventListener('click', () => answer(true));
   $('#uAskNo').addEventListener('click', () => answer(false));
@@ -150,6 +156,11 @@ function collectInput() {
     reportTheme: $('#uReportTheme').value,
     keepDump: $('#uKeepDump').checked,
     openResultsForm: $('#uOpenResultsForm').checked,
+    // Проверки платформы: решает человек — на большой конфигурации они стоят
+    // минут, и платить за них не всегда нужно.
+    checkModules: $('#uCheckModules').checked,
+    checkExtensions: $('#uCheckExtensions').checked,
+    extendedCheck: $('#uExtendedCheck').checked,
   };
 }
 
@@ -315,26 +326,40 @@ async function showAsk(question) {
  */
 async function refreshAsk() {
   if ($('#uAsk').hidden) return;
-  const review = state.question?.kind === 'review' ? await refreshReviewState() : null;
-  const left = review ? state.left : 0;
+  const kind = state.question?.kind;
+  if (kind !== 'review' && kind !== 'checks') {
+    $('#uAskReview').hidden = true;
+    $('#uAskHint').hidden = true;
+    $('#uAskYes').disabled = false;
+    return;
+  }
+
+  const review = await refreshReviewState();
+  const checks = kind === 'checks';
+  const left = checks ? (review?.checks?.totals?.left ?? 0) : state.left;
 
   const reviewBtn = $('#uAskReview');
-  reviewBtn.hidden = state.question?.kind !== 'review';
+  reviewBtn.hidden = false;
+  reviewBtn.dataset.group = checks ? 'checks' : 'merge';
   reviewBtn.textContent = left
-    ? `Разобрать спорные места (${formatNumber(left)})`
-    : 'Посмотреть спорные места';
+    ? `${checks ? 'Разобрать ошибки проверок' : 'Разобрать спорные места'} (${formatNumber(left)})`
+    : `${checks ? 'Посмотреть ошибки проверок' : 'Посмотреть спорные места'}`;
 
   $('#uAskYes').disabled = left > 0;
   $('#uAskYes').textContent = left > 0
-    ? 'Записать в базу — сначала разберите места'
-    : 'Да, записать в базу';
+    ? (checks ? 'Продолжить — сначала разберите ошибки' : 'Записать в базу — сначала разберите места')
+    : (checks ? 'Проверить заново и продолжить' : 'Да, записать в базу');
 
   const hint = $('#uAskHint');
   hint.hidden = left === 0;
   hint.textContent = left
-    ? `Не разобрано мест: ${formatNumber(left)}. Пока хоть одно не разобрано, записывать `
-      + 'в базу нельзя: в таком месте в выгрузке лежит ваша версия участка, а правка '
-      + 'поставщика в нём потеряна. Прогон ждёт — он никуда не денется.'
+    ? (checks
+      ? `Не разобрано замечаний: ${formatNumber(left)}. Исправьте их в окне разбора либо `
+        + 'пометьте пропущенными — так поступают с замечаниями, которые есть и в чистой '
+        + 'типовой конфигурации. Прогон ждёт.'
+      : `Не разобрано мест: ${formatNumber(left)}. Пока хоть одно не разобрано, записывать `
+        + 'в базу нельзя: в таком месте в выгрузке лежит ваша версия участка, а правка '
+        + 'поставщика в нём потеряна. Прогон ждёт — он никуда не денется.')
     : '';
 }
 
@@ -345,7 +370,9 @@ function hideAsk() {
 
 async function answer(ok) {
   if (!state.currentId) return;
-  if (ok && !confirm(
+  // Про ошибки проверок спрашивать «резервная копия сделана?» незачем:
+  // база уже обновлена, речь идёт о повторной проверке.
+  if (ok && state.question?.kind !== 'checks' && !confirm(
     'Записать результат объединения в информационную базу?\n\n'
     + 'Будет загружена ОСНОВНАЯ конфигурация и выполнено обновление конфигурации базы данных —\n'
     + 'это реструктуризация таблиц, платформа может предупредить о потере данных.\n'

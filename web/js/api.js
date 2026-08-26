@@ -83,6 +83,10 @@ export const api = {
 
   // --- Разбор спорных мест ---
 
+  /** Подсветка правленого текста: лексер 1С один и живёт на сервере. */
+  highlight: (text, ext) =>
+    request('api/highlight', { method: 'POST', body: JSON.stringify({ text, ext }) }),
+
   /** Дерево спорных мест: что программа объединила сама, а что осталось вам. */
   updateReview: (id) => request(`api/updates/${id}/review`),
 
@@ -90,7 +94,11 @@ export const api = {
   updateReviewFile: (id, rel) =>
     request(`api/updates/${id}/review/file?rel=${encodeURIComponent(rel)}`),
 
-  /** Решение по файлу: `save` (с текстом), `accept` либо `revert`. */
+  /** Одна ошибка проверки платформы: что правим и с чем сверяемся. */
+  updateReviewCheck: (id, key) =>
+    request(`api/updates/${id}/review/file?check=${encodeURIComponent(key)}`),
+
+  /** Решение по месту: `save` (с текстом), `accept`, `revert` либо `skip`. */
   updateReviewDecide: (id, body) =>
     request(`api/updates/${id}/review/file`, { method: 'POST', body: JSON.stringify(body) }),
 
