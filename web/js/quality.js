@@ -55,10 +55,36 @@ export function initQuality() {
   $('#qOpenReport').addEventListener('click', (event) => {
     if (!state.currentId) return;
     openReportInBrowser(event.currentTarget, () => api.openQualityReport(state.currentId),
-      (message) => setNote('#qFormNote', message, true));
+      (message) => setNote('#qSaveNote', message, true));
   });
+  $('#qSaveReport').addEventListener('click', () => saveReportAs());
 
   loadHistory();
+}
+
+/**
+ * «Скачать отчёт…» — с вопросом, куда именно.
+ *
+ * Диалог сохранения показывает сервер: браузер положил бы файл в свою папку
+ * загрузок под именем `report.html`, без выбора места и без внятного имени.
+ * Сохранённый отчёт самодостаточен — ни одной ссылки на работающую программу
+ * в нём нет, и он открывается с диска.
+ */
+async function saveReportAs() {
+  if (!state.currentId) return;
+  const btn = $('#qSaveReport');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Сохранение…';
+  try {
+    const result = await api.saveQualityReport(state.currentId);
+    setNote('#qSaveNote', result.cancelled ? '' : `Отчёт сохранён: ${result.path}`);
+  } catch (err) {
+    setNote('#qSaveNote', `Не удалось сохранить: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 /**

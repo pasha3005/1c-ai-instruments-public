@@ -956,3 +956,250 @@ body {
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .switch--nested .switch__item input { accent-color: color-mix(in srgb, var(--accent) 65%, var(--ink-muted)); }
+
+/* ================= Разбор спорных мест ================= */
+/*
+ * Повторение окна объединения конфигуратора: дерево слева, две исходные
+ * версии сверху, результат снизу. Раскладка не изобретается — разработчик,
+ * который обновляет конфигурацию, читает такое окно не задумываясь.
+ *
+ * Страница шире остальных: три колонки кода в 1120 пикселях нечитаемы,
+ * а сравнивают здесь построчно.
+ */
+.view--wide { max-width: none; }
+.is-wide .wrap { max-width: 1600px; }
+.hero--tight { margin-bottom: 14px; }
+
+.mgw {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .mgw { grid-template-columns: 1fr; }
+}
+
+/* ---------- Дерево ---------- */
+.mgw__tree {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: sticky;
+  top: 74px;
+}
+.mgw__tree-head { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.mgw__tree-body { max-height: calc(100vh - 220px); overflow: auto; padding: 8px; }
+
+.mgw__legend {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+.mgw__legend span { display: flex; align-items: center; gap: 7px; }
+.mgw__filters { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.chip {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.chip:hover { border-color: var(--accent-line); color: var(--ink); }
+.chip.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.chip--sm { font-size: 11.5px; padding: 2px 8px; }
+
+/*
+ * Значки состояния. «Шестерёнка с галочкой» у разобранного программой —
+ * тот же смысл, что и у значка автоматического решения в конфигураторе:
+ * решение принято без человека. Рисуются знаками, а не картинками: поставка
+ * не тянет за собой ни одного внешнего файла.
+ */
+.mgi {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1;
+  font-weight: 700;
+}
+.mgi--auto { background: color-mix(in srgb, var(--good) 22%, transparent); color: var(--good); }
+.mgi--auto::after { content: '\2699\FE0E'; }
+.mgi--done { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.mgi--done::after { content: '\2713'; }
+.mgi--manual { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.mgi--manual::after { content: '!'; }
+
+.mgt { border-bottom: 1px solid var(--line-soft); }
+.mgt:last-child { border-bottom: 0; }
+.mgt > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+}
+.mgt > summary::-webkit-details-marker { display: none; }
+.mgt > summary:hover { background: var(--surface-2); }
+.mgt__title { flex: 1; font-size: 13.5px; font-weight: 560; min-width: 0; overflow-wrap: anywhere; }
+.mgt__stat { font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.mgt__body { padding: 0 0 6px 8px; }
+
+.mgt__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.mgt__file:hover { background: var(--surface-2); color: var(--ink); }
+.mgt__file.is-active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.mgt__file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- Правая часть ---------- */
+.mgw__main {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  min-width: 0;
+}
+.mgw__file { margin-bottom: 10px; }
+.mgw__file-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 620;
+}
+.mgw__file-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 4px; overflow-wrap: anywhere; }
+
+.mgw__places { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.mgp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.mgp:hover { border-color: var(--accent-line); color: var(--ink); }
+.mgp.is-active { border-color: var(--accent); color: var(--ink); }
+.mgp__how { color: var(--good); font-size: 11.5px; }
+
+.mgw__panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .mgw__panes { grid-template-columns: 1fr; }
+}
+.mgw__pane { min-width: 0; }
+.mgw__pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  /* Обе шапки одной высоты: в правой стоят переключатели версии, и без
+     этого колонки кода начинались на разных строках экрана — сравнивать
+     построчно в таком виде невозможно. */
+  min-height: 38px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.mgw__pane-note { font-weight: 400; color: var(--ink-faint); display: flex; gap: 6px; }
+
+.mgw__code {
+  height: 42vh;
+  min-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--bg);
+}
+.mgc { border-collapse: collapse; width: 100%; font: 12.5px/1.55 var(--mono); }
+.mgc__n {
+  width: 1%;
+  padding: 0 10px 0 8px;
+  text-align: right;
+  color: var(--ink-faint);
+  background: var(--surface);
+  user-select: none;
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.mgc__t { padding: 0 10px; white-space: pre; color: var(--ink-mid); }
+.mgc tr.is-here { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.mgc tr.is-here .mgc__t { color: var(--ink); }
+
+/* ---------- Результат ---------- */
+.mgw__result { margin-top: 14px; }
+.mgw__result textarea {
+  width: 100%;
+  height: 34vh;
+  min-height: 220px;
+  resize: vertical;
+  font: 12.5px/1.55 var(--mono);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  padding: 8px 10px;
+  display: block;
+}
+.mgw__result textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.mgw__result textarea[readonly] { color: var(--ink-faint); }
+.mgw__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}

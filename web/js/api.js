@@ -78,6 +78,22 @@ export const api = {
 
   openUpdateReport: (id) => request(`api/updates/${id}/open`, { method: 'POST' }),
 
+  /** Спросить, куда сохранить отчёт об объединении, и сохранить его туда. */
+  saveUpdateReport: (id) => request(`api/updates/${id}/save`, { method: 'POST' }),
+
+  // --- Разбор спорных мест ---
+
+  /** Дерево спорных мест: что программа объединила сама, а что осталось вам. */
+  updateReview: (id) => request(`api/updates/${id}/review`),
+
+  /** Один файл: три исходные версии, автоматический результат и текущий текст. */
+  updateReviewFile: (id, rel) =>
+    request(`api/updates/${id}/review/file?rel=${encodeURIComponent(rel)}`),
+
+  /** Решение по файлу: `save` (с текстом), `accept` либо `revert`. */
+  updateReviewDecide: (id, body) =>
+    request(`api/updates/${id}/review/file`, { method: 'POST', body: JSON.stringify(body) }),
+
   /**
    * Загрузка объединённой выгрузки в конфигурацию базы.
    * Пароль на сервере не хранится, поэтому передаётся заново.
@@ -103,6 +119,9 @@ export const api = {
   listQuality: () => request('api/quality'),
 
   openQualityReport: (id) => request(`api/quality/${id}/open`, { method: 'POST' }),
+
+  /** Спросить, куда сохранить отчёт о качестве кода, и сохранить его туда. */
+  saveQualityReport: (id) => request(`api/quality/${id}/save`, { method: 'POST' }),
 
   deleteQuality: (id) => request(`api/quality/${id}`, { method: 'DELETE' }),
 };

@@ -20,6 +20,15 @@ export const FILES = {
   meta: 'meta.json',
   result: 'result.json',
   html: 'update.html',
+  /**
+   * Что человек уже разобрал в окне спорных мест.
+   *
+   * Отдельным файлом от результата: результат — снимок работы программы,
+   * и отчёт по нему пересобирается (`freshReport`). Решения человека приходят
+   * позже, иногда через день, и подмешивать их в снимок значило бы, что
+   * перечитанный отчёт больше не соответствует моменту прогона.
+   */
+  review: 'merge-review.json',
 };
 
 function runDir(id) {
@@ -75,6 +84,28 @@ export async function saveResult(id, result) {
 
 export async function getResult(id) {
   return readJson(path.join(runDir(id), FILES.result));
+}
+
+/** Состояние разбора спорных мест: `{ files: { <путь>: { mode, at } } }`. */
+export async function getReviewState(id) {
+  return (await readJson(path.join(runDir(id), FILES.review))) || { files: {} };
+}
+
+/**
+ * Помечает файл разобранным (или снимает пометку, если `decision` пуст).
+ *
+ * Пометка нужна не ради статистики: пока хоть один спорный файл не разобран,
+ * загрузка в информационную базу не предлагается и не выполняется.
+ */
+export async function setReviewDecision(id, rel, decision) {
+  const dir = await ensureDir(runDir(id));
+  const state = await getReviewState(id);
+  const files = { ...(state.files || {}) };
+  if (decision) files[rel] = { ...decision, at: new Date().toISOString() };
+  else delete files[rel];
+  const next = { ...state, files };
+  await writeJson(path.join(dir, FILES.review), next);
+  return next;
 }
 
 export async function saveReport(id, html) {

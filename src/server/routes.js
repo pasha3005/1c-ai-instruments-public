@@ -12,6 +12,9 @@ import { Router, sendJson, sendText, sendError, readJsonBody, openSse } from './
 import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES, QUALITY_STAGES } from './progress.js';
 import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
+import {
+  buildReview, readReviewFile, writeReviewFile, unresolvedCount,
+} from '../update/mergeReview.js';
 import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
 import * as updateStore from '../store/updateStore.js';
@@ -181,6 +184,55 @@ async function freshReport(runStore, render, id, kind = null) {
     // Пересборка — удобство, а не обязанность: не вышло — открываем прежний.
     log.warn(`Отчёт ${id} не пересобран: ${err.message}`);
     return stored;
+  }
+}
+
+/**
+ * Сохранить отчёт куда укажет пользователь. Общее для всех трёх разделов.
+ *
+ * Через `<a download>` браузер положил бы файл в свою папку загрузок с именем
+ * вида `report.html`, и выбора места не было бы вовсе. Диалог показывает
+ * сервер — он работает на этой же машине, — а имя файла складывается
+ * из раздела, организации, конфигурации и даты, чтобы десяток отчётов в одной
+ * папке различались без открытия.
+ *
+ * Сохраняется ПЕРЕСОБРАННЫЙ отчёт (`freshReport`), а не то, что лежит
+ * в хранилище: иначе сохранённый файл оказывался бы сделан прежней версией
+ * программы, а открытый в интерфейсе — текущей, и это два разных документа.
+ * Отчёт самодостаточен — стили, скрипт и данные лежат в нём самом, а все
+ * ссылки внутри ведут на якори (`#раздел`), — поэтому сохранённый файл
+ * работает без запущенной программы; на это есть тест.
+ */
+async function saveReportTo(res, { id, runStore, render, reportKind = null, kind, title }) {
+  const html = await freshReport(runStore, render, id, reportKind);
+  if (!html) {
+    sendError(res, 404, 'Отчёт ещё не сформирован');
+    return;
+  }
+  if (!dialogsAvailable()) {
+    sendError(res, 400, 'Диалог сохранения доступен только под Windows');
+    return;
+  }
+
+  const meta = await runStore.getMeta(id);
+  try {
+    const target = await pickPath({
+      mode: 'save',
+      title,
+      filter: FILE_FILTERS.html,
+      fileName: reportFileName(meta, kind),
+      initial: downloadsDir(),
+    });
+    if (!target) {
+      sendJson(res, 200, { cancelled: true });
+      return;
+    }
+    const file = /\.html?$/i.test(target) ? target : `${target}.html`;
+    await fs.writeFile(file, html, 'utf8');
+    log.info(`Отчёт ${id} сохранён: ${file}`);
+    sendJson(res, 200, { cancelled: false, path: file });
+  } catch (err) {
+    sendError(res, 400, err.message);
   }
 }
 
@@ -550,47 +602,14 @@ export function buildRouter() {
     sendJson(res, 200, openReportFor(req, `api/audits/${params.id}/report.html`));
   });
 
-  /**
-   * Сохранить отчёт куда укажет пользователь.
-   *
-   * Через `<a download>` браузер положил бы файл в свою папку загрузок
-   * с именем вида `report.html`, и выбора места не было бы вовсе. Диалог
-   * показывает сервер — он работает на этой же машине, — а имя файла
-   * складывается из организации, конфигурации и даты, чтобы десяток отчётов
-   * в одной папке различались без открытия.
-   */
-  router.post('/api/audits/:id/save', async (req, res, { params }) => {
-    const html = await store.readReport(params.id, 'html');
-    if (!html) {
-      sendError(res, 404, 'Отчёт ещё не сформирован');
-      return;
-    }
-    if (!dialogsAvailable()) {
-      sendError(res, 400, 'Диалог сохранения доступен только под Windows');
-      return;
-    }
-
-    const meta = await store.getMeta(params.id);
-    try {
-      const target = await pickPath({
-        mode: 'save',
-        title: 'Куда сохранить отчёт об обследовании',
-        filter: FILE_FILTERS.html,
-        fileName: reportFileName(meta),
-        initial: downloadsDir(),
-      });
-      if (!target) {
-        sendJson(res, 200, { cancelled: true });
-        return;
-      }
-      const file = /\.html?$/i.test(target) ? target : `${target}.html`;
-      await fs.writeFile(file, html, 'utf8');
-      log.info(`Отчёт ${params.id} сохранён: ${file}`);
-      sendJson(res, 200, { cancelled: false, path: file });
-    } catch (err) {
-      sendError(res, 400, err.message);
-    }
-  });
+  router.post('/api/audits/:id/save', (req, res, { params }) => saveReportTo(res, {
+    id: params.id,
+    runStore: store,
+    render: renderHtmlReport,
+    reportKind: 'html',
+    kind: 'audit',
+    title: 'Куда сохранить отчёт об обследовании',
+  }));
 
   router.delete('/api/audits/:id', async (req, res, { params }) => {
     await store.deleteAudit(params.id);
@@ -753,6 +772,111 @@ export function buildRouter() {
       return;
     }
     sendJson(res, 200, openReportFor(req, `api/updates/${params.id}/report.html`));
+  });
+
+  router.post('/api/updates/:id/save', (req, res, { params }) => saveReportTo(res, {
+    id: params.id,
+    runStore: updateStore,
+    render: renderUpdateReport,
+    kind: 'update',
+    title: 'Куда сохранить отчёт об объединении',
+  }));
+
+  // --- Разбор спорных мест ---
+
+  /**
+   * Дерево спорных мест: объект → файл → место.
+   *
+   * Отдельно от результата прогона, потому что к дереву примешано состояние
+   * разбора — что человек уже решил. Оно живёт своим файлом и меняется после
+   * прогона, иногда через день.
+   */
+  router.get('/api/updates/:id/review', async (req, res, { params }) => {
+    const result = await updateStore.getResult(params.id);
+    if (!result) {
+      sendError(res, 404, 'Результат объединения не найден');
+      return;
+    }
+    const state = await updateStore.getReviewState(params.id);
+    const review = buildReview(result, state);
+    sendJson(res, 200, {
+      updateId: params.id,
+      mergedDir: result.mergedDir || '',
+      conflictDir: result.conflictDir || '',
+      // Каталога выгрузки может уже не быть: после загрузки в базу со снятым
+      // флагом «Сохранить выгрузку» уборка его сносит, и править нечего.
+      dumpAlive: Boolean(result.mergedDir) && (await pathExists(result.mergedDir)),
+      loaded: Boolean(result.loaded),
+      configs: result.configs || null,
+      ...review,
+    });
+  });
+
+  router.get('/api/updates/:id/review/file', async (req, res, { params, query }) => {
+    const result = await updateStore.getResult(params.id);
+    if (!result) {
+      sendError(res, 404, 'Результат объединения не найден');
+      return;
+    }
+    try {
+      const state = await updateStore.getReviewState(params.id);
+      sendJson(res, 200, await readReviewFile(result, state, String(query.get('rel') || '')));
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
+  });
+
+  /**
+   * Решение человека по одному файлу.
+   *
+   * Три действия одним маршрутом, потому что итог у них общий — пометка
+   * «разобрано» и текст в выгрузке: `save` записывает правку, `accept`
+   * принимает то, что уже лежит в файле, `revert` возвращает автоматический
+   * результат и СНИМАЕТ пометку — файл снова ждёт решения.
+   */
+  router.post('/api/updates/:id/review/file', async (req, res, { params }) => {
+    const result = await updateStore.getResult(params.id);
+    if (!result) {
+      sendError(res, 404, 'Результат объединения не найден');
+      return;
+    }
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+
+    const rel = String(body.rel || '');
+    const action = ['save', 'accept', 'revert'].includes(body.action) ? body.action : 'save';
+    try {
+      if (action === 'save') {
+        await writeReviewFile(result, rel, String(body.text ?? ''));
+        await updateStore.setReviewDecision(params.id, rel, { mode: 'edited' });
+      } else if (action === 'accept') {
+        await updateStore.setReviewDecision(params.id, rel, { mode: 'accepted' });
+      } else {
+        const file = await readReviewFile(result, await updateStore.getReviewState(params.id), rel);
+        if (file.auto == null) {
+          sendError(res, 400, 'Автоматический результат для этого файла не сохранён — возвращать нечего');
+          return;
+        }
+        await writeReviewFile(result, rel, file.auto);
+        await updateStore.setReviewDecision(params.id, rel, null);
+      }
+
+      const state = await updateStore.getReviewState(params.id);
+      log.info(`Обновление ${params.id}: ${action} по файлу ${rel}`);
+      sendJson(res, 200, {
+        ok: true,
+        action,
+        left: unresolvedCount(result, state),
+        ...buildReview(result, state).totals,
+      });
+    } catch (err) {
+      sendError(res, 400, err.message);
+    }
   });
 
   /**
@@ -981,6 +1105,14 @@ export function buildRouter() {
     sendJson(res, 200, openReportFor(req, `api/quality/${params.id}/report.html`));
   });
 
+  router.post('/api/quality/:id/save', (req, res, { params }) => saveReportTo(res, {
+    id: params.id,
+    runStore: qualityStore,
+    render: renderQualityReport,
+    kind: 'quality',
+    title: 'Куда сохранить отчёт о качестве кода',
+  }));
+
   router.delete('/api/quality/:id', async (req, res, { params }) => {
     await qualityStore.deleteRun(params.id);
     sendJson(res, 200, { ok: true });
@@ -1008,19 +1140,35 @@ export function buildRouter() {
   return guardRouter(router);
 }
 
+/** Как называется раздел в имени сохранённого файла. */
+const REPORT_KIND_RU = {
+  audit: 'Обследование',
+  update: 'Обновление',
+  quality: 'Качество кода',
+};
+
 /**
  * Имя файла отчёта: «Обследование — Организация — Конфигурация — дата.html».
  *
  * Понятное имя важнее короткого: отчёты складывают в одну папку по нескольким
  * заказчикам, и `report(3).html` там не различить. Запрещённые в именах файлов
  * знаки заменяются, длина ограничена — Windows не примет путь длиннее 255.
+ *
+ * Разделов три, и начало имени у каждого своё: «Обследование», «Обновление»,
+ * «Качество кода». Одинаковое начало означало бы, что в общей папке файлы
+ * из разных разделов снова не различить — ровно то, ради чего имя и строится.
  */
-export function reportFileName(meta) {
+export function reportFileName(meta, kind = 'audit') {
   const summary = meta?.summary || {};
-  const parts = ['Обследование'];
+  const parts = [REPORT_KIND_RU[kind] || REPORT_KIND_RU.audit];
   if (meta?.input?.clientName) parts.push(meta.input.clientName);
-  if (summary.configName) parts.push(summary.configName);
-  if (summary.configVersion) parts.push(summary.configVersion);
+  const configName = summary.configName || summary.mainConfig || '';
+  if (configName) parts.push(configName);
+  // У обновления «версия» — это переход: с чего на что обновлялись.
+  const version = kind === 'update'
+    ? [summary.mainVersion, summary.targetVersion].filter(Boolean).join(' - ')
+    : summary.configVersion || summary.mainVersion || '';
+  if (version) parts.push(version);
   parts.push(dateStamp(meta?.finishedAt || meta?.createdAt));
 
   const name = parts

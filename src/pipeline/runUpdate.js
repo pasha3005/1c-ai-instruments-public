@@ -56,6 +56,7 @@ import {
 } from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
+import { unresolvedCount } from '../update/mergeReview.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
 import { renderUpdateReport } from '../report/updateReport.js';
@@ -963,20 +964,38 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
  * прогона. Флажок на форме убран намеренно: между заполнением формы и этим
  * моментом проходит время объединения, и решение принимается уже с отчётом
  * в руках.
+ *
+ * **Пока есть неразобранные спорные места, вопрос не задаётся вовсе** — прямое
+ * требование пользователя (26.08.2026): «никогда не предлагай записать изменения
+ * в базу, если есть спорные места». Предложение записать наполовину разобранное
+ * объединение — это предложение сломать базу, и отвечать на него «нет» человек
+ * должен не каждый раз. Вместо вопроса конвейер отправляет в окно разбора,
+ * а загрузка остаётся отдельной кнопкой, которая тоже проверяет это число.
  */
 async function applyToBase({
   updateId, input, platform, conn, workRoot, progress, result, manualCount,
 }) {
+  if (manualCount > 0) {
+    progress.skip('confirm', `не предлагается: спорных мест ${manualCount}`);
+    for (const id of ['load', 'db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
+    progress.message(
+      `Объединение выполнено, но спорных мест, требующих вашего решения, ${manualCount}, `
+      + 'поэтому запись в информационную базу не предлагается. Откройте '
+      + '«Разобрать спорные места»: там видно, что программа объединила сама, а что осталось '
+      + 'вам, и там же правится и сохраняется результат. Когда неразобранных мест не останется, '
+      + 'станет доступна кнопка «Загрузить в конфигурацию».',
+      'warn',
+    );
+    return;
+  }
+
   progress.start('confirm', 'Ожидается решение о записи в базу');
 
   const answer = await progress.ask('confirm', {
     title: 'Загрузить результат в информационную базу?',
-    manual: manualCount,
+    manual: 0,
     infobase: conn.display,
-    text: manualCount
-      ? `Объединение выполнено, но ${manualCount} мест требуют вашего решения. Их можно `
-        + 'разобрать в файлах выгрузки и загрузить позже кнопкой «Загрузить в конфигурацию».'
-      : 'Объединение выполнено полностью, мест, требующих решения, не осталось.',
+    text: 'Объединение выполнено полностью, мест, требующих решения, не осталось.',
   });
 
   if (!answer?.ok) {
@@ -984,8 +1003,7 @@ async function applyToBase({
     for (const id of ['load', 'db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
     progress.message(
       'Результат объединения записан в файлы выгрузки. Загрузить его в конфигурацию можно '
-      + 'кнопкой «Загрузить в конфигурацию» — после того как вы разберёте места, '
-      + 'требующие решения.',
+      + 'кнопкой «Загрузить в конфигурацию» — когда сочтёте нужным.',
     );
     return;
   }
@@ -1231,6 +1249,19 @@ export async function loadUpdateResult({ updateId, user, password, updateDb = tr
     throw new Error(
       'Загрузка запрещена: имя целевой конфигурации не совпадает с именем основной. '
       + 'Похоже, при объединении был указан файл другой конфигурации.',
+    );
+  }
+
+  // Застава перед единственным действием продукта, меняющим базу: пока хоть
+  // одно спорное место не разобрано, в выгрузке лежит наша версия участка,
+  // а правка поставщика в нём потеряна. Загружать такое — тихо откатывать
+  // часть нового релиза.
+  const left = unresolvedCount(result, await store.getReviewState(updateId));
+  if (left > 0) {
+    throw new Error(
+      `Загрузка запрещена: спорных мест, требующих решения, ещё ${left}. `
+      + 'Разберите их в окне «Разобрать спорные места» — там показано, что объединено '
+      + 'программой, а что осталось вам, — и повторите загрузку.',
     );
   }
 

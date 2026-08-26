@@ -648,7 +648,14 @@
 
       <div class="result-actions" id="uResultActions" hidden>
         <button class="btn btn--success" id="uOpenReport" type="button">Открыть отчёт</button>
+        <button class="btn" id="uSaveReport" type="button">Скачать отчёт…</button>
         <a class="btn" id="uDownloadJson" target="_blank" rel="noopener">Данные JSON</a>
+        <!--
+          Разбор спорных мест — рабочее место, а не просмотр: пока в нём
+          остались неразобранные места, кнопка загрузки в конфигурацию скрыта,
+          и сервер такую загрузку всё равно не выполнит.
+        -->
+        <button class="btn btn--primary" id="uReviewBtn" type="button" hidden>Разобрать спорные места</button>
         <button class="btn btn--danger-solid" id="uLoadBtn" type="button">Загрузить в конфигурацию</button>
       </div>
       <div class="save-note" id="uSaveNote" hidden></div>
@@ -1081,12 +1088,106 @@
           в каком живёт сам интерфейс: без адресной строки и без вкладок.
         -->
         <button class="btn btn--success" id="qOpenReport" type="button">Открыть отчёт</button>
+        <button class="btn" id="qSaveReport" type="button">Скачать отчёт…</button>
       </div>
+      <div class="save-note" id="qSaveNote" hidden></div>
 
       <div class="run-stats" id="qRunStats" hidden></div>
       <div class="error-box" id="qErrorBox" hidden></div>
     </div>
 
+  </section>
+
+  <!-- ================= РАЗБОР СПОРНЫХ МЕСТ ================= -->
+  <!--
+    Повторение окна объединения конфигуратора, только в браузере. Раскладка
+    та же, что у платформы, и это не подражание ради подражания: разработчик,
+    обновляющий конфигурацию, читает такое окно не задумываясь — дерево слева,
+    две исходные версии сверху, результат снизу.
+
+    Отличие одно и оно главное: дважды изменённые места, которые программа
+    разобрала сама, уже разобраны и помечены значком «шестерёнка с галочкой».
+    Человеку остаётся то, где решение может принять только он.
+  -->
+  <section class="view view--wide" data-view="merge">
+    <div class="hero hero--tight">
+      <h1>Разбор спорных мест</h1>
+      <p id="mgLead">Загрузка…</p>
+    </div>
+
+    <div class="mgw" id="mgWork" hidden>
+      <aside class="mgw__tree">
+        <div class="mgw__tree-head">
+          <div class="mgw__legend">
+            <span><i class="mgi mgi--auto" aria-hidden="true"></i>объединено программой</span>
+            <span><i class="mgi mgi--manual" aria-hidden="true"></i>решение за вами</span>
+            <span><i class="mgi mgi--done" aria-hidden="true"></i>разобрано вами</span>
+          </div>
+          <div class="mgw__filters" role="group" aria-label="Что показывать">
+            <button class="chip is-active" type="button" data-filter="all">Все</button>
+            <button class="chip" type="button" data-filter="manual">Требуют решения</button>
+            <button class="chip" type="button" data-filter="auto">Объединено само</button>
+          </div>
+        </div>
+        <div class="mgw__tree-body" id="mgTree"></div>
+      </aside>
+
+      <div class="mgw__main">
+        <div class="mgw__file" id="mgFileHead">
+          <div class="mgw__file-title" id="mgFileTitle">Выберите место слева</div>
+          <div class="mgw__file-sub" id="mgFileSub"></div>
+        </div>
+
+        <div class="mgw__places" id="mgPlaces" hidden></div>
+
+        <!--
+          Две верхние колонки — ровно то, что показывает конфигуратор:
+          слева основная конфигурация (как было у нас), справа новая поставка.
+          Текущая поставка нужна реже и лежит третьей вкладкой, а не колонкой:
+          три колонки кода на экране ноутбука нечитаемы.
+        -->
+        <div class="mgw__panes" id="mgPanes" hidden>
+          <div class="mgw__pane">
+            <div class="mgw__pane-head">
+              <span>Основная конфигурация</span>
+              <span class="mgw__pane-note">ваша версия до объединения</span>
+            </div>
+            <div class="mgw__code" id="mgOurs"></div>
+          </div>
+          <div class="mgw__pane">
+            <div class="mgw__pane-head">
+              <span id="mgRightTitle">Новая поставка</span>
+              <span class="mgw__pane-note">
+                <button class="chip chip--sm is-active" type="button" data-side="theirs">Новая поставка</button>
+                <button class="chip chip--sm" type="button" data-side="base">Текущая поставка</button>
+              </span>
+            </div>
+            <div class="mgw__code" id="mgTheirs"></div>
+          </div>
+        </div>
+
+        <div class="mgw__result" id="mgResultBox" hidden>
+          <div class="mgw__pane-head">
+            <span>Результат объединения — он и будет загружен в конфигурацию</span>
+            <span class="mgw__pane-note" id="mgResultNote"></span>
+          </div>
+          <textarea id="mgResult" spellcheck="false" wrap="off"></textarea>
+          <div class="mgw__actions">
+            <button class="btn btn--primary" id="mgSave" type="button">Сохранить результат</button>
+            <button class="btn" id="mgAccept" type="button">Оставить как есть</button>
+            <button class="btn" id="mgRevert" type="button">Вернуть вариант программы</button>
+            <span class="save-note" id="mgNote" hidden></span>
+          </div>
+        </div>
+
+        <div class="empty" id="mgEmpty">
+          Выберите место в дереве слева: сверху появится ваш код и код новой поставки,
+          снизу — результат объединения, который можно править прямо здесь.
+        </div>
+      </div>
+    </div>
+
+    <div class="error-box" id="mgError" hidden></div>
   </section>
 
   <!-- ================= ИСТОРИЯ ОБСЛЕДОВАНИЙ ================= -->

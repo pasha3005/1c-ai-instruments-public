@@ -11,6 +11,8 @@
  */
 
 import { api, subscribeToUpdate } from './api.js';
+import { openMerge } from './merge.js';
+import { switchView } from './app.js';
 import {
   $, $$, escapeHtml, setNote, renderStages, formatDuration, formatNumber,
   formatDateTime, createTimer, attachPathHint, openReportInBrowser, restoreInput,
@@ -24,6 +26,8 @@ const state = {
   timer: null,
   /** Значения прошлого объединения подставлены — второй раз не подставляем. */
   restored: false,
+  /** Сколько спорных мест ещё не разобрано. null — ещё не спрашивали. */
+  left: null,
 };
 
 /** Поля формы обновления, восстанавливаемые из последнего прогона. */
@@ -55,6 +59,8 @@ export function initUpdate() {
     openReportInBrowser(event.currentTarget, () => api.openUpdateReport(state.currentId),
       (message) => setSaveNote(message, true));
   });
+  $('#uSaveReport').addEventListener('click', () => saveReportAs());
+  $('#uReviewBtn').addEventListener('click', () => switchView('merge'));
   $('#uLoadBtn').addEventListener('click', () => loadIntoBase());
   $('#uAskYes').addEventListener('click', () => answer(true));
   $('#uAskNo').addEventListener('click', () => answer(false));
@@ -65,6 +71,46 @@ export function initUpdate() {
 /** Перечитать список прошлых объединений — раздел «История» этого режима. */
 export function reloadUpdateHistory() {
   loadHistory();
+}
+
+/**
+ * Открыть окно разбора спорных мест для текущего прогона.
+ *
+ * Зовётся навигацией (`app.js`), а не кнопкой: на страницу разбора можно
+ * попасть и кнопкой, и возвратом из истории, и в обоих случаях данные нужно
+ * перечитать — человек мог править файлы своим редактором.
+ */
+export async function openUpdateReview() {
+  if (!state.currentId) return;
+  await openMerge(state.currentId);
+  await refreshReviewState();
+}
+
+/**
+ * Сколько спорных мест ждёт решения — и что от этого зависит на форме.
+ *
+ * Пока их не ноль, кнопки загрузки в конфигурацию нет вовсе. Неактивная кнопка
+ * выглядела бы как неисправная, а сервер такую загрузку всё равно отклоняет
+ * (`loadUpdateResult`): показывать её значило бы предлагать сделать то, что
+ * заведомо не выйдет.
+ */
+async function refreshReviewState() {
+  if (!state.currentId) return null;
+  try {
+    const review = await api.updateReview(state.currentId);
+    state.left = review.totals?.left ?? 0;
+    const total = (review.totals?.manual || 0) + (review.totals?.auto || 0);
+    const btn = $('#uReviewBtn');
+    btn.hidden = total === 0;
+    btn.textContent = state.left
+      ? `Разобрать спорные места (${formatNumber(state.left)})`
+      : 'Спорные места';
+    btn.classList.toggle('btn--primary', state.left > 0);
+    return review;
+  } catch {
+    state.left = null;
+    return null;
+  }
 }
 
 /** Этапы конвейера рисуются до запуска: видно, из чего работа состоит. */
@@ -308,10 +354,14 @@ async function showStats(updateId) {
       box.innerHTML = parts.join(' · ');
       box.hidden = false;
       $('#uLoadBtn').hidden = true;
+      $('#uReviewBtn').hidden = true;
       setSaveNote('Обновление выполнено штатной командой платформы: объединять было нечего.');
       return;
     }
-    $('#uLoadBtn').hidden = false;
+    // Спорные места решают, показывать ли загрузку: неразобранное объединение
+    // загружать нельзя, и сервер это тоже проверяет.
+    await refreshReviewState();
+    $('#uLoadBtn').hidden = state.left > 0;
 
     if (s.files != null) parts.push(`файлов сверено: ${formatNumber(s.files)}`);
     if (s.fromVendor != null) parts.push(`взято из новой поставки: ${formatNumber(s.fromVendor)}`);
@@ -331,7 +381,16 @@ async function showStats(updateId) {
 
     const loadBtn = $('#uLoadBtn');
     loadBtn.textContent = s.loaded ? 'Загрузить в конфигурацию заново' : 'Загрузить в конфигурацию';
-    if (s.loaded) setSaveNote('Результат уже загружен в основную конфигурацию базы.');
+    if (state.left > 0) {
+      setSaveNote(
+        `Запись в информационную базу не предлагается: спорных мест, требующих решения, ${formatNumber(state.left)}. `
+        + 'Откройте «Разобрать спорные места» — там видно, что программа объединила сама, '
+        + 'а что осталось вам, и там же правится и сохраняется результат.',
+        true,
+      );
+    } else if (s.loaded) {
+      setSaveNote('Результат уже загружен в основную конфигурацию базы.');
+    }
   } catch {
     state.timer.finish(null);
     box.hidden = true;
@@ -420,6 +479,30 @@ async function loadIntoBase() {
   }
 }
 
+/**
+ * «Скачать отчёт…» — с вопросом, куда именно.
+ *
+ * Диалог сохранения показывает сервер: браузер положил бы файл в свою папку
+ * загрузок под именем `report.html`. Сохранённый отчёт самодостаточен —
+ * ни одной ссылки на работающую программу в нём нет.
+ */
+async function saveReportAs() {
+  if (!state.currentId) return;
+  const btn = $('#uSaveReport');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Сохранение…';
+  try {
+    const result = await api.saveUpdateReport(state.currentId);
+    setSaveNote(result.cancelled ? '' : `Отчёт сохранён: ${result.path}`);
+  } catch (err) {
+    setSaveNote(`Не удалось сохранить: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 function setSaveNote(text, isError = false) {
   const box = $('#uSaveNote');
   box.textContent = text;
@@ -450,6 +533,15 @@ async function loadHistory() {
       btn.addEventListener('click', () => openReportInBrowser(
         btn, () => api.openUpdateReport(btn.dataset.open),
       ));
+    });
+
+    // Разбор спорных мест доступен и из истории: объединение делают в один
+    // день, а разбирают спорные места нередко в другой.
+    $$('[data-review]', container).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.currentId = btn.dataset.review;
+        switchView('merge');
+      });
     });
 
     $$('[data-delete]', container).forEach((btn) => {
@@ -511,6 +603,9 @@ function renderHistoryItem(meta) {
     <div class="hist-actions">
       ${meta.status === 'done'
     ? `<button class="btn" type="button" data-open="${meta.id}">Отчёт</button>`
+    : ''}
+      ${meta.status === 'done' && s.updateMode !== 'typical'
+    ? `<button class="btn${s.conflicted ? ' btn--primary' : ''}" type="button" data-review="${meta.id}">Спорные места</button>`
     : ''}
       <button class="btn btn--danger" data-delete="${meta.id}">Удалить</button>
     </div>

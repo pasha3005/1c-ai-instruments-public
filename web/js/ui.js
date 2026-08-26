@@ -25,6 +25,10 @@ export function setNote(selector, text, isError = false) {
   if (!el) return;
   el.textContent = text;
   el.classList.toggle('is-error', Boolean(isError));
+  // Пустая строка означает «сообщения нет», и место под него не должно
+  // занимать полосу: часть таких блоков размечена как `hidden` изначально,
+  // и без этой строки они не показались бы вовсе.
+  el.hidden = !text;
 }
 
 /** Шкала этапов конвейера. Разметка и классы — общие с CSS (.stage-item). */

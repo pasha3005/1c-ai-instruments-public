@@ -60,6 +60,15 @@ const DUMP_INFO = 'ConfigDumpInfo.xml';
 
 /** Сколько файлов с конфликтами сохранять подробно (код в отчёте и на диске). */
 const CONFLICT_FILES_LIMIT = 300;
+/**
+ * Сколько файлов, разобранных самими, сохранять на диск целиком.
+ *
+ * Свой счётчик, а не общий с конфликтами: разобранных автоматически бывает
+ * на порядок больше, и один счётчик означал бы, что нерешённые места вытеснены
+ * с диска решёнными — а окно разбора без исходных версий бесполезно именно там,
+ * где решение принимает человек.
+ */
+const RESOLVED_FILES_LIMIT = 300;
 /** Сколько участков конфликта показывать по одному файлу. */
 const CONFLICTS_PER_FILE = 20;
 /** Сколько автоматических решений показывать по одному файлу. */
@@ -77,6 +86,20 @@ const ELEMENTS_PER_OBJECT = 50;
 const OBJECTS_PER_GROUP = 500;
 /** Каталог с тремя версиями каждого конфликтного файла. */
 export const CONFLICT_DIR = 'Конфликты';
+
+/**
+ * Имена файлов внутри каталога версий.
+ *
+ * Ими же пользуется окно разбора спорных мест (`update/mergeReview.js`):
+ * читать их по одному соглашению с двух сторон надёжнее, чем перечислять
+ * имена дважды.
+ */
+export const VERSION_FILES = {
+  base: 'старая-поставка',
+  theirs: 'новая-поставка',
+  ours: 'основная-конфигурация',
+  auto: 'результат-объединения',
+};
 
 /**
  * Дерево-каталог: перечень файлов и чтение с диска.
@@ -144,6 +167,9 @@ export async function mergeConfigurations({
     childRemove: new Set(),
     conflictFiles: 0,
     conflictsSkipped: 0,
+    /** Сколько файлов каждого рода уже разложено по каталогу «Конфликты». */
+    manualSaved: 0,
+    autoSaved: 0,
     conflictIndex: [],
     notes: [],
   };
@@ -235,7 +261,7 @@ async function mergeOne(state, rel) {
         + 'Общей точки отсчёта нет, поэтому оставлен ваш вариант — ниже отличия от новой поставки.',
     });
     await attachTwoWay(state, rel, element);
-    await saveConflictVersions(state, rel);
+    element.versions = await saveConflictVersions(state, rel);
     return;
   }
 
@@ -246,12 +272,12 @@ async function mergeOne(state, rel) {
     }
     state.totals.conflicted += 1;
     state.totals.keptOurs += 1;
-    record(state, rel, {
+    const element = record(state, rel, {
       action: 'conflict-vendor-deleted',
       note: 'Поставщик удалил этот элемент, а у вас он изменён. Оставлен ваш вариант — '
         + 'решите, нужен ли он в новой версии.',
     });
-    await saveConflictVersions(state, rel);
+    element.versions = await saveConflictVersions(state, rel);
     return;
   }
 
@@ -325,7 +351,7 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
       + 'автоматически нельзя — ниже отличия от новой поставки.',
   });
   await attachTwoWay(state, rel, element);
-  await saveConflictVersions(state, rel);
+  element.versions = await saveConflictVersions(state, rel);
 }
 
 /**
@@ -381,12 +407,12 @@ async function mergeContents(state, rel) {
     // Двоичный файл (макет .mxl, картинка): объединять построчно нечего.
     state.totals.conflicted += 1;
     state.totals.keptOurs += 1;
-    record(state, rel, {
+    const element = record(state, rel, {
       action: 'conflict-binary',
       note: 'Двоичный файл изменён и вами, и поставщиком. Оставлен ваш — сравните вручную '
         + 'в конфигураторе, автоматическое объединение для таких файлов невозможно.',
     });
-    await saveConflictVersions(state, rel);
+    element.versions = await saveConflictVersions(state, rel);
     return;
   }
 
@@ -398,11 +424,11 @@ async function mergeContents(state, rel) {
   if (!merge.ok) {
     state.totals.conflicted += 1;
     state.totals.keptOurs += 1;
-    record(state, rel, {
+    const element = record(state, rel, {
       action: 'conflict-too-big',
       note: `Объединить построчно не удалось: ${merge.reason}. Оставлен ваш вариант.`,
     });
-    await saveConflictVersions(state, rel);
+    element.versions = await saveConflictVersions(state, rel);
     return;
   }
 
@@ -412,8 +438,11 @@ async function mergeContents(state, rel) {
     : { lines: merge.lines, conflicts: [], resolved: [], changed: false };
 
   const shape = splitLines(oursText);
+  // Буфер нужен и для записи в выгрузку, и для каталога версий: окно разбора
+  // сравнивает правки человека именно с тем, что программа записала сама.
+  const mergedBuf = Buffer.from(joinLines(result.lines, shape), 'utf8');
   if (merge.changed || result.changed) {
-    await writeFile(state, rel, Buffer.from(joinLines(result.lines, shape), 'utf8'));
+    await writeFile(state, rel, mergedBuf);
   }
 
   if (result.conflicts.length) {
@@ -424,7 +453,7 @@ async function mergeContents(state, rel) {
       autoFromVendor: merge.fromVendor,
     });
     await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
-    await saveConflictVersions(state, rel);
+    element.versions = await saveConflictVersions(state, rel, { merged: mergedBuf });
     return;
   }
 
@@ -437,6 +466,7 @@ async function mergeContents(state, rel) {
       autoKeptOurs: merge.keptOurs,
     });
     await attachConflicts(state, rel, element, result, { oursText, theirsText, baseText });
+    element.versions = await saveConflictVersions(state, rel, { kind: 'auto', merged: mergedBuf });
     return;
   }
 
@@ -590,9 +620,11 @@ function cut(lines) {
  * путь 260 знаками, поэтому файлы раскладываются по номерам, а соответствие
  * номера и пути пишется в «список.txt».
  */
-async function saveConflictVersions(state, rel) {
-  if (!state.conflictRoot) return;
-  if (state.conflictIndex.length >= CONFLICT_FILES_LIMIT) return;
+async function saveConflictVersions(state, rel, { kind = 'manual', merged = null } = {}) {
+  if (!state.conflictRoot) return null;
+  const counter = kind === 'auto' ? 'autoSaved' : 'manualSaved';
+  const limit = kind === 'auto' ? RESOLVED_FILES_LIMIT : CONFLICT_FILES_LIMIT;
+  if (state[counter] >= limit) return null;
 
   const number = String(state.conflictIndex.length + 1).padStart(3, '0');
   const dir = path.join(state.conflictRoot, number);
@@ -601,31 +633,43 @@ async function saveConflictVersions(state, rel) {
   try {
     await ensureDir(dir);
     for (const [tree, name] of [
-      ['base', 'старая-поставка'],
-      ['target', 'новая-поставка'],
-      ['main', 'основная-конфигурация'],
+      ['base', VERSION_FILES.base],
+      ['target', VERSION_FILES.theirs],
+      ['main', VERSION_FILES.ours],
     ]) {
       if (!treeOf(state, tree).files.has(rel)) continue;
       if (tree === 'base' && state.unknown.has(rel)) continue;
       const buf = await read(state, tree, rel);
       await fs.writeFile(path.join(dir, `${name}${ext}`), buf);
     }
-    state.conflictIndex.push({ number, rel });
+    // Автоматический результат кладётся рядом неизменным: окно разбора
+    // показывает поверх него правки человека и умеет вернуться к нему обратно.
+    if (merged) await fs.writeFile(path.join(dir, `${VERSION_FILES.auto}${ext}`), merged);
+    state[counter] += 1;
+    state.conflictIndex.push({ number, rel, kind });
+    return number;
   } catch (err) {
     log.warn(`Не удалось сохранить версии файла ${rel}: ${err.message}`);
+    return null;
   }
 }
 
 async function writeConflictIndex(state) {
   if (!state.conflictRoot || !state.conflictIndex.length) return;
   const lines = [
-    'Три версии каждого файла, который пришлось решать вручную.',
+    'Исходные версии каждого спорного файла — и тех, что решены самой программой,',
+    'и тех, где решение за вами. Ими же пользуется окно «Разбор спорных мест».',
     '',
-    'старая-поставка         — конфигурация поставщика, с которой начинали',
-    'новая-поставка          — то же место в новой поставке',
-    'основная-конфигурация   — ваша версия, она же записана в выгрузку',
+    `${VERSION_FILES.base}         — конфигурация поставщика, с которой начинали`,
+    `${VERSION_FILES.theirs}          — то же место в новой поставке`,
+    `${VERSION_FILES.ours}   — ваша версия до объединения`,
+    `${VERSION_FILES.auto}   — что записала программа (у решённых сама)`,
     '',
-    ...state.conflictIndex.map((item) => `${item.number}  ${item.rel}`),
+    'В колонке «род»: «сам» — разобрано программой, «вам» — требует вашего решения.',
+    '',
+    ...state.conflictIndex.map(
+      (item) => `${item.number}  ${item.kind === 'auto' ? 'сам' : 'вам'}  ${item.rel}`,
+    ),
   ];
   try {
     await fs.writeFile(path.join(state.conflictRoot, 'список.txt'), `${lines.join('\r\n')}\r\n`, 'utf8');
@@ -856,6 +900,8 @@ function record(state, rel, data) {
     rel,
     element: entry.element,
     isModule: entry.isModule,
+    /** Номер каталога в «Конфликты» с исходными версиями; null — не сохранены. */
+    versions: null,
     conflicts: [],
     conflictCount: 0,
     resolved: [],

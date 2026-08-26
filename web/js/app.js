@@ -6,7 +6,8 @@
  */
 
 import { api, subscribeToAudit, keepAlive } from './api.js';
-import { initUpdate, showUpdateStages, reloadUpdateHistory } from './update.js';
+import { initUpdate, showUpdateStages, reloadUpdateHistory, openUpdateReview } from './update.js';
+import { initMerge } from './merge.js';
 import { initQuality, showQualityStages, reloadQualityHistory } from './quality.js';
 import {
   $, $$, escapeHtml, setNote, renderStages as renderStageList,
@@ -85,6 +86,9 @@ const VIEW_SECTION = {
   history: 'audit',
   update: 'update',
   'update-history': 'update',
+  // Разбор спорных мест — часть обновления, а не отдельный режим: шапка
+  // должна вести обратно в обновление, а «История» рядом — история обновлений.
+  merge: 'update',
   quality: 'quality',
   'quality-history': 'quality',
 };
@@ -122,13 +126,17 @@ function currentView() {
   return document.querySelector('.view.is-active')?.dataset.view || null;
 }
 
-function switchView(name) {
+export function switchView(name) {
   const previous = currentView();
   if (previous === name) return;
   if (previous) scrollByView.set(previous, window.scrollY);
 
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === name));
+  // Разбор спорных мест шире остальных страниц: две колонки кода в 1120
+  // пикселях нечитаемы, а сравнивают здесь построчно.
+  document.body.classList.toggle('is-wide', name === 'merge');
   if (name === 'history') loadHistory();
+  if (name === 'merge') openUpdateReview();
   if (name === 'update-history') reloadUpdateHistory();
   if (name === 'quality-history') reloadQualityHistory();
   if (name === 'about') loadAbout();
@@ -866,6 +874,7 @@ requireLicense().then(() => {
   // ключа: без действующего ключа сервер отвечает 403 на любой запрос,
   // и его форма выглядела бы работающей, но не работала.
   initUpdate();
+  initMerge(() => switchView('update'));
   initQuality();
   loadEnvironment();
   // История читается сразу, а не при открытии её раздела: из последней
