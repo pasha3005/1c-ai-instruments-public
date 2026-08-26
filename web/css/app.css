@@ -1209,7 +1209,12 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   font-variant-numeric: tabular-nums;
 }
 .mgc__t { padding: 0 10px; white-space: pre; color: var(--ink-mid); }
-.mgc tr.is-here { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/*
+ * Выбранный участок НЕ красится своим фоном: цвет строки уже занят —
+ * он говорит, что с ней случилось. Заливка поверх давала третий и четвёртый
+ * оттенок («то фиолетовым, то красным насыщенным»), и понять, где добавлено,
+ * а где изменено, становилось невозможно. Остаётся полоска слева.
+ */
 .mgc tr.is-here .mgc__t { color: var(--ink); }
 
 /* ---------- Результат ---------- */
@@ -1296,12 +1301,24 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  * изменённые строки. Фон, а не цвет текста: подсветка синтаксиса должна
  * оставаться читаемой поверх.
  */
+/*
+ * Три цвета, и ровно те, что у конфигуратора: зелёный — появилось справа,
+ * красный — пропало справа, синий — изменено. Красный взят пастельный
+ * (у платформы это персиковый `#FBE3D6`, здесь его тёмный родственник),
+ * а не сигнальный `--danger`: сигнальным красным подсвечивают ошибку,
+ * а тут просто «этой строки в правой версии нет».
+ */
 .mgc tr.d-add  .mgc__t { background: color-mix(in srgb, var(--good) 20%, transparent); }
-.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, var(--danger) 20%, transparent); }
+.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, #d98f74 22%, transparent); }
 .mgc tr.d-chg  .mgc__t { background: color-mix(in srgb, #4a7fd4 26%, transparent); }
 .mgc tr.d-add  .mgc__n { color: var(--good); }
-.mgc tr.d-del  .mgc__n { color: var(--danger); }
+.mgc tr.d-del  .mgc__n { color: #e0a888; }
 .mgc tr.d-chg  .mgc__n { color: #79a6ff; }
+
+/* Строка-заполнитель: в этой версии её нет вовсе, кода в ней тоже нет. */
+.mgc tr.d-pad .mgc__t { background: repeating-linear-gradient(
+    135deg, transparent 0 6px, color-mix(in srgb, var(--line) 55%, transparent) 6px 7px); }
+.mgc tr.d-pad .mgc__n { color: transparent; }
 /* Выбранный участок поверх цвета отличия: рамка слева, а не другой фон. */
 .mgc tr.is-here .mgc__t { box-shadow: inset 3px 0 0 var(--accent); }
 .mgc tr.is-here .mgc__n { color: var(--accent); font-weight: 700; }
@@ -1313,7 +1330,7 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   display: inline-block;
 }
 .mgw__legend--diff .d-add { background: color-mix(in srgb, var(--good) 45%, transparent); }
-.mgw__legend--diff .d-del { background: color-mix(in srgb, var(--danger) 45%, transparent); }
+.mgw__legend--diff .d-del { background: color-mix(in srgb, #d98f74 55%, transparent); }
 .mgw__legend--diff .d-chg { background: color-mix(in srgb, #4a7fd4 55%, transparent); }
 
 /*
@@ -1373,3 +1390,26 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 /* Переключатель групп окна разбора: объединение и ошибки проверок. */
 .mgw__groups { display: flex; gap: 6px; margin-bottom: 10px; }
 .mgw__groups .chip { flex: 1; text-align: center; }
+
+/*
+ * Стрелки перехода к правкам — как в окне сравнения конфигуратора.
+ * Стоят в шапке каждой колонки; горячие клавиши те же, что у платформы:
+ * Alt+Shift+P вверх, Alt+Shift+N вниз.
+ */
+.mgw__nav { display: inline-flex; gap: 2px; margin-left: 8px; }
+.mgw__arrow {
+  appearance: none;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.mgw__arrow:hover { border-color: var(--accent-line); color: var(--ink); }
+.mgw__arrow:active { background: var(--surface-2); }

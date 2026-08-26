@@ -51,6 +51,9 @@ const state = {
   paintTimer: null,
   /** Какая группа открыта: `merge` — спорные места, `checks` — ошибки проверок. */
   group: 'merge',
+  /** Участки отличий открытого файла и номер того, на котором стоим. */
+  hunks: [],
+  hunk: -1,
 };
 
 /** Насколько большой текст ещё имеет смысл подсвечивать на лету. */
@@ -67,10 +70,10 @@ export function initMerge(onBack) {
     });
   });
 
-  $$('#mgWork [data-side]').forEach((chip) => {
+  $$('#mgSides [data-side]').forEach((chip) => {
     chip.addEventListener('click', () => {
       state.side = chip.dataset.side;
-      $$('#mgWork [data-side]').forEach((c) => c.classList.toggle('is-active', c === chip));
+      $$('#mgSides [data-side]').forEach((c) => c.classList.toggle('is-active', c === chip));
       renderRight();
     });
   });
@@ -87,6 +90,22 @@ export function initMerge(onBack) {
       $('#mgResultBox').hidden = true;
       loadReview();
     });
+  });
+
+  $$('#mgWork [data-hunk]').forEach((btn) => {
+    btn.addEventListener('click', () => goToHunk(Number(btn.dataset.hunk)));
+  });
+
+  // Горячие клавиши те же, что в конфигураторе: Alt+Shift+P — вверх,
+  // Alt+Shift+N — вниз. Ловятся на документе, но работают только на открытой
+  // странице разбора: в других разделах они ничего не значат.
+  document.addEventListener('keydown', (event) => {
+    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
+    if (document.querySelector('.view.is-active')?.dataset.view !== 'merge') return;
+    const key = (event.code || '').replace('Key', '').toLowerCase();
+    if (key !== 'p' && key !== 'n') return;
+    event.preventDefault();
+    goToHunk(key === 'n' ? 1 : -1);
   });
 
   $('#mgSkip').addEventListener('click', () => decide('skip'));
@@ -308,6 +327,7 @@ async function openFile(key) {
   const file = state.file;
   file.key = key;
   state.place = -1;
+  state.hunk = -1;
   $('#mgEmpty').hidden = true;
   $('#mgPanes').hidden = false;
   $('#mgResultBox').hidden = false;
@@ -385,23 +405,51 @@ function renderRight() {
 
   // У ошибки проверки слева то, что правим (расширение либо модуль базы),
   // справа — код обновлённой конфигурации, ради которого всё и затевалось.
-  if (state.group === 'checks') {
-    $('#mgOursTitle').textContent = file.kind === 'extension' ? 'Расширение' : 'Модуль конфигурации';
-    $('#mgRightTitle').textContent = 'Обновлённая конфигурация';
-    $('#mgSides').hidden = true;
-    renderCode('#mgOurs', file.ours);
-    renderCode('#mgTheirs', file.theirs);
-    if (file.line) markRange('#mgOurs', { start: file.line, end: file.line });
+  const checks = state.group === 'checks';
+  const isBase = !checks && state.side === 'base';
+  const align = file.align?.[isBase ? 'base' : 'theirs'] || { left: [], right: [], marks: [], hunks: [] };
+  state.hunks = align.hunks || [];
+
+  $('#mgSides').hidden = checks;
+  $('#mgOursTitle').textContent = checks
+    ? (file.kind === 'extension' ? 'Расширение' : 'Модуль конфигурации')
+    : 'Основная конфигурация';
+  $('#mgRightTitle').textContent = checks
+    ? 'Обновлённая конфигурация'
+    : (isBase ? 'Текущая поставка' : 'Новая поставка');
+
+  renderCode('#mgOurs', file.ours, align.left, align.marks);
+  renderCode('#mgTheirs', checks ? file.theirs : (isBase ? file.base : file.theirs),
+    align.right, align.marks);
+
+  if (checks && file.line) markRange('#mgOurs', { start: file.line, end: file.line });
+  else if (state.place >= 0) selectPlace(state.place);
+}
+
+/**
+ * Переход к предыдущей или следующей правке — как стрелки в окне сравнения 1С.
+ *
+ * Прокручиваются ОБЕ колонки: строки в них выровнены, и участок в них один
+ * и тот же. Горячие клавиши — те же, что у платформы: Alt+Shift+P и Alt+Shift+N.
+ */
+function goToHunk(step) {
+  const hunks = state.hunks || [];
+  if (!hunks.length) {
+    setNote('Отличий в этом файле нет.');
     return;
   }
+  const current = state.hunk ?? -1;
+  const next = step > 0
+    ? hunks.findIndex((h, i) => i > current)
+    : [...hunks].reduce((found, h, i) => (i < current ? i : found), -1);
+  const at = next === -1 ? (step > 0 ? 0 : hunks.length - 1) : next;
+  state.hunk = at;
 
-  $('#mgSides').hidden = false;
-  const isBase = state.side === 'base';
-  $('#mgOursTitle').textContent = 'Основная конфигурация';
-  $('#mgRightTitle').textContent = isBase ? 'Текущая поставка' : 'Новая поставка';
-  renderCode('#mgOurs', file.ours, isBase ? file.oursMarksBase : file.ours?.marks);
-  renderCode('#mgTheirs', isBase ? file.base : file.theirs);
-  if (state.place >= 0) selectPlace(state.place);
+  for (const selector of ['#mgOurs', '#mgTheirs']) {
+    const row = $(selector).querySelector(`tr[data-r="${hunks[at].row}"]`);
+    if (row) scrollPane($(selector), row.offsetTop);
+  }
+  setNote(`Правка ${at + 1} из ${hunks.length}.`);
 }
 
 /**
@@ -462,14 +510,21 @@ function showWhy(place) {
 // ------------------------------------------------------------- Колонки кода
 
 /**
- * Текст с номерами строк и подсветкой синтаксиса.
+ * Текст с номерами строк, подсветкой синтаксиса и выравниванием.
  *
  * Строки приходят с сервера уже раскрашенными — тем же лексером и теми же
  * классами, что в отчёте о качестве кода (`highlightBslLines`). Держать
  * второй лексер 1С в браузере ради этого было бы расточительством, а видеть
  * код по-разному в двух местах одной программы — небрежностью.
+ *
+ * Раскладка (`plan`) говорит, какая строка файла стоит в какой строке экрана;
+ * ноль означает подпорку — в этой версии строки нет. Благодаря ей общий код
+ * обеих версий лежит на одном уровне, как в окне сравнения конфигуратора.
+ * Строка экрана и строка файла с этого места — разные вещи, поэтому у ряда
+ * два опознавателя: `-r<строка экрана>` для прокрутки вместе и `-l<строка
+ * файла>` для перехода к участку.
  */
-function renderCode(selector, side, marks = null) {
+function renderCode(selector, side, plan = null, marks = null) {
   const box = $(selector);
   if (side == null) {
     box.innerHTML = '<div class="empty">Этой версии нет: '
@@ -480,11 +535,15 @@ function renderCode(selector, side, marks = null) {
     box.innerHTML = '<div class="empty">Двоичный файл — показать его текстом нечем.</div>';
     return;
   }
-  const kinds = marks || side.marks || [];
-  box.innerHTML = `<table class="mgc"><tbody>${side.lines.map((html, i) => {
-    const kind = kinds[i] ? ` class="d-${kinds[i]}"` : '';
-    return `<tr id="${box.id}-l${i + 1}"${kind}><td class="mgc__n">${i + 1}</td>`
-      + `<td class="mgc__t">${html || '&nbsp;'}</td></tr>`;
+
+  const rows = plan && plan.length ? plan : side.lines.map((_, i) => i + 1);
+  const kinds = marks || [];
+  box.innerHTML = `<table class="mgc"><tbody>${rows.map((line, row) => {
+    const kind = line ? (kinds[row] || '') : 'pad';
+    const id = line ? ` id="${box.id}-l${line}"` : '';
+    return `<tr data-r="${row}"${id}${kind ? ` class="d-${kind}"` : ''}>`
+      + `<td class="mgc__n">${line || ''}</td>`
+      + `<td class="mgc__t">${line ? (side.lines[line - 1] || '&nbsp;') : '&nbsp;'}</td></tr>`;
   }).join('')}</tbody></table>`;
 }
 

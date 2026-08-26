@@ -1208,16 +1208,32 @@
           <div class="mgw__pane">
             <div class="mgw__pane-head">
               <span id="mgOursTitle">Основная конфигурация</span>
-              <span class="mgw__pane-note">ваша версия до объединения</span>
+              <span class="mgw__pane-note">
+                ваша версия до объединения
+              <span class="mgw__nav">
+                <button class="mgw__arrow" type="button" data-hunk="-1"
+                        title="Предыдущая правка (Alt+Shift+P)" aria-label="Предыдущая правка">▲</button>
+                <button class="mgw__arrow" type="button" data-hunk="1"
+                        title="Следующая правка (Alt+Shift+N)" aria-label="Следующая правка">▼</button>
+              </span>
+              </span>
             </div>
             <div class="mgw__code" id="mgOurs"></div>
           </div>
           <div class="mgw__pane">
             <div class="mgw__pane-head">
               <span id="mgRightTitle">Новая поставка</span>
-              <span class="mgw__pane-note" id="mgSides">
-                <button class="chip chip--sm is-active" type="button" data-side="theirs">Новая поставка</button>
-                <button class="chip chip--sm" type="button" data-side="base">Текущая поставка</button>
+              <span class="mgw__pane-note">
+                <span id="mgSides">
+                  <button class="chip chip--sm is-active" type="button" data-side="theirs">Новая поставка</button>
+                  <button class="chip chip--sm" type="button" data-side="base">Текущая поставка</button>
+                </span>
+              <span class="mgw__nav">
+                <button class="mgw__arrow" type="button" data-hunk="-1"
+                        title="Предыдущая правка (Alt+Shift+P)" aria-label="Предыдущая правка">▲</button>
+                <button class="mgw__arrow" type="button" data-hunk="1"
+                        title="Следующая правка (Alt+Shift+N)" aria-label="Следующая правка">▼</button>
+              </span>
               </span>
             </div>
             <div class="mgw__code" id="mgTheirs"></div>

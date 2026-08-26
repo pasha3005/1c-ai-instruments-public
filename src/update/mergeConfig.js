@@ -474,11 +474,18 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
  * в тронутом нами свойстве или нет:
  *
  *   не тронуто нами → расхождение внёс ОДИН поставщик → берём его версию;
- *   тронуто нами    → дважды изменённое место → решает человек.
+ *   тронуто нами    → это наша правка, она и остаётся.
  *
- * Без этого разбора весь файл целиком объявлялся спорным, и пользователь
- * получал в ручную работу версию конфигурации и типы реквизитов, которых
- * не касался (живой случай 26.08.2026 на УНФ 3.0.13.374 → 3.0.14.115).
+ * **Дважды изменённым такое место НЕ объявляется.** Чтобы сказать «изменили
+ * оба», нужно знать прежнее значение свойства у поставщика, а его платформа
+ * не печатает и выгрузить конфигурацию поставщика из командной строки нельзя
+ * (`/DumpCfg -ConfigurationType VendorConfiguration` ключ молча игнорирует
+ * и отдаёт основную конфигурацию — сверено побайтно). Значит доказательств
+ * правки поставщика в этом свойстве у нас нет, и требовать решения не за что:
+ * конфигуратор, у которого поставщик перед глазами, в том же месте
+ * дважды изменённым считает только модуль (сверено на УНФ 3.0.13.374 →
+ * 3.0.14.115, 27.08.2026). Наша версия сохраняется, а перечень таких свойств
+ * идёт в отчёт — сверить их вручную можно, а гадать нельзя.
  *
  * Перечня свойств нет — разбирать нечем, и файл честно уходит человеку целиком.
  *
@@ -525,6 +532,8 @@ async function resolveUnknownXml(state, rel) {
     const mine = touchesOurProperty(oursPath, labels) || touchesOurProperty(theirsPath, labels);
 
     if (mine) {
+      // Свойство меняли мы. Правка поставщика здесь не доказана, а наша —
+      // известна точно: она и остаётся.
       out.push(...ours.slice(hunk.baseStart, hunk.baseEnd));
       kept.push({ hunk, where });
     } else {
@@ -539,42 +548,50 @@ async function resolveUnknownXml(state, rel) {
   }
 
   const element = record(state, rel, {
-    action: kept.length ? 'conflict' : 'auto-resolved',
+    action: 'auto-resolved',
     note: kept.length
-      ? 'Часть отличий от новой поставки лежит в свойствах, которые вы изменили относительно '
-        + 'поставщика: их прежнее значение платформа не печатает, поэтому решение за вами. '
+      ? 'Часть отличий от новой поставки лежит в свойствах, которые меняли вы: там оставлена '
+        + 'ваша версия. Прежнее значение поставщика платформа не печатает, поэтому проверить, '
+        + 'менял ли эти свойства и он, нечем — сверьте вручную, если правка поставщика важна. '
         + 'Остальное взято из новой поставки.'
       : 'Ни одно отличие от новой поставки не лежит в свойствах, которые вы меняли, — '
         + 'значит их внёс один поставщик. Взяты его значения.',
   });
-  element.conflictCount = kept.length;
-  element.resolvedCount = taken.length;
-  element.conflicts = kept.slice(0, CONFLICTS_PER_FILE).map(({ hunk, where }) => ({
-    where,
-    oursStartLine: hunk.baseStart + 1,
-    theirsStartLine: hunk.sideStart + 1,
-    base: cut([]),
-    ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
-    theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
-  }));
-  element.resolved = taken.slice(0, RESOLVED_PER_FILE).map(({ hunk, where }) => ({
-    where,
-    how: 'свойство менял только поставщик',
-    why: 'Это свойство вы относительно поставщика не меняли — отчёт сравнения его не называет. '
-      + 'Значит расхождение с новой поставкой внёс он один, и его версия принята.',
-    oursStartLine: hunk.baseStart + 1,
-    theirsStartLine: hunk.sideStart + 1,
-    base: cut([]),
-    ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
-    theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
-    result: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
-  }));
+  element.conflictCount = 0;
+  element.resolvedCount = taken.length + kept.length;
+  element.conflicts = [];
+  element.resolved = [
+    ...kept.slice(0, RESOLVED_PER_FILE).map(({ hunk, where }) => ({
+      where,
+      how: 'ваша правка сохранена',
+      why: 'Это свойство относительно поставщика меняли вы — так говорит отчёт сравнения. '
+        + 'Прежнего значения поставщика он не печатает, поэтому доказать, что поставщик менял '
+        + 'его тоже, нечем. Оставлена ваша версия.',
+      oursStartLine: hunk.baseStart + 1,
+      theirsStartLine: hunk.sideStart + 1,
+      base: cut([]),
+      ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
+      theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+      result: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
+    })),
+    ...taken.slice(0, RESOLVED_PER_FILE).map(({ hunk, where }) => ({
+      where,
+      how: 'свойство менял только поставщик',
+      why: 'Это свойство вы относительно поставщика не меняли — отчёт сравнения его не называет. '
+        + 'Значит расхождение с новой поставкой внёс он один, и его версия принята.',
+      oursStartLine: hunk.baseStart + 1,
+      theirsStartLine: hunk.sideStart + 1,
+      base: cut([]),
+      ours: cut(ours.slice(hunk.baseStart, hunk.baseEnd)),
+      theirs: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+      result: cut(theirs.slice(hunk.sideStart, hunk.sideEnd)),
+    })),
+  ];
 
-  if (kept.length) state.totals.conflicted += 1;
-  state.totals.autoResolved += taken.length;
+  state.totals.autoResolved += taken.length + kept.length;
   element.versions = await saveConflictVersions(state, rel, {
-    kind: kept.length ? 'manual' : 'auto',
-    merged: taken.length ? Buffer.from(joinLines(out, shape), 'utf8') : null,
+    kind: 'auto',
+    merged: Buffer.from(joinLines(out, shape), 'utf8'),
     ours: oursBuf,
   });
   return true;

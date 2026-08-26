@@ -265,10 +265,10 @@ export async function readReviewFile(result, state, rel) {
     text: undefined,
   }));
 
-  // Цвета отличий считаются на паре, которую человек видит рядом: слева всегда
-  // наша версия, справа — та, на которую он переключил правую колонку.
-  const vsTheirs = diffMarks(ours, theirs);
-  const vsBase = diffMarks(ours, base);
+  // Раскладка и цвета считаются на паре, которую человек видит рядом: слева
+  // всегда наша версия, справа — та, на которую он переключил правую колонку.
+  const vsTheirs = alignSides(ours, theirs);
+  const vsBase = alignSides(ours, base);
 
   return {
     ...file,
@@ -276,12 +276,12 @@ export async function readReviewFile(result, state, rel) {
     decision: state.files?.[rel] || null,
     // Читаемые колонки уходят уже подсвеченными: раскрашивать их в браузере
     // значило бы держать там второй лексер 1С.
-    base: renderSide(base, ext, vsBase.right),
-    theirs: renderSide(theirs, ext, vsTheirs.right),
-    ours: renderSide(ours, ext, vsTheirs.left),
-    // Левая колонка красится по той версии, что стоит справа: переключив
-    // правую на текущую поставку, человек ждёт отличий именно от неё.
-    oursMarksBase: vsBase.left,
+    base: renderSide(base, ext),
+    theirs: renderSide(theirs, ext),
+    ours: renderSide(ours, ext),
+    // Раскладка своя у каждой пары: переключив правую колонку на текущую
+    // поставку, человек ждёт выравнивания и отличий именно от неё.
+    align: { theirs: vsTheirs, base: vsBase },
     // Автоматический результат целиком не отдаётся — возврат к нему делает
     // сервер. Окну достаточно знать, есть ли к чему возвращаться.
     hasAuto: auto != null,
@@ -314,10 +314,10 @@ const HIGHLIGHT_LIMIT = 2_000_000;
  * (`highlightBslLines`). Требование пользователя 26.08.2026: код всегда
  * оформляется одинаково, где бы он ни показывался.
  */
-function renderSide(text, ext, marks = []) {
+function renderSide(text, ext) {
   if (text == null) return null;
   if (isBinary(text)) return { lines: [], binary: true };
-  return { lines: highlightLines(text, ext), marks };
+  return { lines: highlightLines(text, ext) };
 }
 
 /** Подсветка по виду файла. Слишком большой файл отдаётся без раскраски. */
@@ -330,33 +330,65 @@ export function highlightLines(text, ext) {
 }
 
 /**
- * Цвета отличий — как в окне сравнения конфигуратора.
+ * Раскладка двух версий строка в строку — как в окне сравнения конфигуратора.
  *
- * Зелёным то, что в правой версии появилось; красным то, что из неё пропало;
- * синим — строки, которые изменились. Считается обычным построчным сравнением
- * (тот же диф Майерса, что и в объединении), поэтому цвет стоит ровно там, где
- * стороны действительно разошлись, а не «по номеру строки».
+ * Там, где у одной стороны строк больше, у другой встают пустые строки-подпорки,
+ * и общий код обеих версий оказывается на одном уровне. Без этого достаточно
+ * одной процедуры, добавленной поставщиком выше по модулю, чтобы весь
+ * остальной код в колонках разъехался, и сравнивать построчно стало нельзя.
  *
- * @returns {{left: string[], right: string[]}} по метке на строку: '', 'add',
- *   'del' либо 'chg'. Индекс — номер строки минус один.
+ * Возвращаются НОМЕРА строк, а не сам текст: строки уже подсвечены и уходят
+ * отдельно, а гонять их по сети во второй раз ради выравнивания незачем.
+ * Ноль означает подпорку — в этой версии строки нет.
+ *
+ * @returns {{left: number[], right: number[], marks: string[],
+ *            hunks: {row: number, kind: string}[]}}
  */
-export function diffMarks(leftText, rightText) {
-  if (leftText == null || rightText == null) return { left: [], right: [] };
+export function alignSides(leftText, rightText) {
+  const empty = { left: [], right: [], marks: [], hunks: [] };
+  if (leftText == null || rightText == null) return empty;
+
   const left = splitLines(leftText).lines;
   const right = splitLines(rightText).lines;
-  const marks = { left: new Array(left.length).fill(''), right: new Array(right.length).fill('') };
+  const hunks = changedHunks(left, right) || [];
 
-  const hunks = changedHunks(left, right);
-  if (!hunks) return marks;
+  const rows = { left: [], right: [], marks: [], hunks: [] };
+  let l = 0;
+  let r = 0;
+
+  const same = (count) => {
+    for (let i = 0; i < count; i += 1) {
+      rows.left.push(l + i + 1);
+      rows.right.push(r + i + 1);
+      rows.marks.push('');
+    }
+    l += count;
+    r += count;
+  };
 
   for (const hunk of hunks) {
+    same(hunk.baseStart - l);
+
     const removed = hunk.baseEnd - hunk.baseStart;
     const added = hunk.sideEnd - hunk.sideStart;
     const both = removed > 0 && added > 0;
-    for (let i = hunk.baseStart; i < hunk.baseEnd; i += 1) marks.left[i] = both ? 'chg' : 'del';
-    for (let i = hunk.sideStart; i < hunk.sideEnd; i += 1) marks.right[i] = both ? 'chg' : 'add';
+    rows.hunks.push({ row: rows.marks.length, kind: both ? 'chg' : added ? 'add' : 'del' });
+
+    // Строк в участке столько, сколько их у длинной стороны; короткая
+    // добирается подпорками.
+    for (let i = 0; i < Math.max(removed, added); i += 1) {
+      const hasLeft = i < removed;
+      const hasRight = i < added;
+      rows.left.push(hasLeft ? hunk.baseStart + i + 1 : 0);
+      rows.right.push(hasRight ? hunk.sideStart + i + 1 : 0);
+      rows.marks.push(both ? 'chg' : hasRight ? 'add' : 'del');
+    }
+    l = hunk.baseEnd;
+    r = hunk.sideEnd;
   }
-  return marks;
+  same(Math.max(left.length - l, right.length - r));
+
+  return rows;
 }
 
 function escapeHtml(value) {
@@ -376,7 +408,9 @@ function escapeHtml(value) {
  */
 export function locate(text, fragment, hintLine = 0) {
   if (text == null) return null;
-  const needle = (fragment || []).map((l) => String(l).trim()).filter((l, i, a) => !(i === a.length - 1 && !l));
+  const needle = (fragment || [])
+    .map((l) => String(l).trim())
+    .filter((l, i, a) => !(i === a.length - 1 && !l));
   if (!needle.length) return hintLine ? { start: hintLine, end: hintLine, empty: true } : null;
 
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n').map((l) => l.trim());

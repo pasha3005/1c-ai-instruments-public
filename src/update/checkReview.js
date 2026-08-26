@@ -24,7 +24,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { pathExists } from '../util/fsx.js';
 import { kindByDir, tagByRu } from '../parse/metadataKinds.js';
-import { highlightLines, diffMarks } from './mergeReview.js';
+import { highlightLines, alignSides } from './mergeReview.js';
 
 /**
  * Место ошибки в журнале платформы: `{ОбщийМодуль.Имя.Модуль(25,3)}`.
@@ -224,16 +224,17 @@ export async function readCheckItem(checks, state, id) {
   const current = await readSafe(own);
   const otherText = await readSafe(other);
   // Колонки приходят в том же виде, что у спорных мест: подсвеченные строки
-  // и цвета отличий. Окно тогда одно на обе группы, а не два похожих.
-  const marks = diffMarks(current, otherText);
+  // и раскладка строка в строку. Окно тогда одно на обе группы, а не два похожих.
+  const align = alignSides(current, otherText);
   const ext = path.extname(own || item.rel || '.bsl').toLowerCase();
 
   return {
     ...item,
     decision: (state.checks || {})[id] || null,
     current,
-    ours: current == null ? null : { lines: highlightLines(current, ext), marks: marks.left },
-    theirs: otherText == null ? null : { lines: highlightLines(otherText, ext), marks: marks.right },
+    ours: current == null ? null : { lines: highlightLines(current, ext) },
+    theirs: otherText == null ? null : { lines: highlightLines(otherText, ext) },
+    align: { theirs: align, base: align },
     base: null,
     hasAuto: false,
     ownPath: own,
