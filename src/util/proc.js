@@ -5,6 +5,13 @@
  * Утилиты 1С под Windows пишут в stdout в кодировке консоли (обычно CP866/CP1251),
  * а ibcmd — в UTF-8. Поэтому вывод собирается в Buffer и декодируется эвристикой
  * из fsx.decodeBuffer().
+ *
+ * **Никакой процесс не имеет права ждать ввода.** Стандартный ввод закрыт
+ * (`stdio: ['ignore', …]`), а если утилита всё-таки спрашивает — например,
+ * ibcmd печатает «Пароль для 'Иванов':», когда переданный пароль ей не подошёл, —
+ * процесс снимается сразу, с понятной ошибкой. Прежде такой запрос вешал прогон
+ * до таймаута: на шкале оставалась строка «Пароль для '…':», и ничего больше
+ * не происходило (живой случай 27.08.2026).
  */
 
 import { spawn } from 'node:child_process';
@@ -14,14 +21,27 @@ import { currentSignal, CancelledError } from './cancel.js';
 
 const log = createLogger('proc');
 
+/**
+ * Запрос пароля в выводе утилиты — признак того, что ждать нечего.
+ *
+ * ibcmd спрашивает пароль, когда пользователь указан, а пароль не передан либо
+ * НЕ ПОДОШЁЛ (проверено на 8.5.1.1150: с неверным `--password` он молча
+ * переспрашивает). При закрытом вводе он получит пустую строку и может войти
+ * под пустым паролем — то есть не тем, что задал человек. Поэтому запрос
+ * перехватывается и считается ошибкой, а не «ну войдём как-нибудь».
+ */
+const PASSWORD_PROMPT = /(?:Пароль для|Password for)\s*'([^']*)'/i;
+
 export class ProcessError extends Error {
-  constructor(message, { code, stdout, stderr, command }) {
+  constructor(message, { code, stdout, stderr, command, passwordRequired = false }) {
     super(message);
     this.name = 'ProcessError';
     this.code = code;
     this.stdout = stdout;
     this.stderr = stderr;
     this.command = command;
+    /** Утилита спросила пароль: дальше идти незачем, вход в базу не удался. */
+    this.passwordRequired = passwordRequired;
   }
 }
 
@@ -65,6 +85,9 @@ export function run(file, args, options = {}) {
         cwd,
         env: env ? { ...process.env, ...env } : process.env,
         windowsHide: true,
+        // Ввод закрыт: процессу, который спросит пароль, ответить некому,
+        // и висеть он не должен.
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
       reject(new ProcessError(`Не удалось запустить процесс: ${err.message}`, {
@@ -80,6 +103,19 @@ export function run(file, args, options = {}) {
     const errChunks = [];
     let timedOut = false;
     let cancelled = false;
+    /** Имя пользователя, у которого утилита спросила пароль. */
+    let askedPasswordFor = null;
+
+    // Запрос пароля означает, что переданный пароль не подошёл (или его нет).
+    // Ждать нечего: снимаем процесс сразу, чтобы прогон не стоял до таймаута.
+    const watchPrompt = (text) => {
+      if (askedPasswordFor !== null) return;
+      const found = PASSWORD_PROMPT.exec(text);
+      if (!found) return;
+      askedPasswordFor = found[1] || '';
+      log.warn(`Утилита запросила пароль пользователя «${askedPasswordFor}» — снимаем процесс`);
+      killTree(child);
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -96,9 +132,14 @@ export function run(file, args, options = {}) {
 
     child.stdout?.on('data', (chunk) => {
       outChunks.push(chunk);
-      if (onStdout) onStdout(decodeBuffer(chunk));
+      const text = decodeBuffer(chunk);
+      watchPrompt(text);
+      if (onStdout) onStdout(text);
     });
-    child.stderr?.on('data', (chunk) => errChunks.push(chunk));
+    child.stderr?.on('data', (chunk) => {
+      errChunks.push(chunk);
+      watchPrompt(decodeBuffer(chunk));
+    });
 
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -127,6 +168,15 @@ export function run(file, args, options = {}) {
       const elapsed = Date.now() - started;
       log.debug(`exit code=${code} in ${elapsed}ms`);
 
+      if (askedPasswordFor !== null) {
+        reject(new ProcessError(
+          `Платформа запросила пароль пользователя «${askedPasswordFor}»: переданный пароль `
+          + 'ей не подошёл. Проверьте имя пользователя и пароль на форме — без них дальше '
+          + 'не пройдёт ни одна команда.',
+          { code: -3, stdout, stderr, command: file, passwordRequired: true },
+        ));
+        return;
+      }
       if (timedOut) {
         reject(new ProcessError(
           `Превышен таймаут выполнения (${Math.round(timeout / 1000)} с)`,

@@ -378,6 +378,17 @@ export function classifyFailure(designerLog) {
     };
   }
 
+  // Вход в базу не удался. Это не про поставщика вовсе: с таким ответом
+  // не пройдёт ни одна следующая команда, и продолжать прогон бессмысленно.
+  if (/пользователь ИБ не идентифицирован|идентификация пользователя не выполнена|пароль/i.test(text)) {
+    return {
+      authFailed: true,
+      reason: 'войти в информационную базу не удалось: платформа не приняла имя пользователя '
+        + 'или пароль. Проверьте их на форме — теми же значениями программа будет выгружать '
+        + 'конфигурацию и записывать результат.',
+    };
+  }
+
   if (/требуется более новая версия платформы/i.test(text)) {
     return {
       needsNewerPlatform: true,
@@ -442,7 +453,12 @@ export async function vendorConfigPresence({ platform, conn, workDir, user, pass
     ], { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
   } catch (err) {
     rethrowIfCancelled(err);
-    return { present: null, log: err.message };
+    // Утилита спросила пароль — значит вход не удался, и это надо сказать
+    // прямо, а не прятать за «ответ платформы неясен».
+    if (err.passwordRequired) {
+      return { present: null, authFailed: true, log: err.message, reason: err.message };
+    }
+    return { present: null, log: err.message, reason: err.message };
   }
 
   // Отчёт всё-таки построился — значит имя не понадобилось и поставщик есть.
@@ -455,7 +471,13 @@ export async function vendorConfigPresence({ platform, conn, workDir, user, pass
   const verdict = classifyFailure(text);
   if (verdict.nameRequired) return { present: true, log: text };
   if (verdict.vendorUnavailable) return { present: false, log: text };
-  return { present: null, log: text };
+  return {
+    present: null,
+    authFailed: Boolean(verdict.authFailed),
+    needsNewerPlatform: Boolean(verdict.needsNewerPlatform),
+    reason: verdict.reason,
+    log: text,
+  };
 }
 
 /** Русское слово отчёта → внутреннее обозначение вида отличия. */

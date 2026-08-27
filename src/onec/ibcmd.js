@@ -18,14 +18,26 @@ import { createLogger } from '../util/logger.js';
 
 const log = createLogger('ibcmd');
 
-/** Базовые аргументы адресации информационной базы. */
-function targetArgs(conn, { user, password } = {}) {
+/**
+ * Базовые аргументы адресации информационной базы.
+ *
+ * Экспортируется ради теста: пропавший ключ `--password` превращает любую
+ * команду в зависание на запросе пароля, а увидеть это можно только на живой
+ * базе с непустым паролем.
+ */
+export function targetArgs(conn, { user, password } = {}) {
   if (conn.kind !== 'file') {
     throw new Error('ibcmd поддерживает только файловые информационные базы');
   }
   const args = [`--db-path=${conn.dbPath}`];
-  if (user) args.push(`--user=${user}`);
-  if (password) args.push(`--password=${password}`);
+  if (user) {
+    args.push(`--user=${user}`);
+    // Пароль передаётся ВСЕГДА, даже пустой. Без ключа `--password` ibcmd
+    // спрашивает его в консоли («Пароль для 'Иванов':») и ждёт ввода —
+    // прогон вставал до таймаута (живой случай 27.08.2026). Пустое значение
+    // платформа принимает как пустой пароль и проверяет его честно.
+    args.push(`--password=${password || ''}`);
+  }
   return args;
 }
 
