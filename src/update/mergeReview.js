@@ -24,7 +24,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { VERSION_FILES } from './mergeConfig.js';
+import { VERSION_FILES, AUTO_ACTIONS } from './mergeConfig.js';
 import { changedHunks, splitLines } from './diff3.js';
 import { pathExists } from '../util/fsx.js';
 import { highlightBslLines, highlightXmlLines } from '../report/bslHighlight.js';
@@ -46,6 +46,7 @@ const ACTION_RU = {
   'manual-deleted-by-us': 'удалено вами, изменено поставщиком',
   failed: 'файл не объединён',
   'auto-resolved': 'дважды изменено — разобрано программой',
+  'auto-by-property': 'правки не пересеклись — разобрано программой',
 };
 
 /** Пустое состояние разбора. */
@@ -69,7 +70,7 @@ export function reviewFiles(result) {
   for (const object of groups) {
     for (const element of object.elements || []) {
       const manual = MANUAL_ACTIONS.has(element.action);
-      const auto = element.action === 'auto-resolved' || (element.resolvedCount || 0) > 0;
+      const auto = AUTO_ACTIONS.has(element.action) || (element.resolvedCount || 0) > 0;
       if (!manual && !auto) continue;
       if (seen.has(element.rel)) continue;
       seen.add(element.rel);

@@ -167,7 +167,7 @@ function strip(value) {
  * в исходном виде, вместе с кавычками: файл потом собирается обратно, и любая
  * «нормализация» здесь означала бы изменение файла.
  */
-function splitFields(body) {
+export function splitFields(body) {
   const fields = [];
   let current = '';
   let quoted = false;

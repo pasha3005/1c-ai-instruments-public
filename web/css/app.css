@@ -1303,16 +1303,16 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  */
 /*
  * Три цвета, и ровно те, что у конфигуратора: зелёный — появилось справа,
- * красный — пропало справа, синий — изменено. Красный взят пастельный
- * (у платформы это персиковый `#FBE3D6`, здесь его тёмный родственник),
- * а не сигнальный `--danger`: сигнальным красным подсвечивают ошибку,
- * а тут просто «этой строки в правой версии нет».
+ * красный — пропало справа, синий — изменено. Красный именно красный,
+ * а не персиковый: разбавленный оранжевым он читался коричневым (замечено
+ * пользователем 27.08.2026). Сигнальный `--danger` всё равно не берём —
+ * им подсвечивают ошибку, а тут просто «этой строки в правой версии нет».
  */
 .mgc tr.d-add  .mgc__t { background: color-mix(in srgb, var(--good) 20%, transparent); }
-.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, #d98f74 22%, transparent); }
+.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, #cf4a52 22%, transparent); }
 .mgc tr.d-chg  .mgc__t { background: color-mix(in srgb, #4a7fd4 26%, transparent); }
 .mgc tr.d-add  .mgc__n { color: var(--good); }
-.mgc tr.d-del  .mgc__n { color: #e0a888; }
+.mgc tr.d-del  .mgc__n { color: #ef8b91; }
 .mgc tr.d-chg  .mgc__n { color: #79a6ff; }
 
 /* Строка-заполнитель: в этой версии её нет вовсе, кода в ней тоже нет. */
@@ -1330,7 +1330,7 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   display: inline-block;
 }
 .mgw__legend--diff .d-add { background: color-mix(in srgb, var(--good) 45%, transparent); }
-.mgw__legend--diff .d-del { background: color-mix(in srgb, #d98f74 55%, transparent); }
+.mgw__legend--diff .d-del { background: color-mix(in srgb, #cf4a52 55%, transparent); }
 .mgw__legend--diff .d-chg { background: color-mix(in srgb, #4a7fd4 55%, transparent); }
 
 /*

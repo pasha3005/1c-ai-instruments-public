@@ -22,6 +22,7 @@ import { LAYOUT_SCRIPT } from './layoutScript.js';
 import { codeBlock, dedent } from './bslHighlight.js';
 import { esc, plural, signature, formatDate, formatDateTime } from './ui.js';
 import { formatNumber } from '../analyze/dataVolume.js';
+import { humanSize } from '../util/fsx.js';
 import { APP } from '../config.js';
 
 /**
@@ -312,6 +313,21 @@ function renderSummary(result) {
  * и будет считать, что код объединён построчно, когда этого не было.
  */
 function renderModeNote(result) {
+  if (result.merge?.mode === 'three-way' && result.parentCf) {
+    const cf = result.parentCf;
+    return `
+  <div class="callout callout--good">
+    <div class="callout__title">Полное трёхстороннее объединение по настоящей поставке из выгрузки</div>
+    Файл .cf текущей поставки нашёлся в самой выгрузке вашей конфигурации:
+    <code>Ext\\ParentConfigurations\\${esc(cf.name || '')}.cf</code>${cf.size
+      ? `, ${esc(humanSize(cf.size))}` : ''}${cf.version ? `, релиз ${esc(cf.version)}` : ''}.
+    Платформа кладёт его туда при каждой выгрузке конфигурации, стоящей на поддержке, — сохранять
+    поставку в файл руками не нужно. По каждому файлу известно, кто внёс каждое отличие: правки
+    поставщика применены автоматически, ваши сохранены, а участки, изменённые обеими сторонами,
+    вынесены в раздел «Требуют вашего решения» — ровно так же, как это делает конфигуратор.
+  </div>`;
+  }
+
   if (result.merge?.mode === 'three-way') {
     return `
   <div class="callout callout--good">
@@ -346,7 +362,11 @@ function renderModeNote(result) {
     ${stats.unknown ? `<br>Прежнее значение ${plural(stats.unknown, 'файла', 'файлов', 'файлов')}
     восстановить нельзя: отчёт сравнения называет изменённое свойство, но не печатает
     прежнее значение. Такие места оставлены вашими и показаны в разделе «Требуют вашего
-    решения» отличиями от новой поставки.` : ''}
+    решения» отличиями от новой поставки.${(stats.unknownFiles || []).length
+    ? ` Это ${(stats.unknownFiles || []).slice(0, 20).map((rel) => `<span class="mono">${esc(rel)}</span>`).join(', ')}${
+      stats.unknown > Math.min(20, (stats.unknownFiles || []).length)
+        ? ` и ещё ${formatNumber(stats.unknown - Math.min(20, stats.unknownFiles.length))}` : ''}.`
+    : ''}` : ''}
   </div>`;
   }
 

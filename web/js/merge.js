@@ -570,8 +570,9 @@ function showWhy(place) {
 function renderCode(selector, side, plan = null, marks = null) {
   const box = $(selector);
   if (side == null) {
-    box.innerHTML = '<div class="empty">Этой версии нет: '
-      + 'платформа не печатает прежнее значение поставщика, а файл .cf не указан.</div>';
+    box.innerHTML = '<div class="empty">Этой версии нет: текущая поставка не нашлась '
+      + 'ни в выгрузке (Ext\\ParentConfigurations), ни на форме, а прежнее значение свойства '
+      + 'платформа в отчёте сравнения не печатает.</div>';
     return;
   }
   if (side.binary) {

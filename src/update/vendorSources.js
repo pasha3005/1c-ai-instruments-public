@@ -33,9 +33,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { splitLines, joinLines, changedHunks } from './diff3.js';
 import { dumpInfoKey, describeDumpPath, childObjectLine, ROOT_KEY } from './dumpKeys.js';
+import { isParentCfPath } from './parentCf.js';
 import { createLogger } from '../util/logger.js';
 
 const log = createLogger('vendor-restore');
+
+/** Сколько «неизвестных» файлов называть поимённо в итогах восстановления. */
+const UNKNOWN_LISTED = 50;
 
 /**
  * Свои файлы конфигурации, о которых отчёт сравнения судить не даёт.
@@ -134,6 +138,15 @@ export async function restoreVendorTree({
   for (const [rel, size] of mainFiles) {
     seen += 1;
     if (seen % 2000 === 0) onProgress?.(`восстановлено файлов поставки: ${seen} из ${mainFiles.size}`);
+
+    // Конфигурация поставщика, лежащая рядом с настройкой поддержки. В дерево
+    // старой поставки ей нельзя: у поставщика такого файла нет, а объединение,
+    // увидев его в базе и не увидев в новой поставке, сочло бы файл удалённым
+    // поставщиком. Заодно он и не читается — на УНФ это 1,13 ГБ.
+    if (isParentCfPath(rel)) {
+      stats.ourOwn += 1;
+      continue;
+    }
 
     const entry = describeDumpPath(rel);
     const objectKey = entry.objectKey;
@@ -245,6 +258,11 @@ export async function restoreVendorTree({
     restored.set(rel, await targetTree.read(rel));
     stats.deletedByUs += 1;
   }
+
+  // «Неизвестных» файлов немного, и число само по себе ничего не говорит:
+  // читатель вправе знать, о каких именно местах речь. Перечень ограничен —
+  // на сильно доработанной конфигурации таких файлов могут быть сотни.
+  stats.unknownFiles = [...unknown].slice(0, UNKNOWN_LISTED);
 
   log.info(
     `Старая поставка восстановлена из базы: совпадает ${stats.sameAsOurs}, `

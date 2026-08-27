@@ -45,6 +45,7 @@ import { autoResolve } from './autoResolve.js';
 import { describeDumpPath, objectTitle, childObjectLine, ROOT_KEY } from './dumpKeys.js';
 import { buildXmlOutline, describeXmlRange } from './xmlOutline.js';
 import { mergeSupportTables } from './supportTable.js';
+import { isParentCfPath, SUPPORT_FILE } from './parentCf.js';
 import { tokenize } from '../analyze/bsl/lexer.js';
 import { analyzeStructure, findRoutineAtLine } from '../analyze/bsl/structure.js';
 import { ensureDir, pathExists, readText } from '../util/fsx.js';
@@ -87,15 +88,6 @@ const ELEMENTS_PER_OBJECT = 50;
 const OBJECTS_PER_GROUP = 500;
 /** Каталог с тремя версиями каждого конфликтного файла. */
 export const CONFLICT_DIR = 'Конфликты';
-
-/**
- * Файл, в котором лежит вся настройка поддержки.
- *
- * Имя обманчиво: там не только цепочка родительских конфигураций, но и правило
- * поддержки КАЖДОГО объекта, и флаги самой конфигурации — включая «возможность
- * изменения». Подробности разбора — `supportTable.js`.
- */
-const SUPPORT_FILE = 'Ext/ParentConfigurations.bin';
 
 /**
  * Имена файлов внутри каталога версий.
@@ -231,6 +223,24 @@ async function mergeOne(state, rel) {
   // не наследуется от поставки ни при каких условиях.
   if (rel === SUPPORT_FILE) {
     await mergeSupport(state, rel, { inMain, inTarget });
+    return;
+  }
+
+  // Конфигурация поставщика, лежащая в выгрузке рядом с настройкой поддержки.
+  // Она всегда наша и всегда остаётся на месте: в новой поставке такого файла
+  // нет вовсе, и по общим правилам выходило «поставщик удалил» — файл стирался,
+  // а загрузка потом падала с «Файл не обнаружен
+  // …\Ext\ParentConfigurations\<Имя>.cf» (живой случай 27.08.2026). Читать его
+  // тоже нельзя: на УНФ это 1,13 ГБ, на ERP больше.
+  if (isParentCfPath(rel)) {
+    if (inMain) {
+      state.totals.ourOwn += 1;
+      record(state, rel, {
+        action: 'kept-support',
+        note: 'Конфигурация поставщика из настройки поддержки: файл оставлен вашим. '
+          + 'Без него платформа отказывается загружать конфигурацию из файлов.',
+      });
+    }
     return;
   }
 
@@ -581,7 +591,10 @@ async function resolveUnknownXml(state, rel) {
   }
 
   const element = record(state, rel, {
-    action: 'auto-resolved',
+    // Не «дважды изменено»: сюда файл попадает ровно тогда, когда ни одно
+    // свойство не тронуто обеими сторонами — пересечение проверено выше
+    // и оказалось пустым. Правки просто легли врозь.
+    action: 'auto-by-property',
     note: kept.length
       ? (state.aheadKnown
         ? 'Часть отличий от новой поставки лежит в свойствах, которые меняли вы: там оставлена '
@@ -1232,13 +1245,24 @@ function record(state, rel, data) {
   // Перечень файлов по объекту ограничен, а вот участки, требующие решения,
   // не теряются никогда: они и есть смысл всей операции.
   if (object.elements.length >= ELEMENTS_PER_OBJECT
-    && !CONFLICT_ACTIONS.has(element.action) && element.action !== 'auto-resolved') {
+    && !CONFLICT_ACTIONS.has(element.action) && !AUTO_ACTIONS.has(element.action)) {
     object.elementsTruncated += 1;
     return element;
   }
   object.elements.push(element);
   return element;
 }
+
+/**
+ * Действия, при которых файл разобрала сама программа.
+ *
+ * Их два, и это разные вещи. 'auto-resolved' — участок, который правили ОБЕ
+ * стороны, сведён трёхсторонним объединением. 'auto-by-property' — правки
+ * сторон в файл легли врозь: наши свойства остались нашими, остальное взято
+ * из новой поставки, и дважды изменённого в файле нет вовсе. Называть второе
+ * «дважды изменено» — неправда, на что и указал пользователь 27.08.2026.
+ */
+export const AUTO_ACTIONS = new Set(['auto-resolved', 'auto-by-property']);
 
 /** Группы результата в том порядке, в котором их читают. */
 const CONFLICT_ACTIONS = new Set([
@@ -1295,7 +1319,7 @@ function buildResult(state) {
 
 function objectStatus(object) {
   if (object.elements.some((e) => CONFLICT_ACTIONS.has(e.action))) return 'manual';
-  if (object.elements.some((e) => e.action === 'auto-resolved')) return 'auto';
+  if (object.elements.some((e) => AUTO_ACTIONS.has(e.action))) return 'auto';
   if (object.elements.some((e) => e.action === 'merged' || e.action === 'from-vendor')) return 'applied';
   if (object.elements.every((e) => e.action === 'added-by-vendor')) return 'added';
   if (object.elements.every((e) => e.action === 'removed-by-vendor')) return 'removed';

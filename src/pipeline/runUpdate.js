@@ -58,10 +58,12 @@ import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
 import { unresolvedCount, unresolvedByKind } from '../update/mergeReview.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
+import { findParentCf } from '../update/parentCf.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
 import { mergeExtensionSources } from '../update/extensionMerge.js';
 import { checksLeft, buildCheckItems } from '../update/checkReview.js';
 import { renderUpdateReport } from '../report/updateReport.js';
+import { plural } from '../report/ui.js';
 import * as store from '../store/updateStore.js';
 import { ensureDir, pathExists, rmrf, dirSize, humanSize } from '../util/fsx.js';
 import { removeUpdateOwnEntries } from '../util/workDir.js';
@@ -168,6 +170,23 @@ async function runPipeline({ updateId, input, progress }) {
     progress.done('export-main',
       `${humanSize(await dirSize(exported.dir))}, ${mainProps.name || 'конфигурация'} ${mainProps.version || ''}`.trim());
 
+    // Текущая поставка чаще всего лежит прямо здесь же: выгружая конфигурацию
+    // на поддержке, платформа кладёт .cf поставщика рядом с её настройкой
+    // (`Ext/ParentConfigurations/<Имя>.cf`). Тогда восстанавливать поставку
+    // по отчёту сравнения не нужно вовсе — она у нас целиком и настоящая.
+    const parentCf = vendorGiven ? null : await findParentCf(exported.dir);
+    if (parentCf?.ok) {
+      progress.message(
+        `Текущая конфигурация поставщика найдена в самой выгрузке: ${path.basename(parentCf.file)}, `
+        + `${humanSize(parentCf.size)}${parentCf.version ? `, релиз ${parentCf.version}` : ''}. `
+        + 'Платформа кладёт её рядом с настройкой поддержки при каждой выгрузке конфигурации '
+        + 'в файлы, поэтому объединение пойдёт по настоящей поставке, а не по восстановленной '
+        + 'из отчёта сравнения.',
+      );
+    } else if (parentCf) {
+      log.info(`Конфигурация поставщика в выгрузке не найдена: ${parentCf.reason}`);
+    }
+
     // ---------- 6. Новая поставка ----------
     // Она готовится ПЕРЕД старой: восстановление старой поставки из базы
     // заглядывает в новую, чтобы заполнить строки, которые интегратор удалил, —
@@ -189,7 +208,7 @@ async function runPipeline({ updateId, input, progress }) {
     // а предполагать.
     startStage('vendor-ahead', 'Сравнение конфигурации поставщика с новой поставкой');
     const ahead = await vendorAheadChanges({
-      input, platform, conn, workRoot, mainProps, progress,
+      input, platform, conn, workRoot, mainProps, progress, parentCf,
     });
 
     // ---------- 8. Текущая конфигурация поставщика ----------
@@ -200,7 +219,24 @@ async function runPipeline({ updateId, input, progress }) {
       totalEntries: 0,
       onProgress: (text) => progress.update('vendor-old', text),
     };
-    let vendor = await prepareVendorConfig({ vendorPath: input.vendorConfigPath, ...vendorCtx });
+    let vendor = await prepareVendorConfig({
+      vendorPath: input.vendorConfigPath || (parentCf?.ok ? parentCf.file : ''),
+      ...vendorCtx,
+    });
+
+    // Поставка из выгрузки не развернулась (не хватило места, платформа
+    // отказала). Прогон из-за этого не теряется: поставщика по-прежнему видно
+    // из самой базы, и дальше работает восстановление по отчёту сравнения —
+    // ровно так, как до появления этого источника.
+    if (!vendor.available && parentCf?.ok && !String(input.vendorConfigPath || '').trim()) {
+      progress.warn('vendor-old', `поставку из выгрузки развернуть не удалось: ${vendor.reason}`);
+      warnings.push(
+        `Конфигурацию поставщика, найденную в выгрузке (${path.basename(parentCf.file)}), развернуть `
+        + `не удалось: ${vendor.reason} Текущая поставка восстановлена из самой базы по отчёту `
+        + 'сравнения — по свойствам объектов она менее точна.',
+      );
+      vendor = await prepareVendorConfig({ vendorPath: '', ...vendorCtx });
+    }
 
     // Платформа не отдала поставщика. Прежде чем сдаться и просить файл, ищем
     // дистрибутив текущего релиза сами: это та же поставка, и у того, кто эту
@@ -255,6 +291,19 @@ async function runPipeline({ updateId, input, progress }) {
         target: targetProps,
       },
       vendorSource: vendor.source,
+      // Текущая поставка, взятая из самой выгрузки: её никто не указывал
+      // и не выгружал руками — платформа положила .cf рядом с настройкой
+      // поддержки. Отчёт обязан говорить об этом прямо, иначе выйдет, что
+      // файл «был предоставлен».
+      parentCf: !vendorGiven && parentCf?.ok && vendor.source === 'cf'
+        ? {
+          name: parentCf.name,
+          version: parentCf.version,
+          vendor: parentCf.vendor,
+          size: parentCf.size,
+          file: parentCf.file,
+        }
+        : null,
       restore: restoreStats,
       // Итог второго сравнения — что поставщик изменил сам. null означает,
       // что сравнения не было: указан .cf, снят флаг либо платформа отказала.
@@ -953,9 +1002,18 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
  *  * новая поставка задана не файлом, а каталогом выгрузки: второй стороной
  *    сравнения платформа принимает только `.cf`.
  */
-async function vendorAheadChanges({ input, platform, conn, workRoot, mainProps, progress }) {
+async function vendorAheadChanges({
+  input, platform, conn, workRoot, mainProps, progress, parentCf = null,
+}) {
   if (String(input.vendorConfigPath || '').trim()) {
     progress.skip('vendor-ahead', 'не нужно: текущая поставка указана файлом');
+    return null;
+  }
+
+  // Поставка есть целиком — прежние значения свойств известны точно, и второе
+  // сравнение доказывать больше нечего.
+  if (parentCf?.ok) {
+    progress.skip('vendor-ahead', 'не нужно: текущая поставка есть в выгрузке');
     return null;
   }
 
@@ -1048,10 +1106,19 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
       : ''),
   );
   if (stats.unknown) {
+    // Число без имён ничего не объясняет: «неизвестно 3» читатель прочтёт как
+    // «программа чего-то не поняла». Называем файлы поимённо — по ним потом
+    // и принимается решение.
+    const listed = (stats.unknownFiles || []).slice(0, 10);
     warnings.push(
-      `По ${stats.unknown} файлам прежнее значение поставщика восстановить нельзя: отчёт сравнения `
-      + 'называет изменённое свойство, но не печатает его прежнее значение. Такие места оставлены '
-      + 'вашими и показаны в отчёте отличиями от новой поставки.',
+      `По ${plural(stats.unknown, 'файлу', 'файлам', 'файлам')} прежнее значение `
+      + 'поставщика восстановить нельзя: отчёт сравнения называет изменённое свойство, но не '
+      + 'печатает его прежнее значение. Такие места оставлены вашими и показаны в отчёте '
+      + 'отличиями от новой поставки.'
+      + (listed.length
+        ? ` Это ${listed.join(', ')}${stats.unknown > listed.length
+          ? ` и ещё ${stats.unknown - listed.length}` : ''}.`
+        : ''),
     );
   }
 
