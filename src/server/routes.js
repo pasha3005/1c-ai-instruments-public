@@ -668,9 +668,6 @@ export function buildRouter() {
       checkModules: body.checkModules !== false,
       checkExtensions: body.checkExtensions !== false,
       extendedCheck: body.extendedCheck === true,
-      // Тоже включено по умолчанию: без него правки поставщика в свойствах
-      // приходится не доказывать, а предполагать.
-      vendorAhead: body.vendorAhead !== false,
     };
 
     await updateStore.createRun(updateId, input);
