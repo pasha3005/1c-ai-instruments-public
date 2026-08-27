@@ -442,6 +442,9 @@ function collectInput() {
     vendorConfigPath: $('#qVendor').value.trim(),
     platformVersion: byFolder ? '' : $('#qPlatform').value.trim(),
     workDir: $('#qWorkDir').value.trim(),
+    // Своего выбора темы у этого раздела на форме нет: отчёт о качестве
+    // оформляется темой программы — той, что выбрана в «Параметрах».
+    reportTheme: document.documentElement.dataset.theme || '',
     keepDump: $('#qKeepDump').checked,
     // Регламент разработки проекта: флаг и путь идут отдельно, чтобы снятый
     // флаг не стирал выбранный файл.

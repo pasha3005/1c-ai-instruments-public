@@ -60,7 +60,11 @@ function Write-Result($obj) {
 
 $cfg = Get-Content -LiteralPath $InputFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $b = $cfg.bsp
-$result = [ordered]@{ ok = $false; result = ''; seconds = 0; errors = @() }
+# stage: gde imenno oborvalos - connect | module | call. Ot etogo zavisit,
+# mozhno li prodolzhat: oshibka SAMOGO obrabotchika (call) znachit, chto
+# otlozhennye zapuskat nelzya, a nedostupnyy most (connect/module) - vsego lish
+# povod poyti prezhnim putem, cherez vhod v bazu.
+$result = [ordered]@{ ok = $false; result = ''; seconds = 0; stage = 'connect'; errors = @() }
 $startedAt = Get-Date
 
 if ($cfg.binDir -and (Test-Path $cfg.binDir)) { $env:PATH = "$($cfg.binDir);$env:PATH" }
@@ -69,6 +73,7 @@ try {
     $connector = New-Object -ComObject $cfg.progId
     $conn = Invoke-ComMethod $connector 'Connect' @($cfg.connectionString)
 } catch {
+    $result.stage = 'connect'
     [void]$errors.Add("Ne udalos podklyuchitsya k baze cherez $($cfg.progId): $($_.Exception.Message)")
     Write-Result $result
     exit 1
@@ -76,6 +81,7 @@ try {
 
 $module = Resolve-Member $conn @($b.updateModule)
 if ($null -eq $module) {
+    $result.stage = 'module'
     [void]$errors.Add('Obshchiy modul obnovleniya IB nedostupen cherez vneshnee soedinenie')
     Write-Result $result
     exit 1
@@ -87,15 +93,23 @@ $deferredNow = $false
 if ($cfg.deferredNow) { $deferredNow = $true }
 
 $lastError = 'imya funktsii ne zadano'
+$result.stage = 'module'
 foreach ($nm in @($b.runUpdate)) {
     if ([string]::IsNullOrWhiteSpace($nm)) { continue }
     try {
         $value = Invoke-ComMethod $module $nm @($deferredNow)
         $result.result = "$value"
         $result.ok = $true
+        $result.stage = 'call'
         break
     } catch {
         $lastError = $_.Exception.Message
+        # "Metod obekta ne obnaruzhen" znachit, chto imya ne podoshlo - probuem
+        # sleduyushchee. Lyubaya drugaya oshibka - eto uzhe sam obrabotchik:
+        # funktsiya naydena i vypolnyalas, no upala.
+        if ($lastError -notmatch 'не обнаружен|not found|Unknown name|Member not found') {
+            $result.stage = 'call'
+        }
     }
 }
 if (-not $result.ok) { [void]$errors.Add("$($b.runUpdate[0]): $lastError") }

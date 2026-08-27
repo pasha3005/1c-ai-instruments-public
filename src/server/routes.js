@@ -38,6 +38,8 @@ import { openUrl } from '../util/browser.js';
 import { APP, ROOT_DIR, SERVER, POLICY_TEMPLATE } from '../config.js';
 import { readText, pathExists } from '../util/fsx.js';
 import { createLogger } from '../util/logger.js';
+import { appThemeCss, THEMES, resolveTheme } from '../ui/themes.js';
+import { readSettings, writeSettings } from '../store/settings.js';
 
 const log = createLogger('routes');
 
@@ -49,7 +51,12 @@ const log = createLogger('routes');
  * иначе не введя ключ нельзя было бы завершить работу, а пока процесс жив,
  * Windows не даёт удалить каталог приложения.
  */
-const OPEN_PATHS = new Set(['/api/health', '/api/license', '/api/shutdown', '/api/presence']);
+const OPEN_PATHS = new Set([
+  '/api/health', '/api/license', '/api/shutdown', '/api/presence',
+  // Оформление нужно и до ввода ключа: под замком показывается форма ключа,
+  // и она красится той же темой, что и всё остальное.
+  '/css/themes.css', '/api/settings',
+]);
 
 /**
  * Сколько окон интерфейса сейчас открыто.
@@ -437,7 +444,7 @@ export function buildRouter() {
       collectLiveData: body.collectLiveData !== false,
       keepDump: body.keepDump === true,
       // Тема отчёта. По умолчанию тёмная — как окно программы.
-      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      reportTheme: resolveTheme(body.reportTheme).id,
       // Каталог выгрузки задаётся всегда — см. проверку ниже.
     };
 
@@ -659,7 +666,7 @@ export function buildRouter() {
       workDir: String(body.workDir).trim(),
       user: String(body.user || '').trim(),
       password: typeof body.password === 'string' ? body.password : '',
-      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      reportTheme: resolveTheme(body.reportTheme).id,
       // По умолчанию сняты: не сохранять выгрузку и не открывать базу ради формы.
       keepDump: body.keepDump === true,
       openResultsForm: body.openResultsForm === true,
@@ -1126,7 +1133,7 @@ export function buildRouter() {
       // не выбирать файл заново при следующем прогоне.
       usePolicy: body.usePolicy === true,
       policyPath: String(body.policyPath || '').trim(),
-      reportTheme: body.reportTheme === 'light' ? 'light' : 'dark',
+      reportTheme: resolveTheme(body.reportTheme).id,
     };
 
     await qualityStore.createRun(qualityId, input);
@@ -1245,6 +1252,43 @@ export function buildRouter() {
   router.delete('/api/quality/:id', async (req, res, { params }) => {
     await qualityStore.deleteRun(params.id);
     sendJson(res, 200, { ok: true });
+  });
+
+  // --- Параметры и оформление ---
+
+  /**
+   * Палитры тем — таблицей стилей, собранной программой.
+   *
+   * Файла с таким именем на диске нет: цвета интерфейса и отчётов живут
+   * в одном модуле (`src/ui/themes.js`), и лежи они ещё и статикой, две
+   * «одинаковые» палитры рано или поздно разъехались бы. Маршрут открытый:
+   * без него не покрасить даже форму ввода ключа.
+   */
+  router.get('/css/themes.css', (req, res) => {
+    const body = appThemeCss();
+    res.writeHead(200, {
+      'Content-Type': 'text/css; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body),
+      'Cache-Control': 'no-cache',
+    });
+    res.end(body);
+  });
+
+  /** Параметры программы: сейчас это только тема оформления. */
+  router.get('/api/settings', async (req, res) => {
+    sendJson(res, 200, { settings: await readSettings(), themes: THEMES });
+  });
+
+  router.post('/api/settings', async (req, res) => {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendError(res, 400, err.message);
+      return;
+    }
+    const settings = await writeSettings({ theme: body.theme });
+    sendJson(res, 200, { settings });
   });
 
   // --- Управление приложением ---

@@ -7,6 +7,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { throwIfCancelled } from '../util/cancel.js';
 
 /** Полный список этапов конвейера — используется UI для отрисовки шкалы. */
 export const STAGES = [
@@ -53,7 +54,7 @@ export const UPDATE_STAGES = [
   { id: 'connect', title: 'Проверка доступа к базе', weight: 3 },
   // Пять секунд, которые решают, каким путём идти дальше, — и потому стоят
   // раньше всего дорогого (см. vendorConfigPresence в onec/vendorCompare.js).
-  { id: 'detect', title: 'Есть ли в базе доработки', weight: 2 },
+  { id: 'detect', title: 'Каким путём обновлять', weight: 2 },
   { id: 'export-main', title: 'Выгрузка основной конфигурации', weight: 16 },
   { id: 'vendor-new', title: 'Целевая конфигурация (новая поставка)', weight: 14 },
   // Второе сравнение теми же средствами платформы: конфигурация поставщика
@@ -368,4 +369,17 @@ export function getProgress(auditId) {
  */
 export function runningProgresses() {
   return [...registry.values()].filter((p) => p.status === 'running');
+}
+
+/**
+ * Начать этап, который ПИШЕТ в информационную базу.
+ *
+ * Отдельная функция ради одной строки — проверки отмены перед началом записи:
+ * между этапами человек мог нажать «Прервать», и начинать запись после этого
+ * нельзя. Пользуются ею оба места, где такая запись бывает, — конвейер
+ * обновления и шаг обработчиков.
+ */
+export function startWrite(progress, id, detail) {
+  throwIfCancelled();
+  progress.start(id, detail);
 }

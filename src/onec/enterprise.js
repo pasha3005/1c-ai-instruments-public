@@ -25,8 +25,11 @@
  *  2. **Обработчики выполняются через внешнее соединение, без окна**
  *     (`runInfobaseUpdate`). Это штатный путь, а не обходной: у функции БСП
  *     в комментарии написано «Выполнить неинтерактивное обновление данных ИБ.
- *     Для вызова через внешнее соединение». Монопольные выполняются всегда,
- *     отложенные — тем же вызовом.
+ *     Для вызова через внешнее соединение». Вызовов ДВА: сначала монопольная
+ *     часть (`deferredNow: false`), потом — уже при открытом окне с формой
+ *     результатов — отложенные. Порядок такой по требованию пользователя
+ *     (27.08.2026): ход отложенных должен быть виден, а при ошибке монопольных
+ *     их запускать нельзя вовсе.
  *  3. **Запускается единственный сеанс 1С — уже с открытой формой результатов**
  *     (`updateSessionArgs`, `waitResultsForm`): ключ `/URL` с навигационной
  *     ссылкой. Окно остаётся у пользователя, форма — открытой.
@@ -333,17 +336,37 @@ export async function runInfobaseUpdate({
   }
 
   const result = String(output.result || '');
-  const exclusiveFailed = result === UPDATE_RESULT.exclusiveFailed;
-  const ok = output.ok === true
-    && (result === UPDATE_RESULT.ok || result === UPDATE_RESULT.notRequired);
-
   log.info(`Обработчики обновления: ${result || 'ответа нет'}, ${output.seconds || 0} с`);
+  return judgeUpdateRun(output);
+}
+
+/**
+ * Что означает ответ моста обновления.
+ *
+ * Вынесено отдельно ради теста: развилка здесь решает, продолжать прогон или
+ * остановиться, а проверить её на живой базе можно только сломав обновление.
+ *
+ *  говорит, где оборвалось: / — до функции БСП дело
+ * не дошло (не БСП-конфигурация, у общих модулей снят флаг «Внешнее
+ * соединение»), и тогда обработчики просто выполнит платформа при входе
+ * в базу;  — функция вызвана и УПАЛА, то есть сломалось обновление
+ * данных, и дальше идти нельзя.
+ */
+export function judgeUpdateRun(output) {
+  const result = String(output?.result || '');
+  const exclusiveFailed = result === UPDATE_RESULT.exclusiveFailed;
+  const ok = output?.ok === true
+    && (result === UPDATE_RESULT.ok || result === UPDATE_RESULT.notRequired);
+  const stage = String(output?.stage || 'connect');
+
   return {
     ok,
     result,
-    seconds: Number(output.seconds) || 0,
+    seconds: Number(output?.seconds) || 0,
     exclusiveFailed,
-    reason: ok ? '' : ((output.errors || [])[0] || result || 'обновление не выполнено'),
+    stage,
+    handlerFailed: !ok && !exclusiveFailed && stage === 'call',
+    reason: ok ? '' : ((output?.errors || [])[0] || result || 'обновление не выполнено'),
   };
 }
 

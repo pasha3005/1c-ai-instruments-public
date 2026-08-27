@@ -11,6 +11,7 @@
  */
 
 import { REPORT_STYLES } from './styles.js';
+import { resolveTheme } from '../ui/themes.js';
 import { renderMarkdown } from './markdownToHtml.js';
 import { SEVERITY_RU, CATEGORY_RU } from '../analyze/rules/context.js';
 import { formatNumber } from '../analyze/dataVolume.js';
@@ -127,7 +128,7 @@ function collapsibleSection(html, id) {
  * сразу после тёмного интерфейса. Печать всегда светлая (см. styles.js).
  */
 function reportTheme(result) {
-  return result.input?.reportTheme === 'light' ? 'light' : 'dark';
+  return resolveTheme(result.input?.reportTheme).id;
 }
 
 /**

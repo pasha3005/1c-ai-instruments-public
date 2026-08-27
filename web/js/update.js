@@ -58,6 +58,12 @@ export function initUpdate() {
     start();
   });
 
+  // Расширенная проверка — ключи той же команды «Проверка модулей»: без неё
+  // флажок ничего не значит, поэтому строка показывается только вместе с ней.
+  const modulesBox = $('#uCheckModules');
+  modulesBox.addEventListener('change', syncCheckBoxes);
+  syncCheckBoxes();
+
   $('#uCancelBtn').addEventListener('click', () => cancel());
   $('#uOpenReport').addEventListener('click', (event) => {
     if (!state.currentId) return;
@@ -75,6 +81,19 @@ export function initUpdate() {
   $('#uAskNo').addEventListener('click', () => answer(false));
 
   loadHistory();
+}
+
+/**
+ * Показ вложенных флажков по состоянию тех, от кого они зависят.
+ *
+ * Отдельной функцией, а не строкой в обработчике: поля формы заполняются ещё
+ * и значениями последнего прогона (`restoreInput`), и после подстановки
+ * состояние надо привести в порядок тем же кодом.
+ */
+function syncCheckBoxes() {
+  const on = $('#uCheckModules')?.checked;
+  const row = $('#uExtendedCheckRow');
+  if (row) row.hidden = !on;
 }
 
 /** Перечитать список прошлых объединений — раздел «История» этого режима. */
@@ -432,7 +451,7 @@ async function showStats(updateId) {
     // Типовое обновление: числа объединения к нему не относятся, показывать
     // «файлов сверено: 0» и «ручной работы не осталось» было бы бессмыслицей.
     if (s.updateMode === 'typical') {
-      parts.push('<b>доработок нет</b> — обновление выполнила платформа');
+      parts.push('<b>объединение не понадобилось</b> — обновление выполнила платформа');
       if (s.twiceChanged) {
         parts.push(`<b style="color:var(--warn)">дважды изменённых свойств: ${formatNumber(s.twiceChanged)}</b>`);
       }

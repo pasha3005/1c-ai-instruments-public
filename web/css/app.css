@@ -1,54 +1,33 @@
 /*
- * Интерфейс приложения — всегда тёмная тема.
+ * Интерфейс приложения.
  *
- * Раньше тема следовала системной настройке через prefers-color-scheme,
- * и в окне приложения (Edge --app) оказывалась светлой, а в обычной вкладке
- * браузера — тёмной: у профиля приложения своя настройка внешнего вида.
- * Разнобой сбивал с толку, поэтому тема зафиксирована.
+ * Тему выбирает пользователь в «Параметрах», и она красит и интерфейс,
+ * и отчёты; палитры всех тем лежат в одном месте — `src/ui/themes.js`, откуда
+ * собирается `css/themes.css`. За системной настройкой браузера тема
+ * не следует намеренно: в окне приложения (Edge --app) и в обычной вкладке
+ * у профиля разные настройки внешнего вида, и программа выглядела бы
+ * по-разному в зависимости от того, чем её открыли.
  *
- * Палитра — фирменная, «Первого БИТа»: графит и малиновая маджента (тот же
- * цвет, что в квадрате знака компании), БЕЗ красного — в фирменном стиле его
- * нет. Акцентом помечается только то, на что смотрят: активная вкладка,
- * главная кнопка, номера разделов, ход выполнения. Если акцентным станет всё,
- * он перестанет быть акцентом. Отдельно от него живут сигнальные цвета —
- * зелёное «готово», жёлтое «предупреждение», красное «ошибка»: путать
- * фирменный цвет с сигнальным нельзя, иначе интерфейс всё время выглядит
- * аварийным, а ошибка перестаёт выделяться на фоне обычных акцентов.
+ * Тема по умолчанию — фирменная, «Первого БИТа»: графит и малиновая маджента
+ * (тот же цвет, что в квадрате знака компании), БЕЗ красного — в фирменном
+ * стиле его нет. Акцентом помечается только то, на что смотрят: активная
+ * вкладка, главная кнопка, номера разделов, ход выполнения. Если акцентным
+ * станет всё, он перестанет быть акцентом. Отдельно от него живут сигнальные
+ * цвета — зелёное «готово», жёлтое «предупреждение», красное «ошибка».
  */
 
 :root {
-  color-scheme: dark; /* тёмные полосы прокрутки и системные элементы форм */
-
-  --bg: #15161b;
-  --surface: #1c1d24;
-  --surface-2: #26272f;
-  --ink: #e9ecf1;
   /*
-   * Промежуточный тон между --ink и --ink-soft — специально для формы.
-   * Подписи полей и введённый текст раньше красились в чистый --ink (тот же
-   * тон, что и заголовки), и рядом с почти таким же светлым текстом внутри
-   * поля и чуть более тёмной подсказкой под ним экран получался залит белым
-   * почти равномерно — рябило в глазах. Подсказки уже темнее (--ink-faint),
-   * поэтому здесь достаточно на один шаг притушить верхние два уровня,
-   * а не городить трёхступенчатую шкалу.
+   * Цвета живут не здесь, а в src/ui/themes.js — файл css/themes.css собирается
+   * программой из одного модуля вместе с палитрами отчётов и подключается
+   * ПЕРЕД этим файлом. Здесь остаётся то, что от темы не зависит: скругления,
+   * тень, шрифты.
+   *
+   * Промежуточный тон --ink-mid, заданный там же, нужен форме: подписи полей
+   * и введённый текст раньше красились в чистый --ink, и рядом с почти таким же
+   * светлым текстом внутри поля экран получался залит белым почти равномерно —
+   * рябило в глазах.
    */
-  --ink-mid: #cdd3de;
-  --ink-soft: #a8b0bd;
-  --ink-faint: #79818f;
-  --line: #2e2f38;
-  --line-soft: #26272f;
-
-  /* Фирменная маджента «Первого БИТа». */
-  --accent: #e5007a;
-  --accent-hover: #f13d97;
-  --accent-soft: #2c1220;
-  --accent-line: #4a1f38;
-
-  /* Сигнальные цвета — отдельная палитра, не акцентная. */
-  --good: #4fb583;
-  --warn: #d9a441;
-  --danger: #e2483f;
-
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.28);
@@ -457,6 +436,19 @@ body {
   max-width: 78ch;
 }
 .check em b { color: var(--ink-soft); font-weight: 620; }
+/*
+ * Вложенный флажок — уточнение к тому, что стоит над ним.
+ *
+ * Отступ и черта слева говорят о подчинении так же, как во вложенном
+ * переключателе разделов: расширенная проверка модулей — это ключи ТОЙ ЖЕ
+ * команды платформы, и сама по себе, без проверки модулей, она ничего
+ * не значит. Поэтому строка ещё и скрывается, когда проверка снята.
+ */
+.check--nested {
+  margin-left: 26px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
 .mono { font-family: var(--mono); font-size: .95em; }
 
 /*
@@ -523,7 +515,7 @@ body {
 .btn--success {
   background: var(--good);
   border-color: var(--good);
-  color: #0e1a13;
+  color: var(--on-signal);
   font-weight: 620;
 }
 .btn--success:hover { background: var(--good); border-color: var(--good); filter: brightness(1.08); }
@@ -614,7 +606,7 @@ body {
  */
 .is-done .stage-icon { background: var(--accent); border-color: var(--accent); color: #fff; }
 .is-skipped .stage-icon { background: var(--surface-2); }
-.is-warning .stage-icon { background: var(--warn); border-color: var(--warn); color: #241a05; }
+.is-warning .stage-icon { background: var(--warn); border-color: var(--warn); color: var(--on-signal); }
 .is-failed .stage-icon { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 .stage-body { flex: 1; min-width: 0; }
@@ -728,7 +720,7 @@ body {
 .hist-actions { display: flex; gap: 8px; }
 .grade-good { color: var(--good); }
 .grade-warn { color: var(--warn); }
-.grade-bad  { color: #e58a3a; }
+.grade-bad  { color: var(--warn); }
 .grade-crit { color: var(--danger); }
 
 .status-pill {
@@ -871,7 +863,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: linear-gradient(150deg, #101216 0%, #1b1e25 58%, #3c1418 100%);
+  background: linear-gradient(150deg, var(--hero-from) 0%, var(--hero-mid) 58%, var(--hero-to) 100%);
   overflow: auto;
 }
 .license-gate[hidden] { display: none; }
@@ -1280,19 +1272,15 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 /*
  * Подсветка синтаксиса в окнах кода.
  *
- * Классы и цвета те же, что в отчёте (`report/styles.js`): один и тот же код
- * не должен выглядеть в программе иначе, чем в отчёте. Значения повторены
- * здесь, а не подключены из отчёта, потому что таблицы стилей у них разные:
- * отчёт самодостаточен и уезжает отдельным файлом.
+ * Классы те же, что в отчёте (`report/styles.js`), и цвета берутся из одной
+ * с ним темы: один и тот же код не должен выглядеть в программе иначе, чем
+ * в отчёте. Сами значения — в `src/ui/themes.js`; классы приходится объявлять
+ * дважды, потому что таблицы стилей у программы и отчёта разные — отчёт
+ * самодостаточен и уезжает отдельным файлом.
  */
-:root {
-  --code-comment: #6fc57e;
-  --code-keyword: #79a6ff;
-  --code-directive: #e0a868;
-}
 .tok-comment { color: var(--code-comment); }
 .tok-keyword { color: var(--code-keyword); font-weight: 620; }
-.tok-string { color: var(--ink-soft); }
+.tok-string { color: var(--code-string); }
 .tok-directive { color: var(--code-directive); }
 
 /*
@@ -1308,12 +1296,12 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  * пользователем 27.08.2026). Сигнальный `--danger` всё равно не берём —
  * им подсвечивают ошибку, а тут просто «этой строки в правой версии нет».
  */
-.mgc tr.d-add  .mgc__t { background: color-mix(in srgb, var(--good) 20%, transparent); }
-.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, #cf4a52 22%, transparent); }
-.mgc tr.d-chg  .mgc__t { background: color-mix(in srgb, #4a7fd4 26%, transparent); }
-.mgc tr.d-add  .mgc__n { color: var(--good); }
-.mgc tr.d-del  .mgc__n { color: #ef8b91; }
-.mgc tr.d-chg  .mgc__n { color: #79a6ff; }
+.mgc tr.d-add  .mgc__t { background: color-mix(in srgb, var(--diff-add) 20%, transparent); }
+.mgc tr.d-del  .mgc__t { background: color-mix(in srgb, var(--diff-del) 22%, transparent); }
+.mgc tr.d-chg  .mgc__t { background: color-mix(in srgb, var(--diff-chg) 26%, transparent); }
+.mgc tr.d-add  .mgc__n { color: var(--diff-add-ink); }
+.mgc tr.d-del  .mgc__n { color: var(--diff-del-ink); }
+.mgc tr.d-chg  .mgc__n { color: var(--diff-chg-ink); }
 
 /* Строка-заполнитель: в этой версии её нет вовсе, кода в ней тоже нет. */
 .mgc tr.d-pad .mgc__t { background: repeating-linear-gradient(
@@ -1329,9 +1317,9 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   border-radius: 3px;
   display: inline-block;
 }
-.mgw__legend--diff .d-add { background: color-mix(in srgb, var(--good) 45%, transparent); }
-.mgw__legend--diff .d-del { background: color-mix(in srgb, #cf4a52 55%, transparent); }
-.mgw__legend--diff .d-chg { background: color-mix(in srgb, #4a7fd4 55%, transparent); }
+.mgw__legend--diff .d-add { background: color-mix(in srgb, var(--diff-add) 45%, transparent); }
+.mgw__legend--diff .d-del { background: color-mix(in srgb, var(--diff-del) 55%, transparent); }
+.mgw__legend--diff .d-chg { background: color-mix(in srgb, var(--diff-chg) 55%, transparent); }
 
 /*
  * Поле результата — тоже с подсветкой.

@@ -6,153 +6,37 @@
  * Печать в PDF выполняется штатным средством браузера, отсюда @page и
  * правила разрыва страниц.
  *
- * ## Две темы в одном файле
+ * ## Темы
  *
- * Тема выбирается на форме аудита и подставляется атрибутом
- * `<html data-theme="dark|light">`. Обе таблицы стилей лежат в одном файле:
- * отчёт должен оставаться самодостаточным, второй файл рядом с ним
- * потерялся бы при пересылке.
+ * Тема выбирается на форме и подставляется атрибутом `<html data-theme="…">`;
+ * палитры всех шести тем лежат в `src/ui/themes.js` — там же, откуда красится
+ * интерфейс программы. Два набора «одинаковых» цветов в двух файлах рано или
+ * поздно разъезжаются, а отчёт должен выглядеть продолжением программы,
+ * из которой вышел.
  *
  * Правило, которое надо соблюдать при правках: **цвет задаётся переменной,
  * а не хексом в правиле.** Иначе элемент останется светлым в тёмной теме,
- * и заметно это будет только на готовом отчёте. Все «фирменные» цвета —
- * от палитры «Первого БИТа»: малиновая маджента на графите. Красного
- * в фирменном стиле нет — с ним однажды перепутали, исправлено 09.08.2026.
+ * и заметно это будет только на готовом отчёте.
  *
  * Печать всегда светлая: тёмный фон съедает картридж и плохо читается
  * на бумаге, поэтому `@media print` возвращает светлые значения даже
  * тёмной теме.
  */
 
-/** Светлые значения палитры — они же значения по умолчанию. */
-const LIGHT_VARS = `
-  --ink: #14171d;
-  --ink-soft: #4c5462;
-  --ink-faint: #7c8494;
-  --line: #e2e5ea;
-  --line-soft: #eef0f4;
-  --bg: #ffffff;
-  --bg-soft: #f5f6f8;
-  --accent: #cc0074;
-  --accent-ink: #99005a;
-  --accent-soft: #fdeaf3;
-  --accent-line: #f6c9e0;
+import { reportVars, reportThemeCss, DEFAULT_THEME, THEMES } from '../ui/themes.js';
 
-  --critical: #c62828;
-  --high: #d75a12;
-  --medium: #9a7100;
-  --low: #3f7530;
-  --info: #5a6472;
-  --good: #23795a;
-
-  --critical-bg: #fdeaea;  --critical-bd: #f6cfcf;
-  --high-bg: #fdf0e5;      --high-bd: #f7dcc4;
-  --medium-bg: #fbf4e0;    --medium-bd: #f0e3bb;
-  --low-bg: #eef6e9;       --low-bd: #d7e8cd;
-  --good-bg: #e8f5ef;      --good-bd: #c7e5d8;
-
-  --warn-bg: #fdf7e8;      --warn-bd: #efe0b8;      --warn-ink: #6b5312;
-  --note-bg: #fdeaf3;      --note-bd: #f6c9e0;      --note-ink: #99005a;
-  --danger-bg: #fdeded;    --danger-bd: #f3cccc;    --danger-ink: #8d2020;
-
-  --snippet-bg: #f6f7fa;
-  --snippet-bd: #e7eaf0;
-
-  --cover-from: #17191f;
-  --cover-mid: #23262e;
-  --cover-to: #2a2d36;
-  --cover-ink: #ffffff;
-  --cover-soft: #c8ccd4;
-  --cover-faint: #9aa1ad;
-  --cover-accent: #ff3d9e;
-
-  --neutral-bar: #d7dce4;
-  --mark-modified-ink: #8a5b00; --mark-modified-bg: #f6e7bd;
-  --mark-added-ink: #14603c;    --mark-added-bg: #cbe9d8;
-  --mark-removed-ink: #8d2020;  --mark-removed-bg: #f6cfcf;
-  /* Процедура и функция: как в конфигураторе — красная «P()», синяя «F(x)». */
-  --rt-proc-ink: #9c2b3f;  --rt-proc-bg: #fbe9ec;  --rt-proc-bd: #f0cdd4;
-  --rt-func-ink: #274ea8;  --rt-func-bg: #e9eefb;  --rt-func-bd: #ccd8f4;
-
-  /* Подсветка синтаксиса 1С — как в конфигураторе: комментарий зелёным,
-     ключевые слова синим, строки нейтральным цветом текста (ink-soft). */
-  --code-comment: #1e7a34;
-  --code-keyword: #0033cc;
-  --code-directive: #8a4b12;
-  --diff-vendor-bg: #fdeded;
-  --diff-client-bg: #e8f5ef;
-`;
-
-/**
- * Тёмные значения. Повторяет вид веб-интерфейса: графитовые поверхности,
- * малиновая маджента вместо красного, приглушённые заливки значков вместо
- * пастельных.
- */
-const DARK_VARS = `
-  --ink: #e9ecf1;
-  --ink-soft: #a8b0bd;
-  --ink-faint: #79818f;
-  --line: #2d323d;
-  --line-soft: #242832;
-  --bg: #1a1d24;
-  --bg-soft: #14161b;
-  --accent: #f0409a;
-  --accent-ink: #ff6bb8;
-  --accent-soft: #2c1220;
-  --accent-line: #4a1f38;
-
-  --critical: #f0736c;
-  --high: #f09a52;
-  --medium: #dfb45a;
-  --low: #7fbd6a;
-  --info: #98a2b3;
-  --good: #5cba86;
-
-  --critical-bg: #2e1a1a;  --critical-bd: #4a2424;
-  --high-bg: #2d2117;      --high-bd: #4a3521;
-  --medium-bg: #2b2617;    --medium-bd: #453c21;
-  --low-bg: #1c2719;       --low-bd: #2d4027;
-  --good-bg: #16281f;      --good-bd: #244535;
-
-  --warn-bg: #2a2418;      --warn-bd: #4a3f22;      --warn-ink: #e2c072;
-  --note-bg: #2c1220;      --note-bd: #4a1f38;      --note-ink: #ff7ab8;
-  --danger-bg: #2e1a1a;    --danger-bd: #4d2626;    --danger-ink: #f28a84;
-
-  --snippet-bg: #12141a;
-  --snippet-bd: #262b35;
-
-  --cover-from: #101216;
-  --cover-mid: #1b1e25;
-  --cover-to: #22252c;
-  --cover-ink: #ffffff;
-  --cover-soft: #c3c8d1;
-  --cover-faint: #8d95a2;
-  --cover-accent: #ff3d9e;
-
-  --neutral-bar: #39404c;
-  --mark-modified-ink: #e2c072; --mark-modified-bg: #3a3120;
-  --mark-added-ink: #7fd0a3;    --mark-added-bg: #1c3a2a;
-  --mark-removed-ink: #f28a84;  --mark-removed-bg: #3c2020;
-  --rt-proc-ink: #f0929f;  --rt-proc-bg: #33191e;  --rt-proc-bd: #542932;
-  --rt-func-ink: #8fb0f5;  --rt-func-bg: #19203a;  --rt-func-bd: #2a355c;
-
-  --code-comment: #6fc57e;
-  --code-keyword: #79a6ff;
-  --code-directive: #e0a868;
-  --diff-vendor-bg: #2e1a1a;
-  --diff-client-bg: #16281f;
-
-  color-scheme: dark;
-`;
+/** Светлая палитра для печати: ею @media print перебивает любую тему. */
+const PRINT_VARS = reportVars(THEMES.find((theme) => theme.mode === 'light').id);
 
 export const REPORT_STYLES = `
 :root {
-${LIGHT_VARS}
+${reportVars(DEFAULT_THEME)}
   --radius: 10px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "SF Mono", "Cascadia Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
-  color-scheme: light;
 }
+
+${reportThemeCss()}
 
 * { box-sizing: border-box; }
 
@@ -988,16 +872,11 @@ pre.snippet {
 .mono { font-family: var(--mono); font-size: 13px; }
 .nowrap { white-space: nowrap; }
 
-/* --- Тёмная тема --- */
-:root[data-theme="dark"] {
-${DARK_VARS}
-}
-
 /* --- Печать: всегда светлая --- */
 @page { size: A4; margin: 14mm 12mm; }
 @media print {
-  :root, :root[data-theme="dark"] {
-${LIGHT_VARS}
+  :root, :root[data-theme] {
+${PRINT_VARS}
     color-scheme: light;
   }
   body { background: #fff; font-size: 10.5pt; }

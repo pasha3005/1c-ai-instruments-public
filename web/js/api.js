@@ -29,6 +29,13 @@ export const api = {
   /** README, уже преобразованный в разметку, — для раздела «О программе». */
   about: () => request('api/about'),
 
+  /** Параметры программы и перечень тем оформления. */
+  settings: () => request('api/settings'),
+
+  /** Сохранить параметры; сервер отвечает тем, что записал. */
+  saveSettings: (patch) =>
+    request('api/settings', { method: 'POST', body: JSON.stringify(patch) }),
+
   /** Открыть готовый отчёт отдельным окном (окно открывает сервер). */
   openReport: (id) => request(`api/audits/${id}/open`, { method: 'POST' }),
 

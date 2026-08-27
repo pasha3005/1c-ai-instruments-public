@@ -49,6 +49,18 @@ const state = {
   place: -1,
   /** Отложенная перекраска поля результата. */
   paintTimer: null,
+  /** Перекраска уже назначена — второй раз таймер не заводим. */
+  paintPending: false,
+  /** Когда последний раз получили раскраску с сервера. */
+  paintAt: 0,
+  /**
+   * Последняя раскраска: строки исходного текста и их готовый HTML.
+   *
+   * По ней слой перерисовывается МГНОВЕННО на каждое нажатие: строки, которых
+   * правка не коснулась, оставляют прежний цвет, и модуль не белеет целиком
+   * в ожидании ответа сервера.
+   */
+  paint: null,
   /** Какая группа открыта: `merge` — спорные места, `checks` — ошибки проверок. */
   group: 'merge',
   /** Участки отличий открытого файла и номер того, на котором стоим. */
@@ -58,6 +70,17 @@ const state = {
 
 /** Насколько большой текст ещё имеет смысл подсвечивать на лету. */
 const EDITOR_HIGHLIGHT_LIMIT = 400_000;
+
+/**
+ * Как часто спрашивать раскраску у сервера, пока человек печатает.
+ *
+ * Это троттлинг, а не задержка «после того, как перестал набирать»: при наборе
+ * запросы идут подряд каждые сто с небольшим миллисекунд, и цвет догоняет текст
+ * почти мгновенно. Запрос местный (127.0.0.1) и стоит миллисекунды, а лексер
+ * один на всю программу — второй, в браузере, рано или поздно разошёлся бы
+ * с ним во мнении о том, что здесь ключевое слово.
+ */
+const PAINT_INTERVAL = 120;
 
 export function initMerge(onBack) {
   state.back = onBack;
@@ -392,6 +415,9 @@ async function openFile(key) {
   box.value = text;
   box.readOnly = !file.editable;
   state.loadedText = text;
+  // Раскраска прошлого файла к этому отношения не имеет: кэш обнуляется,
+  // иначе строки чужого модуля попали бы в слой под новым текстом.
+  state.paint = null;
   $('#mgResultHl').textContent = text;
   repaintEditor();
 
@@ -685,13 +711,73 @@ function initEditor() {
     repaintEditor();
   });
   box.addEventListener('input', () => {
-    // Пока подсветка не пришла, слой должен хотя бы совпадать по числу строк:
-    // иначе прокрутка слоя и поля разъезжаются на глазах.
-    layer.textContent = box.value;
+    paintFromCache();
     sync();
-    clearTimeout(state.paintTimer);
-    state.paintTimer = setTimeout(repaintEditor, 350);
+    schedulePaint();
   });
+}
+
+/**
+ * Перекрасить слой немедленно, своими силами, до ответа сервера.
+ *
+ * Прежде на каждое нажатие слой заменялся голым текстом — и весь модуль на
+ * полсекунды белел, а потом раскрашивался обратно (замечено пользователем
+ * 27.08.2026). Здесь вместо этого берётся прошлая раскраска: сравниваем старые
+ * строки с новыми с начала и с конца, и всё, чего правка не коснулась,
+ * остаётся цветным. Меняется обычно одна строка.
+ *
+ * Единственное, что делается для неё своими силами, — комментарий: строка,
+ * у которой первый непробельный знак это «//», в 1С комментарий до конца
+ * строки, чем бы дальше её ни дописывали. Разбором это не назвать, лексером
+ * тем более, а дописанное в комментарий зеленеет сразу, не дожидаясь ответа.
+ */
+function paintFromCache() {
+  const box = $('#mgResult');
+  const layer = $('#mgResultHl');
+  const cache = state.paint;
+  const next = box.value.split('\n');
+
+  if (!cache || cache.src.length !== cache.html.length) {
+    layer.textContent = box.value;
+    return;
+  }
+
+  const old = cache.src;
+  let head = 0;
+  while (head < old.length && head < next.length && old[head] === next[head]) head += 1;
+  let tail = 0;
+  while (tail < old.length - head && tail < next.length - head
+    && old[old.length - 1 - tail] === next[next.length - 1 - tail]) tail += 1;
+
+  const dirty = next.slice(head, next.length - tail).map(paintLine);
+  layer.innerHTML = [
+    ...cache.html.slice(0, head),
+    ...dirty,
+    ...cache.html.slice(old.length - tail),
+  ].join('\n');
+}
+
+/** Строка, которую сервер ещё не видел: комментарий — цветом, остальное — как есть. */
+function paintLine(line) {
+  const html = escapeHtml(line);
+  return /^\s*\/\//.test(line) ? `<span class="tok-comment">${html}</span>` : html;
+}
+
+/**
+ * Назначить запрос раскраски — не чаще, чем раз в `PAINT_INTERVAL`.
+ *
+ * Пока запрос назначен, повторные нажатия его не переносят: иначе при быстром
+ * наборе раскраска не приходила бы вовсе, пока человек не остановится.
+ */
+function schedulePaint() {
+  if (state.paintPending) return;
+  state.paintPending = true;
+  const wait = Math.max(0, PAINT_INTERVAL - (Date.now() - state.paintAt));
+  clearTimeout(state.paintTimer);
+  state.paintTimer = setTimeout(() => {
+    state.paintPending = false;
+    repaintEditor();
+  }, wait);
 }
 
 /** Перекрасить слой под полем ввода. */
@@ -709,9 +795,15 @@ async function repaintEditor() {
 
   try {
     const { lines } = await api.highlight(text, ext);
-    // За время запроса человек мог набрать ещё — тогда раскраска устарела
-    // и ставить её нельзя: слой разъедется с текстом.
-    if (box.value !== text) return;
+    state.paint = { src: text.split('\n'), html: lines };
+    state.paintAt = Date.now();
+    // За время запроса человек мог набрать ещё. Выбрасывать ответ нельзя —
+    // он всё равно свежее того, что лежит в слое: строки, до которых правка
+    // не дошла, из него и берутся.
+    if (box.value !== text) {
+      paintFromCache();
+      return;
+    }
     layer.innerHTML = lines.join('\n');
   } catch {
     layer.textContent = text;

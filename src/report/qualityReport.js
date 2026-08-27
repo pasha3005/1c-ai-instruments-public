@@ -20,6 +20,7 @@ import {
 import { codeBlock, highlightBsl } from './bslHighlight.js';
 import { formatNumber } from '../analyze/dataVolume.js';
 import { APP } from '../config.js';
+import { resolveTheme } from '../ui/themes.js';
 
 /**
  * @param {object} result результат конвейера (`pipeline/runQuality.js`)
@@ -41,7 +42,7 @@ export function renderQualityReport(result) {
   ].filter(Boolean).filter((s) => s.html);
 
   return `<!doctype html>
-<html lang="ru" data-theme="${result.input?.reportTheme === 'light' ? 'light' : 'dark'}">
+<html lang="ru" data-theme="${resolveTheme(result.input?.reportTheme).id}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -27,6 +27,9 @@ const state = {
   cancelling: false,
   /** Значения прошлого аудита подставлены — второй раз не подставляем. */
   restored: false,
+  /** Выбранная тема оформления и перечень доступных. */
+  theme: null,
+  themes: [],
 };
 
 /** Поля формы обследования, восстанавливаемые из последнего прогона. */
@@ -145,6 +148,7 @@ export function switchView(name) {
   if (name === 'update-history') reloadUpdateHistory();
   if (name === 'quality-history') reloadQualityHistory();
   if (name === 'about') loadAbout();
+  if (name === 'settings') initSettings();
 
   renderTopNav(name);
 
@@ -176,7 +180,9 @@ function renderTopNav(view) {
   sectionBtn.textContent = section.title;
   sectionBtn.classList.toggle('is-active', view === section.main);
   historyBtn.classList.toggle('is-active', view === section.history);
-  $$('.tab--about').forEach((t) => t.classList.toggle('is-active', view === 'about'));
+  // Кнопок в этом ряду две — «О программе» и «Параметры»: подсвечивается
+  // та, чья страница открыта, а не обе разом.
+  $$('.tab--about').forEach((t) => t.classList.toggle('is-active', t.dataset.view === view));
 }
 
 // ------------------------------------------------------------- О программе
@@ -201,6 +207,96 @@ async function loadAbout() {
   } catch (err) {
     box.innerHTML = `<div class="empty">Не удалось прочитать README: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+// ------------------------------------------------------------- Параметры
+
+/**
+ * Тема оформления: одна на интерфейс и на отчёты.
+ *
+ * Применяется атрибутом на корневом элементе — палитры всех тем уже лежат
+ * в `css/themes.css` (собирается программой из `src/ui/themes.js`), поэтому
+ * переключение это одна строка и ноль запросов за стилями.
+ *
+ * Настройка читается ДО ключа: под замком показывается форма ввода ключа,
+ * и она должна быть того же вида, что и остальная программа.
+ */
+let themesLoaded = false;
+
+export function applyTheme(id) {
+  if (!id) return;
+  document.documentElement.dataset.theme = id;
+  state.theme = id;
+  // Полосу заголовка окна рисует браузер, и меняется она только этим тегом.
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    const surface = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim();
+    if (surface) meta.setAttribute('content', surface);
+  }
+}
+
+export async function loadSettings() {
+  try {
+    const { settings, themes } = await api.settings();
+    state.themes = themes || [];
+    applyTheme(settings?.theme);
+    fillThemeSelects();
+  } catch {
+    // Без параметров программа работает: остаётся тема по умолчанию.
+  }
+}
+
+/** Раздел «Параметры»: перечень тем и мгновенное применение выбранного. */
+async function initSettings() {
+  const select = $('#themeSelect');
+  if (!select || themesLoaded) return;
+  themesLoaded = true;
+
+  select.addEventListener('change', async () => {
+    applyTheme(select.value);
+    fillThemeSelects();
+    try {
+      await api.saveSettings({ theme: select.value });
+      setNote('#settingsNote', 'Тема сохранена — она же применяется к новым отчётам.');
+    } catch (err) {
+      setNote('#settingsNote', `Не удалось сохранить: ${err.message}`, true);
+    }
+  });
+}
+
+/**
+ * Списки тем — и в параметрах, и в формах трёх разделов.
+ *
+ * Тема отчёта выбирается отдельно от темы программы: печатают и рассылают
+ * чаще светлый документ, даже когда сама программа тёмная. Значение по
+ * умолчанию — тема интерфейса: так отчёт похож на то, из чего он вышел.
+ */
+export function fillThemeSelects() {
+  const themes = state.themes || [];
+  if (!themes.length) return;
+
+  const settings = $('#themeSelect');
+  if (settings) {
+    fillOptions(settings, themes, state.theme);
+  }
+  for (const id of ['#reportTheme', '#uReportTheme', '#qReportTheme']) {
+    const select = $(id);
+    if (!select) continue;
+    // Если человек уже выбрал тему отчёта руками, его выбор не трогаем.
+    const chosen = select.dataset.touched === '1' ? select.value : state.theme;
+    fillOptions(select, themes, chosen);
+    if (!select.dataset.bound) {
+      select.dataset.bound = '1';
+      select.addEventListener('change', () => { select.dataset.touched = '1'; });
+    }
+  }
+}
+
+function fillOptions(select, themes, value) {
+  select.innerHTML = themes
+    .map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`)
+    .join('');
+  select.value = themes.some((t) => t.id === value) ? value : themes[0].id;
 }
 
 // ------------------------------------------------------------- Окружение
@@ -866,6 +962,10 @@ async function requireLicense() {
 // окно с формой ключа оставляло бы висеть работающий сервер, а вместе с ним —
 // каталог приложения, который Windows не даёт удалить.
 keepAlive();
+
+// Тема — раньше ключа: под замком показывается форма ввода ключа, и она
+// должна быть того же вида, что и вся программа.
+loadSettings();
 
 $('#appCopyright').textContent = `© ${new Date().getFullYear()}`;
 

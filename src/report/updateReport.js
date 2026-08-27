@@ -24,6 +24,7 @@ import { esc, plural, signature, formatDate, formatDateTime } from './ui.js';
 import { formatNumber } from '../analyze/dataVolume.js';
 import { humanSize } from '../util/fsx.js';
 import { APP } from '../config.js';
+import { resolveTheme } from '../ui/themes.js';
 
 /**
  * @param {object} result результат конвейера обновления (`pipeline/runUpdate.js`)
@@ -50,7 +51,7 @@ export function renderUpdateReport(result) {
   ]).filter((s) => s.html);
 
   return `<!doctype html>
-<html lang="ru" data-theme="${result.input?.reportTheme === 'light' ? 'light' : 'dark'}">
+<html lang="ru" data-theme="${resolveTheme(result.input?.reportTheme).id}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
