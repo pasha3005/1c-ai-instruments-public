@@ -163,7 +163,7 @@ export function buildReview(result, state = emptyReviewState()) {
   for (const object of objects) {
     object.manual = object.files.filter((f) => f.status === 'manual').length;
     object.auto = object.files.filter((f) => f.status === 'auto').length;
-    object.left = object.files.filter((f) => f.status === 'manual' && !f.decision).length;
+    object.left = object.files.filter((f) => !f.decision).length;
   }
 
   const totals = {
@@ -171,23 +171,51 @@ export function buildReview(result, state = emptyReviewState()) {
     manual: files.filter((f) => f.status === 'manual').length,
     auto: files.filter((f) => f.status === 'auto').length,
     decided: files.filter((f) => state.files?.[f.rel]).length,
-    left: files.filter((f) => f.status === 'manual' && !state.files?.[f.rel]).length,
+    /** Всё, что ждёт человека: и нерешённое, и неподтверждённое. */
+    left: files.filter((f) => !state.files?.[f.rel]).length,
+    /** Из них требуют именно решения — программа их не разобрала. */
+    leftManual: files.filter((f) => f.status === 'manual' && !state.files?.[f.rel]).length,
+    /** А эти разобраны программой и ждут подтверждения. */
+    leftAuto: files.filter((f) => f.status === 'auto' && !state.files?.[f.rel]).length,
   };
 
   return { objects, totals };
 }
 
 /**
- * Сколько спорных мест ещё ждут решения человека.
+ * Сколько спорных мест ещё ждут человека.
  *
  * Это число — застава перед записью в информационную базу: пока оно не ноль,
  * загрузка не предлагается и не выполняется (требование пользователя
  * 26.08.2026). Файл, который человек разобрал в окне или принял как есть,
  * из счёта уходит.
+ *
+ * **Считаются и места, разобранные программой.** Требование пользователя
+ * 27.08.2026: «места, которые ты разобрал автоматически, нужно обязательно
+ * выводить для просмотра и подтверждения». Решение программы — предположение
+ * о том, чего человек хотел; пока он на него не взглянул, оно не проверено,
+ * а в базу уходит именно оно. Подтвердить их можно и разом — кнопкой в окне
+ * разбора, но осознанно и после того, как список показан.
  */
 export function unresolvedCount(result, state = emptyReviewState()) {
+  return reviewFiles(result).filter((f) => !state.files?.[f.rel]).length;
+}
+
+/** Те же места по родам: что требует решения, а что — подтверждения. */
+export function unresolvedByKind(result, state = emptyReviewState()) {
+  const left = reviewFiles(result).filter((f) => !state.files?.[f.rel]);
+  return {
+    total: left.length,
+    manual: left.filter((f) => f.status === 'manual').length,
+    auto: left.filter((f) => f.status === 'auto').length,
+  };
+}
+
+/** Пути мест, разобранных программой и ещё не подтверждённых человеком. */
+export function autoFilesToConfirm(result, state = emptyReviewState()) {
   return reviewFiles(result)
-    .filter((f) => f.status === 'manual' && !state.files?.[f.rel]).length;
+    .filter((f) => f.status === 'auto' && !state.files?.[f.rel])
+    .map((f) => f.rel);
 }
 
 // --- Чтение и запись ---------------------------------------------------------

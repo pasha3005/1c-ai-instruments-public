@@ -46,6 +46,7 @@ const UPDATE_FIELDS = {
   checkModules: '#uCheckModules',
   checkExtensions: '#uCheckExtensions',
   extendedCheck: '#uExtendedCheck',
+  vendorAhead: '#uVendorAhead',
 };
 
 export function initUpdate() {
@@ -161,6 +162,8 @@ function collectInput() {
     checkModules: $('#uCheckModules').checked,
     checkExtensions: $('#uCheckExtensions').checked,
     extendedCheck: $('#uExtendedCheck').checked,
+    // Второе сравнение с поставщиком: стоит минут, поэтому им управляют.
+    vendorAhead: $('#uVendorAhead').checked,
   };
 }
 

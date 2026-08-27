@@ -13,11 +13,11 @@ import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES, 
 import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
 import {
-  buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount,
+  buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount, autoFilesToConfirm,
   highlightLines,
 } from '../update/mergeReview.js';
 import {
-  buildCheckReview, readCheckItem, writeCheckItem, checksLeft,
+  buildCheckReview, readCheckItem, writeCheckItem, checksLeft, autoChecksToConfirm,
 } from '../update/checkReview.js';
 import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
@@ -668,6 +668,9 @@ export function buildRouter() {
       checkModules: body.checkModules !== false,
       checkExtensions: body.checkExtensions !== false,
       extendedCheck: body.extendedCheck === true,
+      // Тоже включено по умолчанию: без него правки поставщика в свойствах
+      // приходится не доказывать, а предполагать.
+      vendorAhead: body.vendorAhead !== false,
     };
 
     await updateStore.createRun(updateId, input);
@@ -758,8 +761,9 @@ export function buildRouter() {
         ? unresolvedCount(result, await updateStore.getReviewState(params.id))
         : 0;
       if (left > 0) {
-        sendError(res, 409, `Спорных мест, требующих решения, ещё ${left}. `
-          + 'Разберите их в окне «Разобрать спорные места» и подтвердите снова.');
+        sendError(res, 409, `Спорных мест, ожидающих вас, ещё ${left}. Разберите их `
+          + 'в окне «Разобрать спорные места» — разобранное программой там подтверждают — '
+          + 'и ответьте снова.');
         return;
       }
     }
@@ -907,7 +911,48 @@ export function buildRouter() {
     }
 
     const rel = String(body.rel || '');
-    const action = ['save', 'accept', 'revert', 'skip'].includes(body.action) ? body.action : 'save';
+    const action = ['save', 'accept', 'revert', 'skip', 'accept-auto'].includes(body.action)
+      ? body.action : 'save';
+
+    // Подтвердить разом всё, что разобрала программа.
+    //
+    // Просмотр каждого места по отдельности остаётся: список показан, значки
+    // расставлены, любое место открывается и правится. Но подтверждать сотню
+    // одинаковых решений по одному — работа ради работы, а осознанности от
+    // неё не прибавляется. Действие называет число и пишется в журнал.
+    if (action === 'accept-auto') {
+      const before = await updateStore.getReviewState(params.id);
+
+      // Та же кнопка во второй вкладке окна: замечания платформы, которые
+      // программа исправила сама.
+      if (body.checks) {
+        const ids = autoChecksToConfirm(result.checks, before);
+        for (const id of ids) {
+          await updateStore.setCheckDecision(params.id, id, { mode: 'accepted' });
+        }
+        const state = await updateStore.getReviewState(params.id);
+        log.info(`Обновление ${params.id}: подтверждено разом исправлений программы: ${ids.length}`);
+        sendJson(res, 200, {
+          ok: true, action, confirmed: ids.length, ...buildCheckReview(result.checks, state).totals,
+        });
+        return;
+      }
+
+      const files = autoFilesToConfirm(result, before);
+      for (const item of files) {
+        await updateStore.setReviewDecision(params.id, item, { mode: 'accepted' });
+      }
+      const state = await updateStore.getReviewState(params.id);
+      log.info(`Обновление ${params.id}: подтверждено разом мест, разобранных программой: ${files.length}`);
+      sendJson(res, 200, {
+        ok: true,
+        action,
+        confirmed: files.length,
+        left: unresolvedCount(result, state),
+        ...buildReview(result, state).totals,
+      });
+      return;
+    }
 
     // Ошибка проверки платформы: правится тот же текст, но живёт она не в
     // выгрузке объединения, а там, куда указала платформа, — и у неё есть

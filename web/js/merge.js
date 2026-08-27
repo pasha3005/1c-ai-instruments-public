@@ -118,6 +118,31 @@ export function initMerge(onBack) {
   $('#mgSave').addEventListener('click', () => decide('save'));
   $('#mgAccept').addEventListener('click', () => decide('accept'));
   $('#mgRevert').addEventListener('click', () => decide('revert'));
+  $('#mgConfirmAuto').addEventListener('click', confirmAuto);
+}
+
+/**
+ * Подтвердить разом всё, что разобрала программа.
+ *
+ * Спрашивается подтверждение: действие снимает вопрос сразу со многих мест,
+ * а отменить его можно только по одному. Число в вопросе — то же, что
+ * на кнопке.
+ */
+async function confirmAuto() {
+  const left = groupData().totals.leftAuto || 0;
+  if (!left) return;
+  const what = state.group === 'checks' ? 'исправлений программы' : 'мест, разобранных программой';
+  if (!confirm(`Подтвердить ${what}: ${left}? Каждое из них останется в списке — `
+    + 'открыть и поправить любое можно и после подтверждения.')) return;
+  try {
+    await api.updateReviewDecide(state.updateId, {
+      action: 'accept-auto',
+      checks: state.group === 'checks',
+    });
+    await loadReview();
+  } catch (err) {
+    setNote(err.message, true);
+  }
 }
 
 /**
@@ -172,7 +197,7 @@ async function loadReview() {
   $('#mgLead').innerHTML = lead(t);
 
   const back = $('#mgBack');
-  const done = t.left === 0 && t.manual > 0;
+  const done = t.left === 0 && t.files > 0;
   back.classList.toggle('btn--primary', done);
   back.textContent = done ? 'Всё разобрано — вернуться к обновлению' : 'К обновлению';
 
@@ -188,6 +213,15 @@ async function loadReview() {
     chip.textContent = counts[key] ? `${base} (${formatNumber(counts[key])})` : base;
     chip.classList.toggle('is-active', key === state.group);
   });
+
+  // Кнопка подтверждения показывается, только когда есть что подтверждать.
+  const confirmBtn = $('#mgConfirmAuto');
+  const leftAuto = t.leftAuto || 0;
+  confirmBtn.hidden = leftAuto === 0;
+  confirmBtn.textContent = state.group === 'checks'
+    ? `Подтвердить исправления программы (${formatNumber(leftAuto)})`
+    : `Подтвердить объединённое программой (${formatNumber(leftAuto)})`;
+
   renderTree();
 
   if (state.file) await openFile(state.file.key);
@@ -199,9 +233,17 @@ function lead(t) {
   parts.push(t.auto
     ? `<b>${checks ? 'Исправлено программой' : 'Программа объединила сама'}: ${formatNumber(t.auto)}</b>`
     : (checks ? 'Исправлять самой было нечего' : 'Объединять самой было нечего'));
-  parts.push(t.left
-    ? `<b style="color:var(--warn)">ждут вашего решения: ${formatNumber(t.left)}</b>`
-    : `<b style="color:var(--good)">${checks ? 'неразобранных замечаний не осталось' : 'неразобранных мест не осталось'}</b>`);
+  // Роды мест разные, и одним числом их не назвать: одно — работа, которую
+  // предстоит сделать, другое — чужое решение, которое надо просмотреть.
+  if (t.leftManual) {
+    parts.push(`<b style="color:var(--warn)">требуют вашего решения: ${formatNumber(t.leftManual)}</b>`);
+  }
+  if (t.leftAuto) {
+    parts.push(`<b style="color:var(--warn)">ждут вашего подтверждения: ${formatNumber(t.leftAuto)}</b>`);
+  }
+  if (!t.left) {
+    parts.push(`<b style="color:var(--good)">${checks ? 'неразобранных замечаний не осталось' : 'неразобранных мест не осталось'}</b>`);
+  }
   if (t.decided) parts.push(`разобрано вами: ${formatNumber(t.decided)}`);
   const tail = !checks && state.review && !state.review.dumpAlive
     ? ' · <b style="color:var(--danger)">каталог выгрузки удалён — править нечего</b>'
@@ -253,8 +295,9 @@ function renderTree() {
   });
 }
 
+/** Место ждёт человека, пока он не принял решение: и нерешённое, и разобранное сама. */
 function needsWork(file) {
-  return file.status === 'manual' && !file.decision;
+  return !file.decision;
 }
 
 function matchesFilter(file) {

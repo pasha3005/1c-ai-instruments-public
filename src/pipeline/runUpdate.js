@@ -49,14 +49,14 @@ import {
   prepareVendorConfig, exportCfToXml, readConfigurationProperties,
 } from '../analyze/vendorConfig.js';
 import { findVendorRelease } from '../onec/templates.js';
-import { vendorConfigPresence } from '../onec/vendorCompare.js';
+import { vendorConfigPresence, compareVendorWithTarget } from '../onec/vendorCompare.js';
 import {
   launchEnterprise, waitUpdateApplied, waitResultsForm, updateSessionArgs,
   confirmUpdateLegality, deferredStatusText, runInfobaseUpdate, readUpdateState,
 } from '../onec/enterprise.js';
 import { updateCfgFromFile } from '../onec/updateCfg.js';
 import { mergeConfigurations, dirTree, CONFLICT_DIR } from '../update/mergeConfig.js';
-import { unresolvedCount } from '../update/mergeReview.js';
+import { unresolvedCount, unresolvedByKind } from '../update/mergeReview.js';
 import { restoreVendorTree } from '../update/vendorSources.js';
 import { fixExtensionAnnotations } from '../update/fixExtensions.js';
 import { mergeExtensionSources } from '../update/extensionMerge.js';
@@ -181,7 +181,18 @@ async function runPipeline({ updateId, input, progress }) {
     progress.done('vendor-new',
       `${targetProps.name || ''} ${targetProps.version || ''}`.trim() || target.dir);
 
-    // ---------- 7. Текущая конфигурация поставщика ----------
+    // ---------- 7. Что поставщик изменил в новом релизе ----------
+    // Второе сравнение той же командой платформы: конфигурация поставщика
+    // из базы против файла новой поставки. Без него о правках поставщика
+    // в СВОЙСТВАХ судить нечем — первый отчёт называет свойство, но прежнего
+    // значения не печатает, и «изменили оба» приходится не доказывать,
+    // а предполагать.
+    startStage('vendor-ahead', 'Сравнение конфигурации поставщика с новой поставкой');
+    const ahead = await vendorAheadChanges({
+      input, platform, conn, workRoot, mainProps, progress,
+    });
+
+    // ---------- 8. Текущая конфигурация поставщика ----------
     startStage('vendor-old', 'Подготовка текущей конфигурации поставщика');
     const vendorCtx = {
       platform, conn, workDir: workRoot, user: input.user, password: input.password,
@@ -207,7 +218,7 @@ async function runPipeline({ updateId, input, progress }) {
     }
 
     const { baseTree, baseProps, restoreStats } = await prepareBase({
-      vendor, exported, targetTree, mainProps, progress, warnings,
+      vendor, exported, targetTree, mainProps, progress, warnings, ahead,
     });
 
     checkTarget({ mainProps, baseProps, targetProps, warnings, progress });
@@ -245,6 +256,13 @@ async function runPipeline({ updateId, input, progress }) {
       },
       vendorSource: vendor.source,
       restore: restoreStats,
+      // Итог второго сравнения — что поставщик изменил сам. null означает,
+      // что сравнения не было: указан .cf, снят флаг либо платформа отказала.
+      vendorAhead: ahead ? {
+        modified: ahead.modified.size,
+        added: ahead.addedByVendor.size,
+        removed: ahead.removedByVendor.size,
+      } : null,
       mergedDir: exported.dir,
       conflictDir: merge.conflictIndex.length ? conflictRoot : '',
       merge,
@@ -313,7 +331,7 @@ async function runPipeline({ updateId, input, progress }) {
 async function runTypical({
   updateId, input, platform, conn, workRoot, progress, startedAt, warnings, collectCtx,
 }) {
-  for (const id of ['export-main', 'vendor-new', 'vendor-old', 'merge']) {
+  for (const id of ['export-main', 'vendor-new', 'vendor-ahead', 'vendor-old', 'merge']) {
     progress.skip(id, 'не требуется: доработок нет');
   }
 
@@ -915,6 +933,70 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
 }
 
 /**
+ * Что поставщик изменил сам — сравнение его конфигурации с новой поставкой.
+ *
+ * Отвечает на вопрос, на который первое сравнение ответить не может. Отчёт
+ * «основная ↔ поставщик» называет свойства, которые менял интегратор, но
+ * прежних значений не печатает, а выгрузить конфигурацию поставщика в файл
+ * из командной строки нельзя. Значит «изменили оба» приходилось предполагать.
+ * Второе сравнение — той же командой, но сторонами «поставщик ↔ файл новой
+ * поставки» — говорит прямо, какие объекты и свойства поставщик тронул
+ * в новом релизе. Пересечение с нашими правками и есть настоящие спорные
+ * места; всё остальное решается само.
+ *
+ * Не выполняется в двух случаях, и оба — не сбой:
+ *  * текущая поставка указана файлом .cf. Тогда точка отсчёта есть, и она
+ *    точнее любого отчёта;
+ *  * человек снял флаг на форме. Сравнение стоит минут, и на большой
+ *    конфигурации это заметно.
+ */
+async function vendorAheadChanges({ input, platform, conn, workRoot, mainProps, progress }) {
+  if (String(input.vendorConfigPath || '').trim()) {
+    progress.skip('vendor-ahead', 'не нужно: текущая поставка указана файлом');
+    return null;
+  }
+  if (input.vendorAhead === false) {
+    progress.skip('vendor-ahead', 'выключено на форме');
+    return null;
+  }
+
+  const targetFile = String(input.targetConfigPath || '').trim();
+  if (!/\.cfe?$/i.test(targetFile)) {
+    progress.skip('vendor-ahead', 'новая поставка задана не файлом .cf');
+    return null;
+  }
+
+  const ahead = await compareVendorWithTarget({
+    platform,
+    conn,
+    workDir: workRoot,
+    configName: mainProps.name,
+    targetFile,
+    user: input.user,
+    password: input.password,
+    onProgress: (text) => progress.update('vendor-ahead', text),
+  });
+
+  if (!ahead.ok) {
+    // Не удалось — работаем как раньше. Терять из-за этого весь прогон нельзя:
+    // сравнение уточняет разбор, но не является его условием.
+    progress.warn('vendor-ahead', `не выполнено: ${ahead.reason}`);
+    progress.message(
+      `Сравнение конфигурации поставщика с новой поставкой не выполнено: ${ahead.reason} `
+      + 'Объединение продолжается без него: свойства, изменённые вами, останутся вашими, '
+      + 'но проверить, менял ли их и поставщик, будет нечем.',
+      'warn',
+    );
+    return null;
+  }
+
+  progress.done('vendor-ahead',
+    `поставщик изменил ${ahead.modified.size}, добавил ${ahead.addedByVendor.size}, `
+    + `убрал ${ahead.removedByVendor.size}`);
+  return ahead;
+}
+
+/**
  * Старая поставка: файл .cf либо восстановление прямо из базы.
  *
  * Второй путь — обычный, а не запасной. Раз конфигурацию можно СРАВНИТЬ
@@ -923,7 +1005,7 @@ async function lookForRelease({ vendor, vendorCtx, mainProps, progress, warnings
  * подробный отчёт печатает обе стороны каждого участка. На это указал
  * пользователь, и это снимает с него обязанность заранее выгружать .cf.
  */
-async function prepareBase({ vendor, exported, targetTree, mainProps, progress, warnings }) {
+async function prepareBase({ vendor, exported, targetTree, mainProps, progress, warnings, ahead }) {
   if (vendor.dir) {
     const baseProps = await readConfigurationProperties(path.join(vendor.dir, 'Configuration.xml'));
     progress.done('vendor-old',
@@ -945,6 +1027,9 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
       details: vendor.details || null,
     },
     targetTree,
+    // Второе сравнение: что поставщик изменил сам. Им доказывается, что
+    // тронутое нами свойство он не трогал, — и место перестаёт быть спорным.
+    ahead,
     onProgress: (text) => progress.update('vendor-old', text),
   });
 
@@ -956,7 +1041,12 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
     'Текущая конфигурация поставщика восстановлена из самой базы: файл .cf не понадобился. '
     + `Совпадает с основной конфигурацией ${stats.sameAsOurs} файлов, тексты ${stats.restoredModules} `
     + `изменённых модулей собраны из подробного сравнения, ${stats.unknown} файлов остались `
-    + 'неизвестными — по ним решение за вами.',
+    + 'неизвестными — по ним решение за вами.'
+    + (stats.fromTarget
+      ? ` Ещё по ${stats.fromTarget} описаниям объектов поставка взята из нового релиза: `
+        + 'второе сравнение показало, что поставщик их не менял, — значит в текущей поставке '
+        + 'они были такими же.'
+      : ''),
   );
   if (stats.unknown) {
     warnings.push(
@@ -995,37 +1085,60 @@ async function prepareBase({ vendor, exported, targetTree, mainProps, progress, 
  * и ответом проходит сколько угодно времени, и полагаться на то, что кнопку
  * нельзя нажать, нельзя.
  */
+/**
+ * Одна фраза о том, чего ждёт прогон.
+ *
+ * Роды мест разные, и смешивать их в одно число нельзя: нерешённое — работа,
+ * которую придётся сделать, а разобранное программой — чужое решение, которое
+ * человек должен увидеть прежде, чем оно уедет в базу.
+ */
+function waitingSentence({ manual, auto }) {
+  if (manual && auto) {
+    return `Объединение выполнено. Спорных мест: ${manual} требуют вашего решения, `
+      + `ещё ${auto} программа разобрала сама — их нужно просмотреть и подтвердить.`;
+  }
+  if (manual) {
+    return `Объединение выполнено, но спорных мест, требующих вашего решения, ${manual}.`;
+  }
+  return 'Объединение выполнено, решать вручную нечего: спорных мест, разобранных программой, '
+    + `${auto}. Их нужно просмотреть и подтвердить — в базу уйдёт именно то, что она решила.`;
+}
+
 async function applyToBase({
   updateId, input, platform, conn, workRoot, progress, result, manualCount,
 }) {
-  progress.start('confirm', manualCount > 0
-    ? `Ожидается разбор спорных мест: ${manualCount}`
+  // Ждёт человека не только нерешённое: места, разобранные программой, тоже
+  // ждут — просмотра и подтверждения (требование пользователя 27.08.2026).
+  const waiting = unresolvedByKind(result, await store.getReviewState(updateId));
+
+  progress.start('confirm', waiting.total > 0
+    ? `Ожидается разбор спорных мест: ${waiting.total}`
     : 'Ожидается решение о записи в базу');
 
-  if (manualCount > 0) {
+  if (waiting.total > 0) {
     progress.message(
-      `Объединение выполнено, но спорных мест, требующих вашего решения, ${manualCount}. `
-      + 'Прогон приостановлен и ждёт: откройте «Разобрать спорные места» — там видно, '
-      + 'что программа объединила сама, а что осталось вам, и там же правится и сохраняется '
-      + 'результат. Когда неразобранных мест не останется, нажмите «Всё разобрано — '
-      + 'записать в базу», и прогон продолжится с вашими решениями.',
+      `${waitingSentence(waiting)} Прогон приостановлен и ждёт: откройте «Разобрать спорные `
+      + 'места» — там видно, что программа объединила сама, а что осталось вам, и там же '
+      + 'правится и сохраняется результат. Когда неразобранных мест не останется, нажмите '
+      + '«Всё разобрано — записать в базу», и прогон продолжится с вашими решениями.',
       'warn',
     );
   }
 
   const answer = await progress.ask('confirm', {
-    title: manualCount > 0
+    title: waiting.total > 0
       ? 'Разберите спорные места — и прогон продолжится'
       : 'Загрузить результат в информационную базу?',
-    kind: manualCount > 0 ? 'review' : 'plain',
+    kind: waiting.total > 0 ? 'review' : 'plain',
     updateId,
     manual: manualCount,
     infobase: conn.display,
-    text: manualCount > 0
-      ? `Требуют вашего решения ${manualCount} мест. Пока хоть одно не разобрано, записать `
-        + 'в базу нельзя: в таком месте в выгрузке лежит ваша версия участка, а правка '
-        + 'поставщика в нём потеряна.'
-      : 'Объединение выполнено полностью, мест, требующих решения, не осталось.',
+    text: waiting.total > 0
+      ? `${waitingSentence(waiting)} Пока хоть одно место не разобрано, записать в базу `
+        + 'нельзя: в нерешённом месте в выгрузке лежит ваша версия участка, а правка '
+        + 'поставщика в нём потеряна, а решение программы — предположение, которое вы '
+        + 'ещё не видели.'
+      : 'Объединение выполнено полностью, мест, требующих вашего внимания, не осталось.',
   });
 
   if (!answer?.ok) {
@@ -1047,9 +1160,9 @@ async function applyToBase({
     progress.warn('confirm', `загрузка отменена: не разобрано ${left}`);
     for (const id of ['load', 'db-update', 'check', 'handlers']) progress.skip(id, 'не выполнялось');
     progress.message(
-      `Загрузка отменена: спорных мест, требующих решения, ещё ${left}. Разберите их `
-      + 'в окне «Разобрать спорные места» и запустите загрузку кнопкой '
-      + '«Загрузить в конфигурацию».',
+      `Загрузка отменена: спорных мест, ожидающих вас, ещё ${left}. Разберите нерешённые `
+      + 'и подтвердите те, что программа разобрала сама, — в окне «Разобрать спорные места», '
+      + 'и запустите загрузку кнопкой «Загрузить в конфигурацию».',
       'warn',
     );
     return;
@@ -1472,9 +1585,9 @@ export async function loadUpdateResult({ updateId, user, password, updateDb = tr
   const left = unresolvedCount(result, await store.getReviewState(updateId));
   if (left > 0) {
     throw new Error(
-      `Загрузка запрещена: спорных мест, требующих решения, ещё ${left}. `
+      `Загрузка запрещена: спорных мест, ожидающих вас, ещё ${left}. `
       + 'Разберите их в окне «Разобрать спорные места» — там показано, что объединено '
-      + 'программой, а что осталось вам, — и повторите загрузку.',
+      + 'программой (это нужно подтвердить), а что осталось вам, — и повторите загрузку.',
     );
   }
 

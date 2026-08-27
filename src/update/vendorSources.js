@@ -79,7 +79,7 @@ function rootPropertiesChanged(compare) {
  * @param {(text: string) => void} [params.onProgress]
  */
 export async function restoreVendorTree({
-  mainDir, mainFiles, compare, targetTree, onProgress,
+  mainDir, mainFiles, compare, targetTree, ahead = null, onProgress,
 }) {
   const modified = compare?.sets?.modified || new Set();
   const added = compare?.sets?.added || new Set();
@@ -87,6 +87,9 @@ export async function restoreVendorTree({
   const moduleLines = compare?.moduleLines || new Map();
   const rootUnknown = rootPropertiesChanged(compare);
   const changedProps = changedProperties(compare);
+  // Свойства, которые поставщик изменил САМ между релизами. Берутся все,
+  // включая удалённые им: пропажа свойства — такая же его правка, как замена.
+  const vendorProps = propertyLabels(ahead?.props);
 
   /** Файлы, содержимое которых у поставщика известно и отличается от нашего. */
   const restored = new Map();
@@ -99,6 +102,32 @@ export async function restoreVendorTree({
     sameAsOurs: 0, restoredModules: 0, approxModules: 0, unknown: 0, ourOwn: 0, deletedByUs: 0,
     /** Собран ли состав конфигурации: 1 — да, 0 — файл ушёл в «неизвестно». */
     restoredRoot: 0,
+    /**
+     * Файлы, у которых поставка взята из НОВОЙ поставки целиком: второе
+     * сравнение показало, что поставщик их между релизами не менял, — значит
+     * в старой поставке они были ровно такими же.
+     */
+    fromTarget: 0,
+  };
+
+  /**
+   * Менял ли поставщик этот файл между текущим релизом и новым.
+   *
+   * Отвечает второе сравнение — конфигурации поставщика с файлом новой
+   * поставки (`compareVendorWithTarget`). Его нет — нет и ответа, и файл
+   * считается тронутым: ошибиться в эту сторону дешевле, там дальше человек.
+   *
+   * Описанию объекта нужна та же поправка, что и в первом сравнении: узел
+   * объекта помечается изменённым и когда изменились одни его модули, поэтому
+   * признаком служит непустой перечень НАЗВАННЫХ свойств, а не сама пометка.
+   */
+  const vendorChangedFile = (key, entry) => {
+    if (!ahead) return true;
+    const objectKey = entry.objectKey;
+    if (objectKey !== ROOT_KEY
+      && (ahead.addedByVendor?.has(objectKey) || ahead.removedByVendor?.has(objectKey))) return true;
+    if (entry.isObjectFile) return (vendorProps.get(objectKey) || []).length > 0;
+    return Boolean(key && ahead.modified?.has(key));
   };
 
   let seen = 0;
@@ -155,6 +184,29 @@ export async function restoreVendorTree({
       continue;
     }
 
+    // Файл меняли мы, а поставщик между релизами его не трогал: значит
+    // в текущей поставке он был точно таким же, как в новой. Это и есть
+    // недостающая точка отсчёта — причём точная, а не собранная по строкам
+    // отчёта. Дальше объединение само увидит, что менял только интегратор,
+    // и оставит нашу версию.
+    //
+    // **Только для описаний объектов**, и это проверено, а не предположено.
+    // Сверка двух настоящих поставок УНФ (3.0.13.374 и 3.0.14.115, 27.08.2026)
+    // с отчётом «поставщик ↔ новая поставка»: из 16 732 описаний объектов,
+    // о которых отчёт молчит, по существу не отличается НИ ОДНО (11 отличаются
+    // только внутренними идентификаторами). А вот у форм так не выходит:
+    // 57 файлов из 20 327 отчёт не называет, хотя выгрузка их различает —
+    // платформа сравнивает метаданные, а в файле формы есть ещё и служебные
+    // имена элементов, которые в сравнении не участвуют. Для форм, макетов
+    // и прочего прежний порядок сохраняется.
+    if (entry.isObjectFile && !vendorChangedFile(key, entry) && targetTree.files.has(rel)) {
+      const buffer = await targetTree.read(rel);
+      restored.set(rel, buffer);
+      files.set(rel, buffer.length);
+      stats.fromTarget += 1;
+      continue;
+    }
+
     if (entry.isModule && moduleLines.has(key)) {
       let oursText;
       try {
@@ -197,7 +249,7 @@ export async function restoreVendorTree({
   log.info(
     `Старая поставка восстановлена из базы: совпадает ${stats.sameAsOurs}, `
     + `модулей собрано ${stats.restoredModules} (приблизительно ${stats.approxModules}), `
-    + `неизвестно ${stats.unknown}`,
+    + `взято из новой поставки ${stats.fromTarget}, неизвестно ${stats.unknown}`,
   );
 
   return {
@@ -211,6 +263,14 @@ export async function restoreVendorTree({
      * поставщик, и его версию можно взять смело.
      */
     changedProps,
+    /**
+     * Свойства, изменённые ПОСТАВЩИКОМ между текущим и новым релизом: ключ
+     * объекта → подписи из второго отчёта. Пустая карта означает, что второго
+     * сравнения не было, и о правках поставщика в свойствах ничего не известно.
+     */
+    vendorProps,
+    /** Было ли второе сравнение вообще: от этого зависят формулировки. */
+    aheadKnown: Boolean(ahead),
     stats,
     async read(rel) {
       const ready = restored.get(rel);
@@ -304,6 +364,17 @@ function changedProperties(compare) {
       .filter((item) => item.change === 'modified' || item.change === 'added')
       .map((item) => item.label)
       .filter(Boolean);
+    if (labels.length) out.set(key, labels);
+  }
+  return out;
+}
+
+/** Подписи всех подчинённых отличий: ключ объекта → перечень имён. */
+function propertyLabels(details) {
+  const out = new Map();
+  if (!details) return out;
+  for (const [key, items] of details) {
+    const labels = (items || []).map((item) => item.label).filter(Boolean);
     if (labels.length) out.set(key, labels);
   }
   return out;

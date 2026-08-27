@@ -73,7 +73,12 @@ const MODULE_PROPERTY = new Map([
   // то есть объявлялся дважды изменённым, хотя менял его только поставщик.
   ['модуль обычного приложения', 'OrdinaryApplicationModule'],
   ['модуль управляемого приложения', 'ManagedApplicationModule'],
-  ['модуль приложения', 'ApplicationModule'],
+  // «Модуль приложения» платформа печатает вместо «модуля управляемого
+  // приложения»: в выгрузке ему отвечает `Ext/ManagedApplicationModule.bsl`,
+  // и файла `ApplicationModule.bsl` там нет вовсе (сверено с ConfigDumpInfo.xml
+  // выгрузки УНФ, 27.08.2026). Прежнее соответствие давало ключ, которому
+  // не отвечал ни один файл, и правка корневого модуля терялась.
+  ['модуль приложения', 'ManagedApplicationModule'],
   ['модуль сеанса', 'SessionModule'],
   ['модуль внешнего соединения', 'ExternalConnectionModule'],
   ['модуль объекта', 'ObjectModule'],
@@ -83,6 +88,14 @@ const MODULE_PROPERTY = new Map([
   ['модуль команды', 'CommandModule'],
   ['модуль формы', ''],
   ['форма', ''],
+  // Не модули, но такие же самостоятельные файлы выгрузки со своим хешем
+  // в ConfigDumpInfo.xml. Командный интерфейс есть и у конфигурации,
+  // и у каждой подсистемы — ключ собирается от текущего объекта, поэтому
+  // одна запись работает в обоих случаях.
+  ['командный интерфейс', 'CommandInterface'],
+  ['командный интерфейс основного раздела', 'MainSectionCommandInterface'],
+  ['интерфейс клиентского приложения', 'ClientApplicationInterface'],
+  ['рабочая область начальной страницы', 'HomePageWorkArea'],
 ]);
 
 /**
@@ -192,6 +205,119 @@ export async function compareWithVendorInBase({
   }
 
   return { ok: false, reason: failure, ...verdict };
+}
+
+/**
+ * Что поставщик изменил САМ — между текущим релизом и новым.
+ *
+ * Второе сравнение той же командой, но другими сторонами: слева конфигурация
+ * поставщика из базы, справа файл новой поставки.
+ *
+ *   -FirstConfigurationType VendorConfiguration -FirstName <имя>
+ *   -SecondConfigurationType File -SecondFile <новая поставка.cf>
+ *
+ * Проверено 27.08.2026 на демо-базе УНФ 3.0.13.374 → 3.0.14.115, платформа
+ * 8.5.1.1150: код 0, краткий отчёт 806 КБ за 105 с. Имя обязательно — без
+ * `-FirstName` платформа отвечает «Не указано имя конфигурации поставщика».
+ *
+ * **Зачем это нужно.** Первое сравнение (основная ↔ поставщик) говорит, какие
+ * свойства менял интегратор, но не печатает их прежних значений, и без них
+ * нельзя понять, менял ли то же свойство поставщик. Второе сравнение отвечает
+ * на этот вопрос прямо: если объекта в нём нет, поставщик его между релизами
+ * не трогал — значит наше значение и есть результат, спорить не о чем.
+ * А если есть, названы и свойства: пересечение с нашими даёт настоящие дважды
+ * изменённые места вместо догадок. Живой случай: у документа поставщик изменил
+ * тип реквизита табличной части, интегратор — добавил свой реквизит; общего
+ * ничего, и решать человеку нечего.
+ *
+ * **Отчёт запрашивается КРАТКИЙ, и это не оптимизация.** Тот же вызов
+ * с `-ReportType Full` на том же стенде не завершился и за 56 минут (снят
+ * вручную), краткий — 105 секунд. Строки правок здесь и не нужны: тексты
+ * поставщика мы берём из новой поставки, а нужны только имена объектов
+ * и свойств — их краткий отчёт даёт полностью.
+ *
+ * **Стороны переставлены, и это главная ловушка.** Разбор общий
+ * (`parseCompareReport`), а он называет «добавленным» то, что есть только
+ * в ПЕРВОЙ конфигурации. Здесь первая — поставщик, поэтому «только в первой»
+ * означает «объект из нового релиза убран», а «только во второй» — «в новом
+ * релизе появился». Возвращаются они уже под правильными именами.
+ */
+export async function compareVendorWithTarget({
+  platform, conn, workDir, configName, targetFile, user, password, onProgress,
+}) {
+  if (!platform.client) {
+    return { ok: false, reason: `В платформе ${platform.version} не найден 1cv8.exe` };
+  }
+  if (!configName) {
+    return { ok: false, reason: 'Не определено имя конфигурации' };
+  }
+  if (!targetFile) {
+    return { ok: false, reason: 'Новая поставка задана не файлом .cf — сравнивать не с чем' };
+  }
+
+  const dir = await ensureDir(path.join(workDir, 'vendor-ahead'));
+  const reportFile = path.join(dir, 'compare.txt');
+  const logFile = path.join(dir, 'designer.log');
+  await rmrf(reportFile).catch(() => {});
+  await rmrf(logFile).catch(() => {});
+
+  onProgress?.('Сравнение конфигурации поставщика с новой поставкой');
+  log.info(`Сравнение поставщика «${configName}» с файлом ${targetFile}`);
+
+  const args = [
+    'DESIGNER',
+    ...toClientArgs(conn),
+    ...(user ? [`/N${user}`] : []),
+    ...(password ? [`/P${password}`] : []),
+    '/CompareCfg',
+    '-FirstConfigurationType', 'VendorConfiguration',
+    '-FirstName', configName,
+    '-SecondConfigurationType', 'File',
+    '-SecondFile', targetFile,
+    '-IncludeChangedObjects',
+    '-IncludeAddedObjects',
+    '-IncludeDeletedObjects',
+    '-ReportType', 'Brief',
+    '-ReportFormat', 'txt',
+    '-ReportFile', reportFile,
+    '/DisableStartupDialogs',
+    '/DisableStartupMessages',
+    '/Out', logFile,
+  ];
+
+  try {
+    await run(platform.client, args, { timeout: TIMEOUTS.configExport, allowNonZeroExit: true });
+  } catch (err) {
+    rethrowIfCancelled(err);
+    return { ok: false, reason: `конфигуратор не выполнил сравнение: ${err.message}` };
+  }
+
+  if (!(await pathExists(reportFile))) {
+    const designerLog = (await readLogSafe(logFile)).trim();
+    const verdict = classifyFailure(designerLog);
+    return { ok: false, reason: verdict.reason, ...verdict };
+  }
+
+  const sets = parseCompareReport(await readText(reportFile));
+  await rmrf(logFile).catch(() => {});
+
+  log.info(
+    `Поставщик между релизами: изменено ${sets.modified.size}, добавлено ${sets.removed.size}, `
+    + `удалено ${sets.added.size}`,
+  );
+
+  return {
+    ok: true,
+    /** Объекты, которые поставщик изменил в новом релизе. */
+    modified: sets.modified,
+    /** Объекты, появившиеся в новом релизе («только во второй» — в файле). */
+    addedByVendor: sets.removed,
+    /** Объекты, убранные из нового релиза («только в первой» — у поставщика). */
+    removedByVendor: sets.added,
+    /** Ключ объекта → его свойства, изменённые поставщиком. */
+    props: sets.details,
+    reportFile,
+  };
 }
 
 /**
@@ -535,7 +661,7 @@ export function parseCompareReport(text) {
     const prop = PROPERTY_LINE.exec(body);
     if (prop && currentObject) {
       const label = prop[1].trim();
-      const suffix = MODULE_PROPERTY.get(label.toLowerCase());
+      const suffix = propertySuffix(label, currentObject);
       if (suffix !== undefined) {
         // Суффикс добавляется, только если его ещё нет: конфигуратор печатает
         // команду отдельным узлом («Обработка.X.Команда.Согласование»), и ключ
@@ -559,6 +685,30 @@ export function parseCompareReport(text) {
   }
 
   return { modified, added, removed, details, moduleLines };
+}
+
+/**
+ * Суффикс ключа по русской подписи свойства — с поправкой на вид объекта.
+ *
+ * Подпись «Модуль» платформа печатает у общего модуля, у веб-сервиса
+ * и у HTTP-сервиса, а хранятся они по-разному: у общего модуля ключ — сам
+ * объект (`CommonModule.X`), у остальных к нему приписан `Module`
+ * (`HTTPService.X.Module` — так и в `ConfigDumpInfo.xml`). Без поправки модуль
+ * веб-сервиса не находил своего файла в выгрузке: правку в нём считали
+ * несуществующей, и файл молча заменялся файлом новой поставки.
+ * Проверено 27.08.2026 на выгрузке УНФ.
+ *
+ * @returns {string|undefined} undefined — это не файловое свойство, а описание
+ */
+function propertySuffix(label, currentObject) {
+  const name = String(label).toLowerCase();
+  const suffix = MODULE_PROPERTY.get(name);
+  // Поправка нужна только подписи «Модуль»: у «Формы» и «Модуля формы» ключ
+  // к этой строке собран целиком, и дописывать к нему нечего.
+  if (suffix === undefined || name !== 'модуль') return suffix;
+  // Правило то же, что при переводе пути файла в ключ (`dumpInfoKey`):
+  // у общего модуля ключ — сам объект, у прочих к нему приписан `Module`.
+  return /^CommonModule\./.test(currentObject) ? '' : 'Module';
 }
 
 /**
@@ -711,6 +861,21 @@ function parseObjectPath(russianName) {
     if (!childName) break;
     if (/^форма$/i.test(childKind)) {
       key.push('Form', childName, 'Form');
+    } else if (/^подсистема$/i.test(childKind)) {
+      // Вложенная подсистема — самостоятельный элемент со своим файлом
+      // описания и своим хешем (`Subsystem.CRM.Subsystem.CRMСлужебный`).
+      // Пока она считалась свойством владельца, правка её состава
+      // приписывалась подсистеме верхнего уровня.
+      key.push('Subsystem', childName);
+    } else if (/^макет$/i.test(childKind)) {
+      // У макета в выгрузке СВОЙ файл (`Templates/<Имя>/Ext/Template.*`),
+      // и без ключа изменение макета не связывалось с этим файлом ни в одну,
+      // ни в другую сторону: доработанный макет типового объекта считался
+      // нетронутым и молча заменялся макетом новой поставки. Проверено
+      // 27.08.2026 на УНФ: «Справочник.СтраныМира.Макет.Классификатор —
+      // Макет - Изменено» при ключе `Catalog.СтраныМира.Template.Классификатор`
+      // в выгрузке.
+      key.push('Template', childName);
     } else if (/^команда$/i.test(childKind)) {
       // Именно команда, а не её модуль. Раньше здесь сразу приписывался
       // `CommandModule`, и любое изменение команды — например только «Тип

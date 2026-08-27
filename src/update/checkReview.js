@@ -170,11 +170,24 @@ export function buildCheckItems(checks) {
   return items;
 }
 
-/** Сколько мест ещё ждут решения: разобранное и пропущенное из счёта уходит. */
+/**
+ * Сколько мест ещё ждут человека: разобранное и пропущенное из счёта уходит.
+ *
+ * Считается и то, что исправила сама программа: в базу уйдёт её правка, и она
+ * ровно так же должна быть просмотрена и подтверждена (требование пользователя
+ * 27.08.2026).
+ */
 export function checksLeft(checks, state = {}) {
   const decided = state.checks || {};
+  return buildCheckItems(checks).filter((item) => !decided[item.id]).length;
+}
+
+/** Опознаватели мест, исправленных программой и ещё не подтверждённых. */
+export function autoChecksToConfirm(checks, state = {}) {
+  const decided = state.checks || {};
   return buildCheckItems(checks)
-    .filter((item) => item.status === 'manual' && !decided[item.id]).length;
+    .filter((item) => item.status === 'auto' && !decided[item.id])
+    .map((item) => item.id);
 }
 
 /** Дерево для окна: расширение либо «Проверка модулей» → места. */
@@ -194,7 +207,7 @@ export function buildCheckReview(checks, state = {}) {
   for (const object of objects) {
     object.manual = object.files.filter((f) => f.status === 'manual').length;
     object.auto = object.files.filter((f) => f.status === 'auto').length;
-    object.left = object.files.filter((f) => f.status === 'manual' && !f.decision).length;
+    object.left = object.files.filter((f) => !f.decision).length;
   }
 
   return {
@@ -204,7 +217,9 @@ export function buildCheckReview(checks, state = {}) {
       manual: items.filter((i) => i.status === 'manual').length,
       auto: items.filter((i) => i.status === 'auto').length,
       decided: items.filter((i) => decided[i.id]).length,
-      left: items.filter((i) => i.status === 'manual' && !decided[i.id]).length,
+      left: items.filter((i) => !decided[i.id]).length,
+      leftManual: items.filter((i) => i.status === 'manual' && !decided[i.id]).length,
+      leftAuto: items.filter((i) => i.status === 'auto' && !decided[i.id]).length,
     },
   };
 }

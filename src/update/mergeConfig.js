@@ -161,6 +161,14 @@ export async function mergeConfigurations({
      * прежнего состояния которого у поставщика мы не знаем.
      */
     changedProps: base.changedProps || new Map(),
+    /**
+     * Свойства, которые изменил САМ ПОСТАВЩИК между текущим и новым релизом, —
+     * из второго сравнения (конфигурация поставщика ↔ файл новой поставки).
+     * Пересечение с `changedProps` и есть настоящее «изменили оба».
+     */
+    vendorProps: base.vendorProps || new Map(),
+    /** Было ли второе сравнение: без него о правках поставщика судить нечем. */
+    aheadKnown: Boolean(base.aheadKnown),
     touchedObjects,
     objects: new Map(),
     totals: {
@@ -448,17 +456,28 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
   // по свойствам: участок, лежащий в свойстве, которого интегратор не касался,
   // изменил один поставщик — его правку можно взять смело. Спорным остаётся
   // только участок в свойстве, названном отчётом.
+  let both = [];
   if (path.extname(rel).toLowerCase() === '.xml') {
-    const resolved = await resolveUnknownXml(state, rel);
-    if (resolved) return;
+    const outcome = await resolveUnknownXml(state, rel);
+    if (outcome.resolved) return;
+    both = outcome.both;
   }
 
   state.totals.manual += 1;
   const element = record(state, rel, {
     action: 'manual-two-way',
-    note: 'Это свойство вы изменили относительно поставщика, и в новой поставке оно тоже '
-      + 'другое. Прежнее значение поставщика отчёт сравнения не печатает, поэтому объединить '
-      + 'автоматически нельзя — ниже отличия от новой поставки.',
+    // Второе сравнение (поставщик ↔ новая поставка) даёт доказательство,
+    // которого раньше не было: свойство названо в обоих отчётах — значит его
+    // изменили и вы, и поставщик. Это настоящее «изменено дважды», и говорить
+    // о нём надо именно так, а не «прежнее значение неизвестно».
+    note: both.length
+      ? `Это свойство изменили и вы, и поставщик: ${both.join(', ')}. Первое сравнение `
+        + 'называет его среди ваших правок, второе — среди правок поставщика в новом релизе. '
+        + 'Прежнего значения платформа не печатает, поэтому свести версии может только человек — '
+        + 'ниже отличия от новой поставки.'
+      : 'Это свойство вы изменили относительно поставщика, и в новой поставке оно тоже '
+        + 'другое. Прежнее значение поставщика отчёт сравнения не печатает, поэтому объединить '
+        + 'автоматически нельзя — ниже отличия от новой поставки.',
   });
   await attachTwoWay(state, rel, element);
   element.versions = await saveConflictVersions(state, rel);
@@ -476,29 +495,42 @@ async function mergeUnknown(state, rel, { inMain, inTarget }) {
  *   не тронуто нами → расхождение внёс ОДИН поставщик → берём его версию;
  *   тронуто нами    → это наша правка, она и остаётся.
  *
- * **Дважды изменённым такое место НЕ объявляется.** Чтобы сказать «изменили
- * оба», нужно знать прежнее значение свойства у поставщика, а его платформа
- * не печатает и выгрузить конфигурацию поставщика из командной строки нельзя
- * (`/DumpCfg -ConfigurationType VendorConfiguration` ключ молча игнорирует
- * и отдаёт основную конфигурацию — сверено побайтно). Значит доказательств
- * правки поставщика в этом свойстве у нас нет, и требовать решения не за что:
- * конфигуратор, у которого поставщик перед глазами, в том же месте
+ * **Дважды изменённое место называется дважды изменённым, только когда это
+ * доказано.** Доказательство даёт второе сравнение — конфигурации поставщика
+ * с файлом новой поставки (`compareVendorWithTarget`): оно называет свойства,
+ * которые поставщик изменил САМ между релизами. Свойство названо в обоих
+ * отчётах — изменили оба, и решает человек. Названо только в нашем — поставщик
+ * его не трогал, наше значение и есть результат.
+ *
+ * Второго сравнения не было (его отключили либо платформа не отдала
+ * поставщика) — доказательств правки поставщика нет, и требовать решения
+ * не за что: конфигуратор, у которого поставщик перед глазами, в том же месте
  * дважды изменённым считает только модуль (сверено на УНФ 3.0.13.374 →
  * 3.0.14.115, 27.08.2026). Наша версия сохраняется, а перечень таких свойств
  * идёт в отчёт — сверить их вручную можно, а гадать нельзя.
  *
  * Перечня свойств нет — разбирать нечем, и файл честно уходит человеку целиком.
  *
- * @returns {Promise<boolean>} true — файл разобран здесь, дальше идти не нужно
+ * @returns {Promise<{resolved: boolean, both: string[]}>} `resolved` — файл
+ *   разобран здесь; `both` — свойства, изменённые обеими сторонами
  */
 async function resolveUnknownXml(state, rel) {
+  const nothing = { resolved: false, both: [] };
   const objectKey = describeDumpPath(rel).objectKey;
   const labels = state.changedProps?.get(objectKey);
-  if (!labels || !labels.length) return false;
+  if (!labels || !labels.length) return nothing;
+
+  // Свойства этого объекта, изменённые поставщиком в новом релизе. Пересечение
+  // с нашими и есть настоящее «изменено дважды».
+  const vendorLabels = (state.aheadKnown && state.vendorProps?.get(objectKey)) || [];
+  const both = labels.filter((label) => vendorLabels.some(
+    (v) => sameLabel(v, label),
+  ));
+  if (both.length) return { resolved: false, both };
 
   const oursBuf = await read(state, 'main', rel);
   const theirsBuf = await read(state, 'target', rel);
-  if (isUtf16(oursBuf) || isUtf16(theirsBuf)) return false;
+  if (isUtf16(oursBuf) || isUtf16(theirsBuf)) return nothing;
 
   const oursText = oursBuf.toString('utf8');
   const theirsText = theirsBuf.toString('utf8');
@@ -507,7 +539,7 @@ async function resolveUnknownXml(state, rel) {
   const theirs = splitLines(theirsText).lines;
 
   const hunks = changedHunks(ours, theirs);
-  if (!hunks || !hunks.length) return false;
+  if (!hunks || !hunks.length) return nothing;
 
   const outline = buildXmlOutline(oursText);
   const theirsOutline = buildXmlOutline(theirsText);
@@ -550,10 +582,15 @@ async function resolveUnknownXml(state, rel) {
   const element = record(state, rel, {
     action: 'auto-resolved',
     note: kept.length
-      ? 'Часть отличий от новой поставки лежит в свойствах, которые меняли вы: там оставлена '
-        + 'ваша версия. Прежнее значение поставщика платформа не печатает, поэтому проверить, '
-        + 'менял ли эти свойства и он, нечем — сверьте вручную, если правка поставщика важна. '
-        + 'Остальное взято из новой поставки.'
+      ? (state.aheadKnown
+        ? 'Часть отличий от новой поставки лежит в свойствах, которые меняли вы: там оставлена '
+          + 'ваша версия. Второе сравнение — конфигурации поставщика с новой поставкой — этих '
+          + 'свойств среди его правок не называет, значит спорить не о чем. Остальное взято '
+          + 'из новой поставки.'
+        : 'Часть отличий от новой поставки лежит в свойствах, которые меняли вы: там оставлена '
+          + 'ваша версия. Прежнее значение поставщика платформа не печатает, поэтому проверить, '
+          + 'менял ли эти свойства и он, нечем — сверьте вручную, если правка поставщика важна. '
+          + 'Остальное взято из новой поставки.')
       : 'Ни одно отличие от новой поставки не лежит в свойствах, которые вы меняли, — '
         + 'значит их внёс один поставщик. Взяты его значения.',
   });
@@ -564,9 +601,13 @@ async function resolveUnknownXml(state, rel) {
     ...kept.slice(0, RESOLVED_PER_FILE).map(({ hunk, where }) => ({
       where,
       how: 'ваша правка сохранена',
-      why: 'Это свойство относительно поставщика меняли вы — так говорит отчёт сравнения. '
-        + 'Прежнего значения поставщика он не печатает, поэтому доказать, что поставщик менял '
-        + 'его тоже, нечем. Оставлена ваша версия.',
+      why: state.aheadKnown
+        ? 'Это свойство относительно поставщика меняли вы, а он его в новом релизе не менял: '
+          + 'второе сравнение — конфигурации поставщика с новой поставкой — среди его правок '
+          + 'этого свойства не называет. Оставлена ваша версия.'
+        : 'Это свойство относительно поставщика меняли вы — так говорит отчёт сравнения. '
+          + 'Прежнего значения поставщика он не печатает, поэтому доказать, что поставщик менял '
+          + 'его тоже, нечем. Оставлена ваша версия.',
       oursStartLine: hunk.baseStart + 1,
       theirsStartLine: hunk.sideStart + 1,
       base: cut([]),
@@ -594,7 +635,7 @@ async function resolveUnknownXml(state, rel) {
     merged: Buffer.from(joinLines(out, shape), 'utf8'),
     ours: oursBuf,
   });
-  return true;
+  return { resolved: true, both: [] };
 }
 
 /**
@@ -607,8 +648,25 @@ async function resolveUnknownXml(state, rel) {
  */
 function touchesOurProperty(where, labels) {
   if (!where) return false;
-  const path = where.toLowerCase();
-  return labels.some((label) => label && path.includes(String(label).toLowerCase()));
+  const lower = where.toLowerCase();
+  return labels.some((label) => label && lower.includes(String(label).toLowerCase()));
+}
+
+/**
+ * Одно ли это свойство в двух отчётах сравнения.
+ *
+ * Подписи приходят от одной и той же платформы, но сверять их как строки
+ * нельзя: кавычки бывают разными, регистр и «ё» — тоже. Сравнение грубое
+ * намеренно: совпали подписи вложенных свойств разных реквизитов («Тип»
+ * у одного и «Тип» у другого) — место уйдёт человеку. Ошибиться в эту сторону
+ * дешевле: он посмотрит и согласится, а пропущенная правка поставщика
+ * потеряется молча.
+ */
+function sameLabel(a, b) {
+  const norm = (value) => String(value || '')
+    .toLowerCase().replace(/ё/g, 'е').replace(/[«»"']/g, '').replace(/\s+/g, ' ')
+    .trim();
+  return norm(a) === norm(b) && norm(a) !== '';
 }
 
 /**

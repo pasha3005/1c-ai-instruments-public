@@ -20,10 +20,20 @@ import { kindByDir, ruName } from '../parse/metadataKinds.js';
 export const ROOT_KEY = 'Configuration';
 
 /**
- * Модули самой конфигурации: файл выгрузки → суффикс ключа.
+ * Собственные файлы самой конфигурации: файл выгрузки → суффикс ключа.
  *
  * Имена файлов совпадают с суффиксами, но перечень нужен явный: всё
  * остальное в `Ext/` — служебные файлы поставки, у которых ключа нет.
+ *
+ * Перечень сверен с `ConfigDumpInfo.xml` живой выгрузки УНФ (27.08.2026):
+ * там у конфигурации ровно эти элементы со своими хешами. Командные
+ * интерфейсы попали сюда потому же, почему раньше — модули: отчёт сравнения
+ * называет их («Командный интерфейс основного раздела - Изменено»), а без
+ * ключа файл не сопоставлялся с этой строкой ни в одну сторону.
+ *
+ * `MobileClientSignature.bin` и `ParentConfigurations.bin` ключа не имеют
+ * намеренно: подпись мобильного клиента и настройку поддержки пишет платформа,
+ * руками их не правят, а настройка поддержки к тому же всегда остаётся нашей.
  */
 const ROOT_MODULES = {
   'OrdinaryApplicationModule.bsl': 'OrdinaryApplicationModule',
@@ -31,6 +41,10 @@ const ROOT_MODULES = {
   'ApplicationModule.bsl': 'ApplicationModule',
   'SessionModule.bsl': 'SessionModule',
   'ExternalConnectionModule.bsl': 'ExternalConnectionModule',
+  'CommandInterface.xml': 'CommandInterface',
+  'MainSectionCommandInterface.xml': 'MainSectionCommandInterface',
+  'ClientApplicationInterface.xml': 'ClientApplicationInterface',
+  'HomePageWorkArea.xml': 'HomePageWorkArea',
 };
 
 /**
@@ -228,6 +242,19 @@ export function dumpInfoKey(rel) {
     return [...key, 'Recalculation', tail[1].replace(/\.xml$/i, '')].join('.');
   }
 
+  // Вложенная подсистема — самостоятельный элемент со своим ключом
+  // (`Subsystem.CRM.Subsystem.CRMСлужебный` в ConfigDumpInfo.xml), и файл
+  // описания у неё свой. Без этого правка состава вложенной подсистемы
+  // приписывалась подсистеме-владельцу.
+  if (tail[0] === 'Subsystems' && tail[1]) {
+    const rest = [];
+    for (let i = 0; i < tail.length; i += 2) {
+      if (tail[i] !== 'Subsystems' || !tail[i + 1]) break;
+      rest.push('Subsystem', tail[i + 1].replace(/\.xml$/i, ''));
+    }
+    return [...key, ...rest].join('.');
+  }
+
   if (tail[0] === 'Ext') {
     const name = tail.slice(1).join('/');
     const suffix = {
@@ -237,6 +264,8 @@ export function dumpInfoKey(rel) {
       'RecordSetModule.bsl': 'RecordSetModule',
       'ValueManagerModule.bsl': 'ValueManagerModule',
       'CommandModule.bsl': 'CommandModule',
+      // Командный интерфейс подсистемы: свой элемент и свой хеш.
+      'CommandInterface.xml': 'CommandInterface',
     }[name];
     if (suffix === '') return key.join('.');
     if (suffix) return [...key, suffix].join('.');
