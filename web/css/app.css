@@ -1029,13 +1029,20 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgw__tree-head { padding: 12px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .mgw__tree-body { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 
+/* Легенды в две колонки: состояния разбора слева, цвета отличий справа. */
+.mgw__legends {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 16px;
+  justify-content: start;
+  margin-bottom: 10px;
+}
 .mgw__legend {
   display: flex;
   flex-direction: column;
   gap: 5px;
   font-size: 12.5px;
   color: var(--ink-faint);
-  margin-bottom: 10px;
 }
 .mgw__legend span { display: flex; align-items: center; gap: 7px; }
 .mgw__filters { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1134,7 +1141,28 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   flex-direction: column;
   overflow: hidden;
 }
-.mgw__file { margin-bottom: 10px; flex: 0 0 auto; }
+.mgw__file {
+  margin-bottom: 10px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mgw__file-main { min-width: 0; flex: 1; }
+/* Путь к файлу и переключатели показа — одной строкой: строка заголовка
+   и без того занимает две. */
+.mgw__file-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mgw__show { display: flex; gap: 6px; flex-shrink: 0; }
+/* Выход из окна, когда разбор не прочитан: рабочей области нет, и кнопка
+   возврата в её шапке недоступна. */
+.mgw__escape { display: flex; justify-content: flex-end; margin-top: 10px; }
 .mgw__file-title {
   display: flex;
   align-items: center;
@@ -1145,13 +1173,11 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgw__file-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 4px; overflow-wrap: anywhere; }
 
 /*
- * Верх страницы разбора: только возврат.
- *
  * Заголовка и шапки раздела здесь нет — окно занимает экран целиком, и каждая
  * строка над рабочей областью отнята у кода (требование пользователя
- * 27.08.2026). Счёт мест переехал в левую панель, к фильтрам.
+ * 27.08.2026). Счёт мест — в левой панели, у фильтров, а кнопка возврата —
+ * в шапке файла (требование владельца 28.08.2026).
  */
-.mgw__top { display: flex; justify-content: flex-end; margin-bottom: 10px; }
 .mgw__lead {
   margin: 8px 0 0;
   font-size: 12px;
@@ -1170,7 +1196,9 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  */
 .mgw__places {
   flex: 0 0 auto;
-  max-height: 168px;
+  /* Ровно четыре строки: пятая уже отнимает место у кода, ради которого
+     окно и открыли (требование владельца 28.08.2026). Дальше — прокрутка. */
+  max-height: calc(4 * 29px);
   overflow: auto;
   margin-bottom: 10px;
   border: 1px solid var(--line);
@@ -1222,12 +1250,21 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   line-height: 1;
   flex-shrink: 0;
 }
-.ob-mark--data  { color: var(--diff-chg-ink); background: color-mix(in srgb, var(--diff-chg) 16%, transparent); border-color: color-mix(in srgb, var(--diff-chg) 36%, transparent); }
-.ob-mark--doc   { color: var(--warn);         background: color-mix(in srgb, var(--warn) 16%, transparent);     border-color: color-mix(in srgb, var(--warn) 36%, transparent); }
-.ob-mark--reg   { color: var(--good);         background: color-mix(in srgb, var(--good) 16%, transparent);     border-color: color-mix(in srgb, var(--good) 36%, transparent); }
-.ob-mark--proc  { color: var(--accent);       background: var(--accent-soft);                                   border-color: var(--accent-line); }
-.ob-mark--code  { color: var(--ink-soft);     background: var(--surface-2);                                     border-color: var(--line); }
-.ob-mark--right { color: var(--diff-del-ink); background: color-mix(in srgb, var(--diff-del) 16%, transparent); border-color: color-mix(in srgb, var(--diff-del) 36%, transparent); }
+/*
+ * Цвета — своя палитра (`--kind-*`), а не сигнальные.
+ *
+ * Значок вида и значок состояния стоят в дереве рядом, и пока «Док» был
+ * жёлтым, он читался как «решение за вами» (замечание владельца 28.08.2026).
+ * Ни зелёного `--good`, ни жёлтого `--warn`, ни акцента темы здесь нет.
+ */
+.ob-mark--data  { color: var(--kind-data);  background: color-mix(in srgb, var(--kind-data) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-data) 36%, transparent); }
+.ob-mark--doc   { color: var(--kind-doc);   background: color-mix(in srgb, var(--kind-doc) 16%, transparent);   border-color: color-mix(in srgb, var(--kind-doc) 36%, transparent); }
+.ob-mark--reg   { color: var(--kind-reg);   background: color-mix(in srgb, var(--kind-reg) 16%, transparent);   border-color: color-mix(in srgb, var(--kind-reg) 36%, transparent); }
+.ob-mark--proc  { color: var(--kind-proc);  background: color-mix(in srgb, var(--kind-proc) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-proc) 36%, transparent); }
+.ob-mark--code  { color: var(--kind-code);  background: color-mix(in srgb, var(--kind-code) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-code) 36%, transparent); }
+.ob-mark--right { color: var(--kind-right); background: color-mix(in srgb, var(--kind-right) 16%, transparent); border-color: color-mix(in srgb, var(--kind-right) 36%, transparent); }
+/* Незнакомый вид: значок всё равно рисуется — из первых букв названия. */
+.ob-mark--other { color: var(--kind-other); background: color-mix(in srgb, var(--kind-other) 16%, transparent); border-color: color-mix(in srgb, var(--kind-other) 36%, transparent); }
 /* Значок вида метода — тот же, что в отчёте о качестве кода. */
 .rt-mark {
   display: inline-flex;
@@ -1325,6 +1362,38 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   display: flex;
   flex-direction: column;
 }
+/*
+ * Развёрнутый результат: колонки сравнения убираются, поле занимает всю
+ * рабочую область. Заголовок файла и переключатели показа остаются —
+ * без них непонятно, что правишь.
+ */
+.mgw.is-grown .mgw__panes { display: none; }
+.mgw.is-grown .mgw__result { margin-top: 0; flex: 1 1 auto; }
+
+/* Кнопка разворота: четыре стрелки от центра, а в нажатом виде — к центру. */
+.mgw__grow {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.mgw__grow::after { content: '\2921\FE0E\2922\FE0E'; letter-spacing: -2px; }
+.mgw__grow:hover { border-color: var(--accent-line); color: var(--ink); }
+.mgw__grow.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.mgw__grow.is-active::after { content: '\2922\FE0E\2921\FE0E'; }
 .mgw__result textarea {
   width: 100%;
   flex: 1;

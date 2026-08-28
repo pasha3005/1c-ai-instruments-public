@@ -867,6 +867,9 @@ function fragment(conflict, where) {
   const place = where(conflict.oursStartLine, conflict.baseStartLine, conflict.baseEndLine) || {};
   return {
     where: place.where || '',
+    // Имя метода отдельным полем: по нему окно связывает место со списком
+    // методов модуля и показывает при выборе только этот метод.
+    routineName: place.routineName || '',
     routineKind: place.routineKind || '',
     routineHasParams: Boolean(place.routineHasParams),
     baseStartLine: conflict.baseStartLine,

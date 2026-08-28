@@ -1192,16 +1192,6 @@
     Человеку остаётся то, где решение может принять только он.
   -->
   <section class="view view--wide" data-view="merge">
-    <!--
-      Своей шапки у разбора нет: окно занимает экран целиком, и каждая строка
-      над рабочей областью — отнятое у кода место (требование пользователя
-      27.08.2026). Осталась одна кнопка возврата; она же становится главной,
-      когда разбирать больше нечего: конвейер стоит и ждёт именно здесь.
-    -->
-    <div class="mgw__top">
-      <button class="btn" id="mgBack" type="button">К обновлению</button>
-    </div>
-
     <div class="mgw" id="mgWork" hidden>
       <aside class="mgw__tree">
         <div class="mgw__tree-head">
@@ -1214,16 +1204,22 @@
             <button class="chip is-active" type="button" data-group="merge">Объединение</button>
             <button class="chip" type="button" data-group="checks">Ошибки проверок</button>
           </div>
-          <div class="mgw__legend">
-            <span><i class="mgi mgi--auto" aria-hidden="true"></i>объединено программой</span>
-            <span><i class="mgi mgi--manual" aria-hidden="true"></i>решение за вами</span>
-            <span><i class="mgi mgi--done" aria-hidden="true"></i>разобрано вами</span>
-          </div>
-          <!-- Цвета отличий — те же, что в окне сравнения конфигуратора. -->
-          <div class="mgw__legend mgw__legend--diff">
-            <span><i class="d-add" aria-hidden="true"></i>появилось справа</span>
-            <span><i class="d-del" aria-hidden="true"></i>пропало справа</span>
-            <span><i class="d-chg" aria-hidden="true"></i>изменено</span>
+          <!--
+            Две легенды стоят рядом, в две колонки: они об одном окне,
+            и колонкой в шесть строк они съедали место у дерева.
+          -->
+          <div class="mgw__legends">
+            <div class="mgw__legend">
+              <span><i class="mgi mgi--auto" aria-hidden="true"></i>объединено программой</span>
+              <span><i class="mgi mgi--manual" aria-hidden="true"></i>решение за вами</span>
+              <span><i class="mgi mgi--done" aria-hidden="true"></i>разобрано вами</span>
+            </div>
+            <!-- Цвета отличий — те же, что в окне сравнения конфигуратора. -->
+            <div class="mgw__legend mgw__legend--diff">
+              <span><i class="d-add" aria-hidden="true"></i>появилось справа</span>
+              <span><i class="d-del" aria-hidden="true"></i>пропало справа</span>
+              <span><i class="d-chg" aria-hidden="true"></i>изменено</span>
+            </div>
           </div>
           <div class="mgw__filters" role="group" aria-label="Что показывать">
             <button class="chip is-active" type="button" data-filter="all">Все</button>
@@ -1242,9 +1238,31 @@
       </aside>
 
       <div class="mgw__main">
+        <!--
+          Кнопка возврата стоит здесь, у самого верха рабочей области,
+          а не строкой над окном: отдельная строка ради одной кнопки —
+          отнятое у кода место. Она же становится главной, когда разбирать
+          больше нечего: конвейер стоит и ждёт именно здесь.
+        -->
         <div class="mgw__file" id="mgFileHead">
-          <div class="mgw__file-title" id="mgFileTitle">Выберите место слева</div>
-          <div class="mgw__file-sub" id="mgFileSub"></div>
+          <div class="mgw__file-main">
+            <div class="mgw__file-title" id="mgFileTitle">Выберите место слева</div>
+            <div class="mgw__file-line">
+              <div class="mgw__file-sub" id="mgFileSub"></div>
+              <!--
+                Что показывать. Обе кнопки — переключатели, обе по умолчанию
+                отжаты: список — только дважды изменённые методы, окно
+                результата — только выбранный метод.
+              -->
+              <div class="mgw__show" id="mgShow" hidden>
+                <button class="chip" type="button" id="mgShowAll"
+                        title="Показать в списке все методы модуля, а не только дважды изменённые">Показать все</button>
+                <button class="chip" type="button" id="mgShowModule"
+                        title="Показать в результате объединения весь модуль, а не только выбранный метод">Показать весь модуль</button>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="mgBack" type="button">К обновлению</button>
         </div>
 
         <div class="mgw__places" id="mgPlaces" hidden></div>
@@ -1295,6 +1313,13 @@
           <div class="mgw__pane-head">
             <span>Результат объединения — он и будет загружен в конфигурацию</span>
             <span class="mgw__pane-note" id="mgResultNote"></span>
+            <!--
+              Разворот на всю правую область: модуль читают дольше, чем
+              сравнивают, и колонки сверху тогда лишние. Заголовок файла
+              и переключатели показа остаются на месте.
+            -->
+            <button class="mgw__grow" id="mgGrow" type="button"
+                    title="Развернуть результат на всё окно" aria-label="Развернуть результат"></button>
           </div>
           <!--
             Раскрасить текст внутри поля ввода нечем, поэтому под ним лежит
@@ -1331,7 +1356,15 @@
       </div>
     </div>
 
+    <!--
+      Своя кнопка возврата: шапка файла живёт внутри #mgWork, а он при
+      неудачном чтении скрыт — без этой кнопки человек остался бы в окне,
+      из которого некуда выйти.
+    -->
     <div class="error-box" id="mgError" hidden></div>
+    <div class="mgw__escape" id="mgEscape" hidden>
+      <button class="btn" id="mgBackError" type="button">К обновлению</button>
+    </div>
   </section>
 
   <!-- ================= ИСТОРИЯ ОБСЛЕДОВАНИЙ ================= -->

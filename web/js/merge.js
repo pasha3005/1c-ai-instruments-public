@@ -80,6 +80,38 @@ const state = {
    * что ниже, и без пересчёта следующий выбор попал бы не в то место.
    */
   spans: new Map(),
+  /**
+   * Какой метод выбран: имя в нижнем регистре.
+   *
+   * Выбрав метод, человек видит во всех трёх окнах только его — модуль
+   * менеджера на три тысячи строк листать незачем (требование владельца
+   * 28.08.2026). Пусто — показан файл целиком.
+   */
+  routine: null,
+  /** Показывать в списке ВСЕ методы модуля, а не только дважды изменённые. */
+  showAll: false,
+  /** Показывать в результате весь модуль, а не только выбранный метод. */
+  showModule: false,
+  /** Результат развёрнут на всю рабочую область: колонки сравнения убраны. */
+  grown: false,
+  /**
+   * Полный текст результата — он и уходит в файл.
+   *
+   * В поле ввода лежит лишь то, что человек сейчас смотрит: при выбранном
+   * методе — его строки, иначе весь текст. Правки поля переносятся сюда,
+   * а сохранение и замена стороны работают только с этим текстом.
+   */
+  fullText: '',
+  /** Какие строки полного текста показаны в поле: {start, end} с единицы. */
+  viewSpan: null,
+  /**
+   * Границы выбранного метода в полном тексте — уже с поправкой на правки.
+   *
+   * Серверные границы верны только до первой замены стороны: взяв версию
+   * другой длины, метод становится длиннее или короче, и показанный кусок
+   * по старым границам обрезал бы его конец.
+   */
+  routineSpan: null,
 };
 
 /**
@@ -165,6 +197,32 @@ export function initMerge(onBack) {
 
   $('#mgSave').addEventListener('click', () => decide('save'));
   $('#mgRevert').addEventListener('click', () => decide('revert'));
+  $('#mgBackError').addEventListener('click', () => state.back?.());
+
+  // Показывать ли в списке все методы модуля. Кнопка нажимается и отжимается:
+  // отжатая оставляет только дважды изменённые, как было.
+  $('#mgShowAll').addEventListener('click', () => {
+    state.showAll = !state.showAll;
+    $('#mgShowAll').classList.toggle('is-active', state.showAll);
+    renderPlaces(state.file);
+  });
+
+  // Показывать ли в результате весь модуль. Отжатая кнопка оставляет
+  // в поле только выбранный метод.
+  $('#mgShowModule').addEventListener('click', () => {
+    state.showModule = !state.showModule;
+    $('#mgShowModule').classList.toggle('is-active', state.showModule);
+    applyResultView();
+    renderRight();
+  });
+
+  // Разворот результата на всю рабочую область: стрелки наружу — свернуть,
+  // к центру — развернуть обратно.
+  $('#mgGrow').addEventListener('click', () => {
+    state.grown = !state.grown;
+    $('#mgGrow').classList.toggle('is-active', state.grown);
+    $('#mgWork').classList.toggle('is-grown', state.grown);
+  });
 }
 
 /**
@@ -377,27 +435,65 @@ const OBJECT_MARKS = new Map([
   ['роль', ['Роль', 'right']],
   ['подсистема', ['Пдс', 'right']],
   ['языки', ['Язк', 'right']],
+  ['язык', ['Язк', 'right']],
   ['конфигурация', ['Кфг', 'right']],
+  // Виды, которых поначалу не было: без них дерево показывало объект
+  // вовсе без значка (замечание владельца 28.08.2026).
+  ['определяемыйтип', ['ОпТ', 'data']],
+  ['функциональнаяопция', ['ФО', 'code']],
+  ['параметрфункциональнойопции', ['ПФО', 'code']],
+  ['критерийотбора', ['КО', 'data']],
+  ['общийреквизит', ['ОбР', 'data']],
+  ['параметрсеанса', ['ПрС', 'code']],
+  ['хранилищенастроек', ['ХН', 'code']],
+  ['группакоманд', ['ГК', 'code']],
+  ['стильоформления', ['Стл', 'code']],
+  ['стиль', ['Стл', 'code']],
+  ['wsссылка', ['WS', 'code']],
+  ['внешнийисточникданных', ['ВИД', 'data']],
+  ['нумератор', ['Нум', 'doc']],
 ]);
+
+/**
+ * Значок для вида, которого нет в таблице.
+ *
+ * Прежде такой объект оставался вовсе без значка, и в дереве он выглядел
+ * иначе, чем соседи. Берём первые буквы: даже приблизительное сокращение
+ * лучше пустого места, а цвет у него нейтральный — «вид неизвестен».
+ */
+function fallbackMark(kind) {
+  const words = String(kind).split(/[\s-]+/).filter(Boolean);
+  if (!words.length) return '';
+  const text = words.length > 1
+    ? words.map((word) => word[0].toUpperCase()).join('').slice(0, 4)
+    : words[0].slice(0, 3);
+  return `<i class="ob-mark ob-mark--other" title="${escapeHtml(kind)}">${escapeHtml(text)}</i>`;
+}
 
 function objectMark(object) {
   const kind = String(object.kind || '').toLowerCase().replace(/[\s-]/g, '').replace(/ё/g, 'е');
   const found = OBJECT_MARKS.get(kind);
-  if (!found) return '';
+  if (!found) return object.kind ? fallbackMark(object.kind) : '';
   const [text, family] = found;
   return `<i class="ob-mark ob-mark--${family}" title="${escapeHtml(object.kind)}">${text}</i>`;
 }
 function renderFile(file) {
   const mark = fileMark(file);
   const active = state.file?.key === fileKey(file) ? ' is-active' : '';
-  const count = file.status === 'manual'
-    ? file.conflictCount || 0
-    : file.resolvedCount || 0;
+  // Счёт двумя числами: сколько мест дважды изменено всего и сколько
+  // из них ждёт решения человека (требование владельца 28.08.2026). Одно
+  // число не отвечало на главный вопрос — много ли ещё работы.
+  const total = (file.conflictCount || 0) + (file.resolvedCount || 0);
+  const left = file.decision ? 0 : (file.conflictCount || 0);
+  const count = total ? `${formatNumber(total)}/${formatNumber(left)}` : '';
+  const hint = total
+    ? `дважды изменено: ${total}, ждут вашего решения: ${left}`
+    : '';
   return `
   <button class="mgt__file${active}" type="button" data-rel="${escapeHtml(fileKey(file))}">
     <i class="mgi mgi--${mark}" aria-hidden="true"></i>
     <span class="mgt__file-name">${escapeHtml(file.element || file.rel)}</span>
-    ${count ? `<span class="mgt__stat">${formatNumber(count)}</span>` : ''}
+    ${count ? `<span class="mgt__stat" title="${escapeHtml(hint)}">${count}</span>` : ''}
   </button>`;
 }
 
@@ -452,35 +548,50 @@ async function openFile(key) {
     : `<span class="mono">${escapeHtml(file.rel)}</span> · ${escapeHtml(file.actionRu || '')}`
       + `${file.note ? ` · ${escapeHtml(file.note)}` : ''}`;
 
-  renderPlaces(file);
-  renderRight();
-
   const text = file.current ?? '';
   const box = $('#mgResult');
-  box.value = text;
+  // В поле лежит только то, что человек сейчас смотрит; целое — здесь.
+  state.fullText = text;
+  state.routine = null;
+  state.routineSpan = null;
+  state.viewSpan = null;
   box.readOnly = !file.editable;
   state.loadedText = text;
   // Раскраска прошлого файла к этому отношения не имеет: кэш обнуляется,
   // иначе строки чужого модуля попали бы в слой под новым текстом.
   state.paint = null;
-  // Выбор сторон — свой у каждого файла. Границы участков берутся оттуда же,
-  // откуда их нашёл сервер: по содержимому, а не по номеру строки.
+
+  /*
+   * Выбор сторон сбрасывается ДО того, как список нарисован.
+   *
+   * Порядок здесь не косметика: пока сброс стоял ниже, список строился
+   * по выбору ПРОШЛОГО открытия, и после кнопки «Вернуть вариант программы»
+   * файл возвращался к варианту программы, а выпадающие списки продолжали
+   * показывать то, что человек выбрал до отката (замечание владельца
+   * 28.08.2026).
+   */
   state.picked = new Map();
   state.spans = new Map();
   (file.places || []).forEach((place, index) => {
     if (place.range?.result?.start) state.spans.set(index, { ...place.range.result });
   });
-  $('#mgResultHl').textContent = text;
-  renderLineNumbers();
-  repaintEditor();
 
-  $('#mgResultNote').textContent = resultNote(file);
+  // Переключатели показа нужны только там, где есть что показывать: список
+  // методов бывает лишь у модулей.
+  const hasRoutines = (file.routines || []).length > 0;
+  $('#mgShow').hidden = !hasRoutines;
+  $('#mgShowAll').classList.toggle('is-active', state.showAll);
+  $('#mgShowModule').classList.toggle('is-active', state.showModule);
+
+  renderPlaces(file);
+  renderRight();
+  applyResultView();
+
   $('#mgSave').disabled = !file.editable;
   $('#mgRevert').hidden = state.group === 'checks';
   $('#mgRevert').disabled = !file.hasAuto;
   $('#mgSkip').hidden = state.group !== 'checks' || file.status !== 'manual';
   renderTree();
-
   // Первое место открывается сразу: файл открывают ради него, а искать
   // правку глазами в модуле на три тысячи строк — не работа человека.
   if ((file.places || []).length) selectPlace(0);
@@ -539,12 +650,23 @@ function renderRight() {
     ? 'Обновлённая конфигурация'
     : (isBase ? 'Текущая поставка' : 'Новая поставка');
 
-  renderCode('#mgOurs', file.ours, align.left, align.marks);
+  // Выбран метод — в обеих колонках остаётся только он. Строки отбираются
+  // по строкам ЭКРАНА, общим для пары: иначе выравнивание, ради которого
+  // весь этот план и считался, разъехалось бы.
+  const rightSide = checks ? 'theirs' : (isBase ? 'base' : 'theirs');
+  const rows = visibleRows(align, {
+    left: routineRange('ours'),
+    right: routineRange(rightSide),
+  });
+
+  renderCode('#mgOurs', file.ours, align.left, align.marks, rows);
   renderCode('#mgTheirs', checks ? file.theirs : (isBase ? file.base : file.theirs),
-    align.right, align.marks);
+    align.right, align.marks, rows);
 
   if (checks && file.line) markRange('#mgOurs', { start: file.line, end: file.line });
-  else if (state.place >= 0) selectPlace(state.place);
+  // Пометку участка ставим напрямую: вызвать отсюда selectPlace нельзя —
+  // он сам перерисовывает колонки, и пара ушла бы в рекурсию.
+  else if (state.place >= 0) markCurrentPlace();
 }
 
 /**
@@ -583,8 +705,8 @@ function goToHunk(step) {
  */
 function renderPlaces(file) {
   const box = $('#mgPlaces');
-  const places = file.places || [];
-  if (!places.length) {
+  const rows = placeRows(file);
+  if (!rows.length) {
     box.hidden = true;
     box.innerHTML = '';
     return;
@@ -593,23 +715,25 @@ function renderPlaces(file) {
   box.innerHTML = `
     <table class="mgp">
       <tbody>
-        ${places.map((place, index) => `
-        <tr class="mgp__row mgp__row--${place.kind}" data-place="${index}">
+        ${rows.map((row) => `
+        <tr class="mgp__row mgp__row--${row.kind}"${row.place >= 0 ? ` data-place="${row.place}"` : ''}
+            data-routine="${escapeHtml(row.routine || '')}">
           <td class="mgp__mark">
-            <i class="mgi mgi--${place.kind === 'auto' ? 'auto' : 'manual'}" aria-hidden="true"></i>
+            ${row.kind === 'plain' ? '' : `<i class="mgi mgi--${row.kind === 'auto' ? 'auto' : 'manual'}" aria-hidden="true"></i>`}
           </td>
-          <td class="mgp__where">${routineMark(place)}${escapeHtml(place.where || 'участок')}</td>
-          <td class="mgp__how">${place.how ? escapeHtml(place.how) : ''}</td>
-          <td class="mgp__pick">${sidePicker(place, index)}</td>
+          <td class="mgp__where">${routineMark(row)}${escapeHtml(row.where || 'участок')}</td>
+          <td class="mgp__how">${row.how ? escapeHtml(row.how) : ''}</td>
+          <td class="mgp__pick">${row.place >= 0 ? sidePicker(file.places[row.place], row.place) : ''}</td>
         </tr>`).join('')}
       </tbody>
     </table>`;
 
-  $$('[data-place]', box).forEach((row) => {
+  $$('.mgp__row', box).forEach((row) => {
     row.addEventListener('click', (event) => {
       // Щелчок по выпадающему списку выбирает сторону, а не участок.
       if (event.target.closest('select')) return;
-      selectPlace(Number(row.dataset.place));
+      if (row.dataset.place !== undefined) selectPlace(Number(row.dataset.place));
+      else selectRoutine(row.dataset.routine || '');
     });
   });
   $$('select[data-pick]', box).forEach((select) => {
@@ -619,6 +743,53 @@ function renderPlaces(file) {
       takeSide(index, select.value);
     });
   });
+
+  if (state.place >= 0) highlightRow();
+}
+
+/**
+ * Строки списка: дважды изменённые места и — по кнопке «Показать все» —
+ * остальные методы модуля.
+ *
+ * Метод, у которого спорных мест нет, показывается без значка состояния
+ * и без выбора стороны: выбирать там нечего, а вот открыть его, чтобы
+ * посмотреть, человек вправе.
+ */
+function placeRows(file) {
+  const places = file?.places || [];
+  const rows = places.map((place, index) => ({
+    place: index,
+    kind: place.kind,
+    where: place.where,
+    how: place.how,
+    routine: (place.routineName || '').toLowerCase(),
+    routineKind: place.routineKind,
+    routineHasParams: place.routineHasParams,
+  }));
+
+  if (!state.showAll) return rows;
+
+  const taken = new Set(rows.map((row) => row.routine).filter(Boolean));
+  for (const routine of file?.routines || []) {
+    const key = routine.name.toLowerCase();
+    if (taken.has(key)) continue;
+    rows.push({
+      place: -1,
+      kind: 'plain',
+      where: routine.where,
+      how: '',
+      routine: key,
+      routineKind: routine.kind,
+      routineHasParams: routine.hasParams,
+    });
+  }
+
+  // Порядок — как в модуле: список читают сверху вниз вместе с кодом.
+  const at = (row) => {
+    const found = (file?.routines || []).findIndex((r) => r.name.toLowerCase() === row.routine);
+    return found === -1 ? Number.MAX_SAFE_INTEGER : found;
+  };
+  return rows.sort((a, b) => at(a) - at(b));
 }
 
 /**
@@ -668,14 +839,56 @@ function selectPlace(index) {
   const place = state.file?.places?.[index];
   if (!place) return;
   state.place = index;
-  $$('#mgPlaces [data-place]').forEach((b) => {
-    b.classList.toggle('is-active', Number(b.dataset.place) === index);
-  });
+  const next = (place.routineName || '').toLowerCase() || null;
+  if (next !== state.routine) state.routineSpan = null;
+  state.routine = next;
+  highlightRow();
 
-  markRange('#mgOurs', place.range?.ours);
-  markRange('#mgTheirs', state.side === 'base' ? place.range?.base : place.range?.theirs);
+  // Показ ограничивается выбранным методом — во всех трёх окнах сразу.
+  renderRight();
+  applyResultView();
+
+  markCurrentPlace();
   selectInResult(place.range?.result);
   showWhy(place);
+}
+
+/** Отметить текущий участок в обеих колонках. */
+function markCurrentPlace() {
+  const place = state.file?.places?.[state.place];
+  if (!place) return;
+  markRange('#mgOurs', place.range?.ours);
+  markRange('#mgTheirs', state.side === 'base' ? place.range?.base : place.range?.theirs);
+}
+
+/** Выбрать метод, у которого спорных мест нет: показать его во всех окнах. */
+function selectRoutine(name) {
+  if (!name) return;
+  state.place = -1;
+  if (name !== state.routine) state.routineSpan = null;
+  state.routine = name;
+  highlightRow();
+  renderRight();
+  applyResultView();
+  setNote('');
+}
+
+/** Отметить в списке выбранную строку. */
+function highlightRow() {
+  $$('#mgPlaces .mgp__row').forEach((row) => {
+    const isPlace = row.dataset.place !== undefined && Number(row.dataset.place) === state.place;
+    const isRoutine = state.place === -1 && row.dataset.routine
+      && row.dataset.routine === state.routine;
+    row.classList.toggle('is-active', Boolean(isPlace || isRoutine));
+  });
+}
+
+/** Границы выбранного метода в одной из версий; ничего не выбрано — null. */
+function routineRange(side) {
+  if (!state.routine) return null;
+  const found = (state.file?.routines || [])
+    .find((routine) => routine.name.toLowerCase() === state.routine);
+  return found?.ranges?.[side] || null;
 }
 
 function showWhy(place) {
@@ -700,7 +913,31 @@ function showWhy(place) {
  * два опознавателя: `-r<строка экрана>` для прокрутки вместе и `-l<строка
  * файла>` для перехода к участку.
  */
-function renderCode(selector, side, plan = null, marks = null) {
+/**
+ * Какие строки экрана показывать, когда выбран метод.
+ *
+ * Строка экрана берётся, если В ЛЮБОЙ из двух версий она принадлежит методу:
+ * метод, добавленный поставщиком, в нашей версии не существует вовсе, и его
+ * строки иначе пропали бы вместе с подпорками. Ни одного метода не выбрано —
+ * ограничения нет, и возвращается null: рисуем всё, как раньше.
+ *
+ * @returns {number[]|null} номера строк экрана
+ */
+function visibleRows(align, limits) {
+  if (!limits.left && !limits.right) return null;
+  const left = align.left || [];
+  const right = align.right || [];
+  const count = Math.max(left.length, right.length);
+  const inside = (line, range) => Boolean(line && range && line >= range.start && line <= range.end);
+
+  const rows = [];
+  for (let row = 0; row < count; row += 1) {
+    if (inside(left[row], limits.left) || inside(right[row], limits.right)) rows.push(row);
+  }
+  return rows;
+}
+
+function renderCode(selector, side, plan = null, marks = null, only = null) {
   const box = $(selector);
   if (side == null) {
     box.innerHTML = '<div class="empty">Этой версии нет: текущая поставка не нашлась '
@@ -713,9 +950,18 @@ function renderCode(selector, side, plan = null, marks = null) {
     return;
   }
 
-  const rows = plan && plan.length ? plan : side.lines.map((_, i) => i + 1);
+  const all = plan && plan.length ? plan : side.lines.map((_, i) => i + 1);
   const kinds = marks || [];
-  box.innerHTML = `<table class="mgc"><tbody>${rows.map((line, row) => {
+  // Показ ограничен выбранным методом: строки экрана те же, что и в соседней
+  // колонке, поэтому пара остаётся выровненной.
+  const rows = only ? only.map((row) => all[row]) : all;
+  const rowIndex = only || all.map((_, row) => row);
+  if (only && !only.length) {
+    box.innerHTML = '<div class="empty">В этой версии выбранного метода нет.</div>';
+    return;
+  }
+  box.innerHTML = `<table class="mgc"><tbody>${rows.map((line, at) => {
+    const row = rowIndex[at];
     const kind = line ? (kinds[row] || '') : 'pad';
     const id = line ? ` id="${box.id}-l${line}"` : '';
     return `<tr data-r="${row}"${id}${kind ? ` class="d-${kind}"` : ''}>`
@@ -745,11 +991,17 @@ function markRange(selector, range) {
 function selectInResult(range) {
   const box = $('#mgResult');
   if (!range?.start) return;
+  // Номера участка — в координатах ПОЛНОГО текста, а в поле лежит кусок:
+  // сдвигаем на его начало.
+  const shift = (state.viewSpan?.start || 1) - 1;
+  const start = range.start - shift;
+  const end = (range.end || range.start) - shift;
+  if (start < 1) return;
   const lines = box.value.split('\n');
   let from = 0;
-  for (let i = 0; i < range.start - 1 && i < lines.length; i += 1) from += lines[i].length + 1;
+  for (let i = 0; i < start - 1 && i < lines.length; i += 1) from += lines[i].length + 1;
   let to = from;
-  for (let i = range.start - 1; i < (range.end || range.start) && i < lines.length; i += 1) {
+  for (let i = start - 1; i < end && i < lines.length; i += 1) {
     to += lines[i].length + 1;
   }
   try {
@@ -758,7 +1010,7 @@ function selectInResult(range) {
     /* поле может быть скрыто — выделять нечего */
   }
   const lineHeight = parseFloat(getComputedStyle(box).lineHeight) || 19;
-  scrollPane(box, (range.start - 1) * lineHeight);
+  scrollPane(box, (start - 1) * lineHeight);
 }
 
 /**
@@ -777,11 +1029,10 @@ function takeSide(index, side) {
   const lines = linesOf(side, place);
   if (!lines) return;
 
-  const box = $('#mgResult');
-  const all = box.value.split('\n');
+  const all = state.fullText.split('\n');
   const before = span.end - span.start + 1;
   all.splice(span.start - 1, before, ...lines);
-  box.value = all.join('\n');
+  state.fullText = all.join('\n');
 
   const shift = lines.length - before;
   state.spans.set(index, { start: span.start, end: span.start + lines.length - 1 });
@@ -792,11 +1043,13 @@ function takeSide(index, side) {
     }
   }
   state.picked.set(index, side);
+  // Метод стал другой длины — его конец едет вместе с текстом.
+  if (shift && state.routineSpan
+    && span.start >= state.routineSpan.start && span.start <= state.routineSpan.end) {
+    state.routineSpan.end += shift;
+  }
 
-  state.paint = null;
-  paintFromCache();
-  renderLineNumbers();
-  repaintEditor();
+  applyResultView();
   selectPlace(index);
   setNote(side === 'ours'
     ? 'Участок взят из основной конфигурации. Нажмите «Сохранить результат», чтобы записать.'
@@ -871,11 +1124,70 @@ function initEditor() {
     repaintEditor();
   });
   box.addEventListener('input', () => {
+    takeEditorText();
     paintFromCache();
     renderLineNumbers();
     sync();
     schedulePaint();
   });
+
+  /*
+   * Tab здесь — отступ, а не переход к следующему полю.
+   *
+   * Это редактор кода: в конфигураторе Tab сдвигает строку, и человек,
+   * правящий модуль, набирает его не думая. Браузер по умолчанию уводит
+   * фокус, и вместо отступа правка обрывалась.
+   *
+   * Выделено несколько строк — сдвигается блок целиком, Shift+Tab возвращает
+   * назад: так же ведут себя все редакторы. Выход с клавиатуры остаётся —
+   * Escape уводит фокус, иначе поле стало бы ловушкой для тех, кто работает
+   * без мыши.
+   */
+  box.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { box.blur(); return; }
+    if (event.key !== 'Tab' || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (box.readOnly) return;
+    event.preventDefault();
+    shiftSelection(box, event.shiftKey);
+  });
+}
+
+/** Отступ по Tab: либо знак табуляции, либо сдвиг выделенных строк. */
+function shiftSelection(box, back) {
+  const value = box.value;
+  const from = box.selectionStart;
+  const to = box.selectionEnd;
+  const multi = value.slice(from, to).includes('\n');
+
+  if (!multi && !back) {
+    box.value = value.slice(0, from) + '\t' + value.slice(to);
+    box.selectionStart = box.selectionEnd = from + 1;
+  } else {
+    const start = value.lastIndexOf('\n', from - 1) + 1;
+    const end = value.indexOf('\n', to) === -1 ? value.length : value.indexOf('\n', to);
+    const block = value.slice(start, end).split('\n');
+    let firstShift = 0;
+    let total = 0;
+    const shifted = block.map((line, at) => {
+      if (!back) {
+        total += 1;
+        if (at === 0) firstShift = 1;
+        return '\t' + line;
+      }
+      const cut = line.startsWith('\t') ? 1 : (line.startsWith('    ') ? 4 : 0);
+      total -= cut;
+      if (at === 0) firstShift = -cut;
+      return line.slice(cut);
+    });
+    box.value = value.slice(0, start) + shifted.join('\n') + value.slice(end);
+    box.selectionStart = Math.max(start, from + firstShift);
+    box.selectionEnd = Math.max(box.selectionStart, to + total);
+  }
+
+  takeEditorText();
+  paintFromCache();
+  renderLineNumbers();
+  schedulePaint();
 }
 
 /**
@@ -946,17 +1258,98 @@ function schedulePaint() {
 /**
  * Номера строк результата.
  *
- * Считаются по тексту поля, а не по исходному файлу: человек правит текст
- * прямо здесь, и номера обязаны идти за ним.
+ * Считаются по тексту поля, но начинаются с той строки файла, с которой
+ * начинается показанный кусок: при выбранном методе в поле лежит только он,
+ * и нумерация с единицы врала бы о том, где этот код в модуле.
  */
 function renderLineNumbers() {
   const box = $('#mgResult');
   const nums = $('#mgResultNums');
   if (!box || !nums) return;
+  const first = state.viewSpan?.start || 1;
   const count = box.value.split('\n').length;
   const out = [];
-  for (let n = 1; n <= count; n += 1) out.push(n);
+  for (let n = 0; n < count; n += 1) out.push(first + n);
   nums.textContent = out.join('\n');
+}
+
+/**
+ * Заполнить поле тем, что человек должен видеть: метод либо весь текст.
+ *
+ * Полный текст всё это время лежит в `state.fullText` — именно он уходит
+ * в файл. Поле показывает кусок, а границы куска запоминаются, чтобы правку
+ * вернуть на её место в целом тексте.
+ */
+function applyResultView() {
+  const box = $('#mgResult');
+  const lines = state.fullText.split('\n');
+  // Границы берутся из состояния, а не у сервера напрямую: серверные верны
+  // лишь до первой правки, а метод, у которого взяли версию другой длины,
+  // по ним обрезался бы посреди кода.
+  const span = state.showModule ? null : currentRoutineSpan();
+
+  if (span && span.start && span.end && span.end <= lines.length) {
+    state.viewSpan = { start: span.start, end: span.end };
+    box.value = lines.slice(span.start - 1, span.end).join('\n');
+  } else {
+    state.viewSpan = null;
+    box.value = state.fullText;
+  }
+
+  // Раскраска прежнего куска к новому отношения не имеет.
+  state.paint = null;
+  $('#mgResultHl').textContent = box.value;
+  renderLineNumbers();
+  repaintEditor();
+  updateViewNote();
+}
+
+/**
+ * Границы выбранного метода в полном тексте.
+ *
+ * Считаются один раз на выбор метода, дальше живут вместе с правками:
+ * замена стороны и набор с клавиатуры сдвигают конец.
+ */
+function currentRoutineSpan() {
+  if (!state.routine) return null;
+  if (!state.routineSpan) {
+    const found = routineRange('result');
+    state.routineSpan = found ? { ...found } : null;
+  }
+  return state.routineSpan;
+}
+
+/** Подпись у поля: показан весь файл или один метод. */
+function updateViewNote() {
+  const note = $('#mgResultNote');
+  if (!note || !state.file) return;
+  const base = resultNote(state.file);
+  note.textContent = state.viewSpan
+    ? `${base} · показан только выбранный метод`
+    : base;
+}
+
+/**
+ * Перенести правку из поля в полный текст.
+ *
+ * Поле — окно в текст, а не сам текст: при выбранном методе в нём лежат
+ * только его строки. Правка возвращается ровно на то место, откуда взята,
+ * а границы окна сдвигаются на разницу длин.
+ */
+function takeEditorText() {
+  const box = $('#mgResult');
+  const span = state.viewSpan;
+  if (!span) {
+    state.fullText = box.value;
+    return;
+  }
+  const lines = state.fullText.split('\n');
+  const shown = box.value.split('\n');
+  lines.splice(span.start - 1, span.end - span.start + 1, ...shown);
+  state.fullText = lines.join('\n');
+  state.viewSpan = { start: span.start, end: span.start + shown.length - 1 };
+  // Показан метод — значит правили именно его, и его границы теперь такие же.
+  if (state.routineSpan) state.routineSpan = { ...state.viewSpan };
 }
 
 /** Перекрасить слой под полем ввода. */
@@ -1020,7 +1413,9 @@ async function decide(action) {
     const body = state.group === 'checks'
       ? { check: file.id, action }
       : { rel: file.rel, action };
-    if (action === 'save') body.text = $('#mgResult').value;
+    // В файл уходит ПОЛНЫЙ текст, а не показанный кусок: при выбранном
+    // методе в поле лежат только его строки.
+    if (action === 'save') body.text = state.fullText;
     const answer = await api.updateReviewDecide(state.updateId, body);
     const done = state.group === 'checks'
       ? 'Разобранных ошибок не осталось — можно продолжать обновление.'

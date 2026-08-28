@@ -28,6 +28,9 @@ import { VERSION_FILES, AUTO_ACTIONS } from './mergeConfig.js';
 import { changedHunks, splitLines } from './diff3.js';
 import { pathExists } from '../util/fsx.js';
 import { highlightBslLines, highlightXmlLines } from '../report/bslHighlight.js';
+import { tokenize } from '../analyze/bsl/lexer.js';
+import { analyzeStructure } from '../analyze/bsl/structure.js';
+import { routineSpans } from '../analyze/bsl/placementFragments.js';
 
 /** Действия, при которых решение остаётся за человеком. */
 const MANUAL_ACTIONS = new Set([
@@ -93,9 +96,54 @@ export function reviewFiles(result) {
     }
   }
 
-  out.sort((a, b) => (a.objectTitle || '').localeCompare(b.objectTitle || '', 'ru')
+  out.sort((a, b) => kindOrder(a.objectKind) - kindOrder(b.objectKind)
+    || (a.objectTitle || '').localeCompare(b.objectTitle || '', 'ru')
     || (a.element || '').localeCompare(b.element || '', 'ru'));
   return out;
+}
+
+/**
+ * Порядок видов метаданных — тот же, в котором они стоят в дереве
+ * конфигурации: сама конфигурация, общие объекты, затем данные от констант
+ * к регистрам (требование владельца 28.08.2026). По алфавиту дерево читалось
+ * не так, как конфигуратор, и глаз искал объект не там.
+ *
+ * Вид приходит русским названием и пишется слитно; сравниваем в том же виде,
+ * в каком его печатает платформа. Незнакомый вид уходит в конец — выдумывать
+ * ему место в дереве нельзя.
+ */
+const KIND_ORDER = [
+  'конфигурация',
+  'подсистема', 'общиймодуль', 'параметрсеанса', 'роль', 'общийреквизит',
+  'планобмена', 'критерийотбора', 'подпискинасобытия', 'подпискунасобытие',
+  'регламентноезадание', 'функциональнаяопция', 'параметрфункциональнойопции',
+  'определяемыйтип', 'хранилищенастроек', 'общаяформа', 'общаякоманда',
+  'группакоманд', 'общиймакет', 'общаякартинка', 'пакетxdto', 'webсервис',
+  'httpсервис', 'wsссылка', 'стильоформления', 'стиль', 'языки', 'язык',
+  'константа', 'справочник', 'документ', 'нумератор', 'последовательность',
+  'журналдокументов', 'перечисление', 'отчет', 'обработка',
+  'планвидовхарактеристик', 'плансчетов', 'планвидоврасчета',
+  'регистрсведений', 'регистрнакопления', 'регистрбухгалтерии', 'регистррасчета',
+  'бизнеспроцесс', 'задача', 'внешнийисточникданных',
+];
+
+const KIND_INDEX = new Map(KIND_ORDER.map((kind, at) => [kind, at]));
+
+export function kindOrder(kind) {
+  const key = String(kind || '').toLowerCase().replace(/[\s-]/g, '').replace(/ё/g, 'е');
+  return KIND_INDEX.has(key) ? KIND_INDEX.get(key) : KIND_ORDER.length;
+}
+
+/**
+ * Имя метода из описания места («Функция «Имя»» → «Имя»).
+ *
+ * Нужно прогонам, сделанным до того, как имя стали хранить отдельным полем:
+ * их result.json уже записан, переделать его нечем, а окно должно уметь
+ * показать один метод и в них.
+ */
+export function nameFromWhere(where) {
+  const found = /«([^»]+)»/.exec(String(where || ''));
+  return found ? found[1] : '';
 }
 
 function places(element) {
@@ -104,6 +152,7 @@ function places(element) {
     out.push({
       kind: 'auto',
       where: item.where || '',
+      routineName: item.routineName || nameFromWhere(item.where),
       routineKind: item.routineKind || '',
       routineHasParams: Boolean(item.routineHasParams),
       how: item.how || '',
@@ -123,6 +172,7 @@ function places(element) {
     out.push({
       kind: 'manual',
       where: item.where || '',
+      routineName: item.routineName || nameFromWhere(item.where),
       routineKind: item.routineKind || '',
       routineHasParams: Boolean(item.routineHasParams),
       how: '',
@@ -308,6 +358,10 @@ export async function readReviewFile(result, state, rel) {
   return {
     ...file,
     places,
+    // Все методы модуля с границами в каждой версии: по ним окно показывает
+    // один выбранный метод вместо всего модуля и выводит полный список
+    // по кнопке «Показать все».
+    routines: routinesOfFile(rel, { ours, theirs, base, current }),
     decision: state.files?.[rel] || null,
     // Читаемые колонки уходят уже подсвеченными: раскрашивать их в браузере
     // значило бы держать там второй лексер 1С.
@@ -326,6 +380,77 @@ export async function readReviewFile(result, state, rel) {
     editable: current !== null && !isBinary(current),
     versionsMissing: !dir,
   };
+}
+
+/**
+ * Методы модуля с границами: имя, вид и от какой строки до какой он занят.
+ *
+ * Границы берутся с приставками (`routineSpans`): директива компиляции
+ * и комментарий-описание стоят ВЫШЕ слова «Процедура», и без них метод
+ * показывался бы обрезанным сверху.
+ *
+ * @returns {{name: string, kind: string, hasParams: boolean, from: number, to: number}[]}
+ */
+export function moduleRoutines(text) {
+  if (typeof text !== 'string' || !text) return [];
+  try {
+    const { routines } = analyzeStructure(tokenize(text).tokens);
+    const lines = text.split('\n');
+    return routineSpans(lines, routines).map(({ routine, fromLine, toLine }) => ({
+      name: String(routine.name || ''),
+      kind: routine.kind === 'function' ? 'function' : 'procedure',
+      hasParams: (routine.params || []).length > 0,
+      from: fromLine,
+      to: toLine,
+    }));
+  } catch {
+    // Модуль не разобрался — значит показываем его целиком, как раньше.
+    return [];
+  }
+}
+
+/**
+ * Все методы файла разом: имя, вид и границы в КАЖДОЙ из версий.
+ *
+ * Нужно окну для двух вещей сразу. Первая: выбрав метод, человек видит
+ * во всех трёх окнах только его, а не модуль на три тысячи строк
+ * (требование владельца 28.08.2026). Вторая: кнопка «Показать все» выводит
+ * в список не только дважды изменённые методы, но и остальные — по этому
+ * же перечню.
+ *
+ * Версии сопоставляются ПО ИМЕНИ, в нижнем регистре: номера строк у сторон
+ * свои, и связать их иначе нечем. Порядок — как в результате: именно его
+ * человек правит и в него смотрит.
+ */
+function routinesOfFile(rel, { ours, theirs, base, current }) {
+  if ((path.extname(rel) || '').toLowerCase() !== '.bsl') return [];
+
+  const sides = {
+    ours: moduleRoutines(ours),
+    theirs: moduleRoutines(theirs),
+    base: moduleRoutines(base),
+    result: moduleRoutines(current),
+  };
+
+  const found = new Map();
+  const order = ['result', 'theirs', 'ours', 'base'];
+  for (const side of order) {
+    for (const routine of sides[side]) {
+      const key = routine.name.toLowerCase();
+      if (!found.has(key)) {
+        found.set(key, {
+          name: routine.name,
+          kind: routine.kind,
+          hasParams: routine.hasParams,
+          where: `${routine.kind === 'function' ? 'Функция' : 'Процедура'} «${routine.name}»`,
+          ranges: {},
+        });
+      }
+      const item = found.get(key);
+      if (!item.ranges[side]) item.ranges[side] = { start: routine.from, end: routine.to };
+    }
+  }
+  return [...found.values()];
 }
 
 /**

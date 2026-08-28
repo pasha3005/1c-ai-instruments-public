@@ -202,6 +202,35 @@ const CODE = {
  * Цвета отличий в окне разбора — те же три, что у конфигуратора: зелёный
  * «появилось справа», красный «пропало», синий «изменено».
  */
+/**
+ * Цвета значков видов объектов метаданных в дереве разбора.
+ *
+ * Своя палитра, а не сигнальные цвета: значок вида и значок состояния стоят
+ * в дереве рядом, и когда «Док» окрашен тем же жёлтым, что «решение за вами»,
+ * они читаются как одно и то же (замечание владельца 28.08.2026). Поэтому
+ * здесь нарочно нет ни зелёного `good`, ни жёлтого `warn`, ни акцента темы.
+ */
+const KINDS = {
+  dark: {
+    data: '#5fb8c0',
+    doc: '#b98ae0',
+    reg: '#7f9bd6',
+    proc: '#e08f70',
+    code: '#9aa3ae',
+    right: '#d98ab8',
+    other: '#8b93a0',
+  },
+  light: {
+    data: '#14707a',
+    doc: '#6b3fa0',
+    reg: '#2f5090',
+    proc: '#a3512a',
+    code: '#5b6470',
+    right: '#9c2f6f',
+    other: '#6b7280',
+  },
+};
+
 const DIFF = {
   dark: { add: '#4fb583', del: '#cf4a52', chg: '#4a7fd4', addInk: '#7fd0a3', delInk: '#ef8b91', chgInk: '#79a6ff' },
   light: { add: '#1f7a55', del: '#c0392f', chg: '#2f5fbf', addInk: '#1f7a55', delInk: '#a52f27', chgInk: '#2a55ad' },
@@ -217,6 +246,7 @@ export function appVars(id) {
   const sig = SIGNALS[theme.mode];
   const code = CODE[theme.mode];
   const diff = DIFF[theme.mode];
+  const kind = KINDS[theme.mode];
 
   return {
     'color-scheme': theme.mode,
@@ -246,6 +276,13 @@ export function appVars(id) {
     '--diff-add-ink': diff.addInk,
     '--diff-del-ink': diff.delInk,
     '--diff-chg-ink': diff.chgInk,
+    '--kind-data': kind.data,
+    '--kind-doc': kind.doc,
+    '--kind-reg': kind.reg,
+    '--kind-proc': kind.proc,
+    '--kind-code': kind.code,
+    '--kind-right': kind.right,
+    '--kind-other': kind.other,
     /** Обложка карточек и заставка главной: тёмная всегда, но своего подтона. */
     '--hero-from': theme.mode === 'dark' ? s.bg : s.surface2,
     '--hero-mid': theme.mode === 'dark' ? s.surface : s.surface,
