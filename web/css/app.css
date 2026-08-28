@@ -1103,7 +1103,13 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  * вниз, человек переставал понимать, справочники он смотрит или регистры
  * (требование владельца 28.08.2026).
  */
-.mgk { margin-bottom: 6px; }
+.mgk { margin-bottom: 4px; }
+/*
+ * Заголовок группы — кнопка, но выглядеть должен заголовком: браузерная
+ * рамка и фон сброшены. Без этого дерево превращалось в набор белых
+ * прямоугольников, чужих остальному окну (замечание владельца 28.08.2026).
+ * Оформление мягкое: приглушённая плашка со скруглением, как у кнопок.
+ */
 .mgk__head {
   position: sticky;
   top: -8px;
@@ -1111,45 +1117,42 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0;
-  /* Отрицательные поля с запасом: у прокручиваемого списка свои отступы,
-     и без них между липким заголовком и краем просвечивал бы фон. */
-  padding: 7px 8px;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: .01em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-}
-.mgk__title { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; }
-/* Заголовок группы — кнопка: сворачивается щелчком, а выглядит заголовком. */
-.mgk__head {
   width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-sm);
   font: inherit;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  /* Фон непрозрачный: заголовок липкий, и сквозь него не должны просвечивать
+     строки, которые под него уезжают. */
+  background: var(--surface-2);
   cursor: pointer;
+  transition: background .12s ease, color .12s ease;
 }
-.mgk__head:hover { color: var(--ink); }
+.mgk__head:hover { background: var(--accent-soft); color: var(--ink); }
+.mgk__title { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; }
 /* Стрелка раскрытия: вниз у открытой группы, вправо у свёрнутой. */
 .mgk__twist {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex-shrink: 0;
-  border-right: 1.6px solid currentColor;
-  border-bottom: 1.6px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
   transform: rotate(45deg) translate(-1px, -1px);
   transition: transform .12s ease;
 }
 .mgk.is-closed .mgk__twist { transform: rotate(-45deg) translate(-1px, -1px); }
 .mgk.is-closed .mgk__body { display: none; }
 /* Объекты вида отступают от края: видно, что они внутри группы. */
-.mgk > .mgt { margin-left: 10px; }
+.mgk > .mgk__body { padding-left: 8px; }
 
-.mgt { border-bottom: 1px solid var(--line-soft); }
-.mgt:last-child { border-bottom: 0; }
+.mgt { border-bottom: 0; }
 .mgt > summary {
   display: flex;
   align-items: center;

@@ -457,8 +457,10 @@ function routinesOfFile(rel, { ours, theirs, base, current }) {
         item.ranges[side] = { start: routine.from, end: routine.to };
         // СЫРЫЕ строки метода: окно подставляет их в результат, когда человек
         // выбирает сторону у метода, где спорных мест нет. Читаемые колонки
-        // приходят подсвеченными, и в файл их не запишешь.
-        if (side === 'ours' || side === 'theirs') {
+        // приходят подсвеченными, и в файл их не запишешь. Текст ТЕКУЩЕЙ
+        // поставки нужен для другого: по нему видно, правили ли мы метод,
+        // который поставщик удалил, — такой метод дважды изменён.
+        if (side === 'ours' || side === 'theirs' || side === 'base') {
           item.text[side] = lines[side].slice(routine.from - 1, routine.to);
         }
       }

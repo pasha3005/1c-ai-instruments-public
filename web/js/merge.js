@@ -720,15 +720,22 @@ function renderRight() {
   // по строкам ЭКРАНА, общим для пары: иначе выравнивание, ради которого
   // весь этот план и считался, разъехалось бы.
   const rightSide = checks ? 'theirs' : (isBase ? 'base' : 'theirs');
-  const rows = visibleRows(align, {
-    left: routineRange('ours'),
-    right: routineRange(rightSide),
-  });
+  const left = routineRange('ours');
+  const right = routineRange(rightSide);
+  const rows = visibleRows(align, { left, right });
 
   state.visibleRows = rows;
-  renderCode('#mgOurs', file.ours, align.left, align.marks, rows);
-  renderCode('#mgTheirs', checks ? file.theirs : (isBase ? file.base : file.theirs),
-    align.right, align.marks, rows);
+  // Метода в этой версии нет — так и говорим. Показывать здесь строки,
+  // которые выравнивание сопоставило с нашим методом, нельзя: у похожих
+  // запросов совпадает половина строк, и в колонку попадал СОСЕДНИЙ метод
+  // поставщика — человек читал его как «версию своего» (замечание владельца
+  // 28.08.2026).
+  const gone = state.routine && !state.showModule;
+  renderCode('#mgOurs', gone && !left ? null : file.ours, align.left, align.marks, rows,
+    gone && !left ? routineGoneNote('ours') : '');
+  renderCode('#mgTheirs',
+    gone && !right ? null : (checks ? file.theirs : (isBase ? file.base : file.theirs)),
+    align.right, align.marks, rows, gone && !right ? routineGoneNote(rightSide) : '');
 
   if (checks && file.line) markRange('#mgOurs', { start: file.line, end: file.line });
   // Пометку участка ставим напрямую: вызвать отсюда selectPlace нельзя —
@@ -900,19 +907,23 @@ function placeRows(file) {
       inTheirs: routine ? Boolean(routine.ranges?.theirs) : true,
       inBase: routine ? Boolean(routine.ranges?.base) : true,
       inResult: routine ? Boolean(routine.ranges?.result) : true,
+      touchedByUs: routine ? touchedByUs(routine) : false,
     };
   });
-
-  if (state.onlyConflicts) return rows;
 
   const taken = new Set(rows.map((row) => row.routine).filter(Boolean));
   for (const routine of routines) {
     const key = routine.name.toLowerCase();
     if (taken.has(key)) continue;
+    // Метод, который правили МЫ, а поставщик удалил, — тоже дважды изменённый:
+    // спорить есть о чём, и человек должен это увидеть даже под отбором
+    // (требование владельца 28.08.2026). Остальные методы прячутся.
+    const bothTouched = !routine.ranges?.theirs && touchedByUs(routine);
+    if (state.onlyConflicts && !bothTouched) continue;
     rows.push({
       place: -1,
-      kind: 'plain',
-      how: '',
+      kind: bothTouched ? 'manual' : 'plain',
+      how: bothTouched ? 'вы правили, поставщик удалил' : '',
       routine: key,
       name: routine.name,
       where: routine.where,
@@ -922,6 +933,7 @@ function placeRows(file) {
       inTheirs: Boolean(routine.ranges?.theirs),
       inBase: Boolean(routine.ranges?.base),
       inResult: Boolean(routine.ranges?.result),
+      touchedByUs: touchedByUs(routine),
     });
   }
 
@@ -931,6 +943,21 @@ function placeRows(file) {
     return found === -1 ? Number.MAX_SAFE_INTEGER : found;
   };
   return rows.sort((a, b) => at(a) - at(b));
+}
+
+/**
+ * Правили ли МЫ этот метод.
+ *
+ * Сравниваем свой текст с текстом текущей поставки: совпал — метод типовой
+ * и нетронутый, различается или в поставке его не было — наша работа.
+ * Текущей поставки нет вовсе (не нашлась) — судить не по чему, и мы не судим.
+ */
+function touchedByUs(routine) {
+  const ours = routine?.text?.ours;
+  const base = routine?.text?.base;
+  if (!ours) return false;
+  if (!base) return Boolean(routine?.ranges?.base) === false && Boolean(routine?.ranges?.ours);
+  return ours.join('\n') !== base.join('\n');
 }
 
 /** Имя метода из описания места — на случай, если списка методов нет. */
@@ -1118,10 +1145,19 @@ function visibleRows(align, limits) {
   return rows;
 }
 
-function renderCode(selector, side, plan = null, marks = null, only = null) {
+/** Чего именно нет в этой версии — говорим о методе, а не о файле. */
+function routineGoneNote(side) {
+  const name = (state.file?.routines || [])
+    .find((routine) => routine.name.toLowerCase() === state.routine)?.name || 'этого метода';
+  if (side === 'ours') return `Метода «${escapeHtml(name)}» в основной конфигурации нет: его добавил поставщик.`;
+  if (side === 'base') return `Метода «${escapeHtml(name)}» в текущей поставке не было: он дописан разработчиками.`;
+  return `Метода «${escapeHtml(name)}» в новой поставке нет: поставщик его удалил.`;
+}
+
+function renderCode(selector, side, plan = null, marks = null, only = null, note = '') {
   const box = $(selector);
   if (side == null) {
-    box.innerHTML = `<div class="empty">${missingSideNote(selector)}</div>`;
+    box.innerHTML = `<div class="empty">${note || missingSideNote(selector)}</div>`;
     return;
   }
   if (side.binary) {
