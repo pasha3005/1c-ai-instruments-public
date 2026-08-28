@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { APP, DATA_DIR, SERVER } from '../config.js';
+import { DATA_DIR, SERVER } from '../config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('browser');
@@ -149,8 +149,10 @@ export function openWindow(url, { maximized = false } = {}) {
   );
   for (const exe of order) {
     if (!existsSync(exe)) continue;
-    const args = ['--new-window', url];
-    if (maximized) args.unshift('--start-maximized');
+    // Профиль тот же, что у окна программы: иначе отчёт открылся бы
+    // в пользовательском окне браузера, а окно программы живёт в своём.
+    const args = [...profileArgs(), '--new-window', url];
+    if (maximized) args.push('--start-maximized');
     if (launch(exe, args, 'окно отчёта')) return true;
   }
   log.warn(`Отчёт открыть нечем: подходящий браузер не найден (${url})`);
@@ -187,117 +189,58 @@ function launch(exe, args, what) {
 }
 
 /**
- * Сколько места на экране без панели задач.
+ * Каталог профиля браузера для окна программы.
  *
- * Спрашивается у Windows один раз за запуск: окно программы открывается
- * однажды, и полсекунды на PowerShell тут не жалко. Не вышло — работаем
- * по прежнему размеру по умолчанию, окно просто будет меньше экрана.
+ * Профиль свой, а не пользовательский, и это единственный способ задать
+ * окну размер. Без него `msedge.exe --app=…` своего процесса браузера
+ * НЕ создаёт: команда уходит уже работающему Edge, тот открывает окно сам,
+ * а ключи размера отбрасывает — признак прямой, среди процессов Edge нет
+ * ни одного с `--app=` в командной строке. Со своим профилем браузер
+ * обязан запуститься отдельно, и ключ применяется при СОЗДАНИИ окна:
+ * никакого изменения размера на глазах у человека.
  *
- * @returns {{width: number, height: number}|null}
+ * Лежит в каталоге данных, весит около 65 МБ, создаётся при первом запуске.
+ * В git и в поставку не идёт: `data/` целиком.
  */
-function screenWorkArea() {
-  if (screenWorkArea.cached !== undefined) return screenWorkArea.cached;
-  screenWorkArea.cached = null;
-  try {
-    const command = 'Add-Type -AssemblyName System.Windows.Forms;'
-      + ' $a = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea;'
-      + ' "$($a.Width)x$($a.Height)"';
-    const found = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
-      encoding: 'utf8', timeout: 6000, windowsHide: true,
-    });
-    const parsed = /^(\d+)x(\d+)$/.exec(String(found.stdout || '').trim());
-    if (parsed) {
-      screenWorkArea.cached = { width: Number(parsed[1]), height: Number(parsed[2]) };
-    }
-  } catch {
-    // Не спросили — не беда: размер по умолчанию тоже рабочий.
-  }
-  return screenWorkArea.cached;
+const APP_PROFILE_DIR = path.join(DATA_DIR, 'browser-profile');
+
+/**
+ * Каким окно открывается, пока человек не задал свой размер.
+ *
+ * 1143×803 — размер, снятый с окна владельца 28.08.2026: столько он
+ * растянул мышью и попросил открывать таким.
+ */
+export const DEFAULT_WINDOW_SIZE = '1143,803';
+
+/**
+ * Чем открывается окно программы.
+ *
+ * Размер приходит из параметров: его запомнила сама страница, когда человек
+ * менял окно (`web/js/app.js`). Снаружи окно браузера не измерить, поэтому
+ * иначе его и не узнать.
+ *
+ * Ставить размер ПОСЛЕ открытия, снаружи, через MoveWindow, программа
+ * пробовала — владелец отверг это 28.08.2026: браузер открывает окно,
+ * а через две секунды оно на глазах меняет пропорции. Отсюда правило:
+ * размер задаётся только ключом, только при создании окна.
+ *
+ * @param {string} url адрес программы
+ * @param {string} [size] «ширина,высота»
+ */
+export function appWindowArgs(url, size = DEFAULT_WINDOW_SIZE) {
+  return [...profileArgs(), `--window-size=${size}`, `--app=${url}`];
 }
 
 /**
- * Размер и место окна программы.
- *
- * Размер задан числами, а не подобран под экран: 28.08.2026 владелец
- * растянул окно так, как ему удобно, и попросил открывать таким всегда.
- * Измерено у живого окна: 1143×803 по внешней рамке, 1127×795 внутри.
+ * Ключи профиля. Отдельный профиль впервые видит браузер, и без запретов
+ * он показал бы окно первого запуска поверх программы.
  */
-const APP_WINDOW_WIDTH = 1143;
-const APP_WINDOW_HEIGHT = 803;
-
-/**
- * Куда поставить окно на экране с такой рабочей областью.
- *
- * Вынесена отдельно от `screenWorkArea` ради теста: спрашивать Windows
- * в тестах нечем, а ужатие под маленький экран проверить надо — на ноутбуке
- * 1366×768 окно высотой 803 не поместилось бы целиком.
- *
- * @param {{width: number, height: number}|null} area рабочая область экрана
- */
-export function windowGeometryFor(area) {
-  const width = Math.min(APP_WINDOW_WIDTH, area?.width ?? APP_WINDOW_WIDTH);
-  const height = Math.min(APP_WINDOW_HEIGHT, area?.height ?? APP_WINDOW_HEIGHT);
-  // Экрана не знаем — размер ставим, а место оставляем браузеру: промахнуться
-  // мимо видимой части хуже, чем открыться там, где он сам решит.
-  const left = area ? Math.max(0, Math.round((area.width - width) / 2)) : null;
-  const top = area ? Math.max(0, Math.round((area.height - height) / 2)) : null;
-  return {
-    size: `${width},${height}`,
-    position: left === null ? null : `${left},${top}`,
-    box: { width, height, left, top },
-  };
-}
-export function appWindowGeometry() {
-  return windowGeometryFor(screenWorkArea());
-}
-
-/** Сценарий, ставящий окну размер средствами Windows. */
-const PLACE_SCRIPT = path.join(ROOT, 'src', 'tools', 'place-window.ps1');
-
-/**
- * Ставит окну программы размер после того, как браузер его открыл.
- *
- * Ключей `--window-size` и `--window-position` для этого НЕ ХВАТАЕТ.
- * Chromium применяет их только когда создаёт окно приложения впервые,
- * а дальше берёт геометрию из своего профиля и ключи игнорирует. Проверено
- * дважды, 28.08.2026: просили 1500×950 в позиции 100,50 и 1000×700 —
- * оба раза получили 945×1012 в позиции 10,10, то есть прошлое окно.
- * Поэтому размер ставится снаружи, через MoveWindow; окно ищется
- * по заголовку (`src/tools/place-window.ps1`).
- *
- * Не вышло — это не беда: окно просто останется таким, каким его открыл
- * браузер, и программа в нём работает.
- */
-function placeWindow(box) {
-  if (!box || box.left === null) return;
-
-  try {
-    // Без `detached`: с ним PowerShell на этой машине не отрабатывает вовсе —
-    // процесс запускается и молча ничего не делает (проверено 28.08.2026:
-    // тот же вызов без флага возвращает «ok»). Сценарий живёт секунды, так
-    // что держать его потомком сервера безопасно.
-    const child = spawn('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-File', PLACE_SCRIPT,
-      '-Title', APP.name,
-      '-Left', String(box.left), '-Top', String(box.top),
-      '-Width', String(box.width), '-Height', String(box.height),
-    ], { windowsHide: true });
-
-    let answer = '';
-    child.stdout?.on('data', (chunk) => { answer += chunk; });
-    child.on('error', (err) => log.warn(`Размер окну поставить не удалось: ${err.message}`));
-    child.on('close', () => {
-      const said = answer.trim();
-      if (said.startsWith('ok')) {
-        log.info(`Окну поставлен размер ${box.width}×${box.height} в позиции ${box.left},${box.top}`);
-      } else {
-        log.warn(`Размер окну поставить не удалось: ${said || 'ответа нет'}`);
-      }
-    });
-  } catch (err) {
-    log.warn(`Размер окну поставить не удалось: ${err.message}`);
-  }
+function profileArgs() {
+  return [
+    `--user-data-dir=${APP_PROFILE_DIR}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+  ];
 }
 /**
  * Открывает адрес отдельным окном без адресной строки и вкладок.
@@ -305,16 +248,10 @@ function placeWindow(box) {
  */
 export function openAppWindow(url, { size } = {}) {
   if (process.platform !== 'win32') return false;
-  const geometry = appWindowGeometry();
-  const windowSize = size || geometry.size;
   for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
-    const args = [`--app=${url}`, `--window-size=${windowSize}`];
-    if (!size && geometry.position) args.push(`--window-position=${geometry.position}`);
-    if (launch(exe, args, 'окно программы')) {
+    if (launch(exe, appWindowArgs(url, size), 'окно программы')) {
       rememberAppBrowser(exe);
-      // Ключи браузер, скорее всего, пропустит мимо ушей — размер ставим сами.
-      if (!size) placeWindow(geometry.box);
       return true;
     }
   }

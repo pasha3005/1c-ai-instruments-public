@@ -20,6 +20,7 @@ import { ensureDir } from './util/fsx.js';
 import { discoverPlatforms } from './onec/platform.js';
 import { createLogger } from './util/logger.js';
 import { openUrl, NO_BROWSER_HINT } from './util/browser.js';
+import { readSettings } from './store/settings.js';
 import os from 'node:os';
 
 const log = createLogger('main');
@@ -181,8 +182,22 @@ async function waitForPortRelease(url, attempts = 30) {
  * Windows. Если не вышло — открывается браузер по умолчанию.
  * Сама механика и её ловушки — в `util/browser.js`.
  */
-function openBrowser(url) {
-  const opened = openUrl(url, { appWindow: SERVER.appWindow });
+async function openBrowser(url) {
+  // Окно открывается таким, каким его оставили в прошлый раз: размер
+  // запоминает сама страница (`web/js/app.js`), а лежит он рядом
+  // с программой, в `data/settings.json`.
+  //
+  // Читаем под защитой: обоим местам вызова этот вызов не нужен настолько,
+  // чтобы из-за него терять запуск, а необработанное отклонение здесь уже
+  // однажды роняло процесс целиком (см. `printBanner` ниже).
+  let size;
+  try {
+    const box = (await readSettings()).window;
+    if (box) size = `${box.width},${box.height}`;
+  } catch (err) {
+    log.warn(`Запомненный размер окна прочитать не удалось: ${err.message}`);
+  }
+  const opened = openUrl(url, { appWindow: SERVER.appWindow, size });
   // Подходящего браузера на машине нет: страница, скорее всего, открылась
   // в Internet Explorer и там не работает. Молчать об этом нельзя — именно
   // так пользователь и получил «страшное оформление» на сервере заказчика

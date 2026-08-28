@@ -967,7 +967,58 @@ keepAlive();
 // должна быть того же вида, что и вся программа.
 loadSettings();
 
+/**
+ * Размер окна запоминается — и в следующий раз окно открывается таким же.
+ *
+ * Мерить его умеет только сама страница: снаружи окно браузера не измерить.
+ * Пишем при изменении размера — с задержкой, чтобы не слать запрос
+ * на каждый пиксель тяги за угол, — и ещё раз при закрытии окна, маячком:
+ * обычный запрос браузер на выгрузке страницы уже не отправляет.
+ *
+ * Хранятся ТОЛЬКО ширина и высота: владелец просил запоминать пропорции,
+ * а не местоположение (28.08.2026).
+ */
+const WINDOW_SAVE_DELAY = 700;
+let windowSaveTimer = null;
+
+function windowSize() {
+  return { width: window.outerWidth, height: window.outerHeight };
+}
+
+/** Свёрнутое окно браузер меряет нулями — такое не запоминаем. */
+function usableSize(size) {
+  return size.width >= 640 && size.height >= 640;
+}
+
+function rememberWindowSize() {
+  clearTimeout(windowSaveTimer);
+  windowSaveTimer = setTimeout(() => {
+    const size = windowSize();
+    if (!usableSize(size)) return;
+    api.saveSettings({ window: size }).catch(() => {
+      // Не сохранилось — не беда: окно откроется прежним размером.
+    });
+  }, WINDOW_SAVE_DELAY);
+}
+
+function initWindowMemory() {
+  window.addEventListener('resize', rememberWindowSize);
+  // Закрытие окна: `fetch` на выгрузке уже не уходит, а маячок — уходит.
+  window.addEventListener('pagehide', () => {
+    try {
+      const size = windowSize();
+      if (!usableSize(size)) return;
+      const body = new Blob([JSON.stringify({ window: size })], { type: 'application/json' });
+      navigator.sendBeacon('api/settings', body);
+    } catch {
+      // Маячок не обязателен: размер уже сохранён при последнем изменении.
+    }
+  });
+}
+
 $('#appCopyright').textContent = `© ${new Date().getFullYear()}`;
+
+initWindowMemory();
 
 requireLicense().then(() => {
   initTabs();

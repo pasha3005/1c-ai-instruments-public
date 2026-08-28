@@ -1246,7 +1246,13 @@ export function buildRouter() {
       sendError(res, 400, err.message);
       return;
     }
-    const settings = await writeSettings({ theme: body.theme });
+    // Размер окна знает только сама страница: снаружи окно браузера
+    // не измерить. Значения приходят из браузера, поэтому проверяет их
+    // хранилище, а не этот маршрут.
+    const patch = {};
+    if (body.theme !== undefined) patch.theme = body.theme;
+    if (body.window !== undefined) patch.window = body.window;
+    const settings = await writeSettings(patch);
     sendJson(res, 200, { settings });
   });
 
