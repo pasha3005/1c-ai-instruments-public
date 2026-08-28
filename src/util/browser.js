@@ -21,13 +21,73 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR, SERVER } from '../config.js';
+import { DATA_DIR, SERVER, APP } from '../config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('browser');
 
+/**
+ * Размер окна при самом первом запуске.
+ *
+ * Дальше окно открывается таким, каким его оставил пользователь: размер
+ * и положение он меняет мышью, а программа их запоминает
+ * (`data/settings.json`, ключ `window`). Подбирать размер под экран программа
+ * не пытается — требование пользователя 28.08.2026: «по умолчанию открывай
+ * окно как хочешь, но сохраняй последние пропорции».
+ */
+const DEFAULT_WINDOW_SIZE = '1280,900';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+/**
+ * Скрипт, возвращающий окну запомненные размер и положение.
+ *
+ * Одними ключами командной строки это не делается: `--window-size`
+ * и `--window-position` Chromium применяет ТОЛЬКО при создании нового окна
+ * приложения. Если окно с тем же `--app=` у него уже было, он восстанавливает
+ * геометрию из своего профиля, а ключи молча игнорирует — проверено
+ * 28.08.2026: просили 1500×950 в позиции 100,50, получили 945×1012
+ * в позиции 10,10. Поэтому размер ставится после открытия, через MoveWindow.
+ */
+const PLACE_SCRIPT = path.join(ROOT, 'src', 'tools', 'place-window.ps1');
+
+/**
+ * Вернуть окну запомненные размер и положение.
+ *
+ * Работает в фоне и молча: окно уже открыто и работает, а неудача здесь —
+ * это «окно не той ширины», а не сломанная программа.
+ */
+function placeWindow(box) {
+  if (!box || box.left === undefined) return;
+
+  try {
+    // Без `detached`: с ним PowerShell на этой машине не отрабатывает вовсе —
+    // процесс запускается и молча ничего не делает (проверено 28.08.2026:
+    // тот же вызов без флага возвращает «ok»). Скрипт живёт секунды, так что
+    // держать его потомком сервера безопасно.
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', PLACE_SCRIPT,
+      '-Title', APP.name,
+      '-Left', String(box.left), '-Top', String(box.top),
+      '-Width', String(box.width), '-Height', String(box.height),
+    ], { windowsHide: true });
+
+    let answer = '';
+    child.stdout?.on('data', (chunk) => { answer += chunk; });
+    child.on('error', (err) => log.warn(`Размер окна вернуть не удалось: ${err.message}`));
+    child.on('close', () => {
+      const said = answer.trim();
+      if (said.startsWith('ok')) {
+        log.info(`Окну возвращён размер ${box.width}×${box.height} в позиции ${box.left},${box.top}`);
+      } else {
+        log.warn(`Размер окна вернуть не удалось: ${said || 'ответа нет'}`);
+      }
+    });
+  } catch (err) {
+    log.warn(`Не удалось вернуть окну размер: ${err.message}`);
+  }
+}
 /** Куда класть переносной браузер, чтобы программа его нашла. */
 export const BUNDLED_BROWSER_DIR = path.join(ROOT, 'runtime', 'browser');
 
@@ -187,68 +247,22 @@ function launch(exe, args, what) {
 }
 
 /**
- * Сколько места на экране без панели задач.
- *
- * Спрашивается у Windows один раз за запуск: окно программы открывается
- * однажды, и полсекунды на PowerShell тут не жалко. Не вышло — работаем
- * по прежнему размеру по умолчанию, окно просто будет меньше экрана.
- *
- * @returns {{width: number, height: number}|null}
- */
-function screenWorkArea() {
-  if (screenWorkArea.cached !== undefined) return screenWorkArea.cached;
-  screenWorkArea.cached = null;
-  try {
-    const command = 'Add-Type -AssemblyName System.Windows.Forms;'
-      + ' $a = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea;'
-      + ' "$($a.Width)x$($a.Height)"';
-    const found = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
-      encoding: 'utf8', timeout: 6000, windowsHide: true,
-    });
-    const parsed = /^(\d+)x(\d+)$/.exec(String(found.stdout || '').trim());
-    if (parsed) {
-      screenWorkArea.cached = { width: Number(parsed[1]), height: Number(parsed[2]) };
-    }
-  } catch {
-    // Не спросили — не беда: размер по умолчанию тоже рабочий.
-  }
-  return screenWorkArea.cached;
-}
-
-/**
- * Размер и место окна программы.
- *
- * Требование пользователя (27.08.2026): окно во всю высоту экрана, а по
- * ширине — ровно столько, чтобы помещались три раздела главной. Ширина
- * содержимого 1120 пикселей плюс поля и полоса прокрутки; шире окно делать
- * незачем — пустые поля по краям читаемости не добавляют.
- */
-const APP_WINDOW_WIDTH = 1220;
-
-export function appWindowGeometry() {
-  const area = screenWorkArea();
-  if (!area) return { size: `${APP_WINDOW_WIDTH},900`, position: null };
-
-  const width = Math.min(APP_WINDOW_WIDTH, area.width);
-  const height = area.height;
-  const left = Math.max(0, Math.round((area.width - width) / 2));
-  return { size: `${width},${height}`, position: `${left},0` };
-}
-
-/**
  * Открывает адрес отдельным окном без адресной строки и вкладок.
  * @returns {boolean} удалось ли
  */
-export function openAppWindow(url, { size } = {}) {
+export function openAppWindow(url, { box = null } = {}) {
   if (process.platform !== 'win32') return false;
-  const geometry = appWindowGeometry();
-  const windowSize = size || geometry.size;
+  const size = box ? `${box.width},${box.height}` : DEFAULT_WINDOW_SIZE;
   for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
-    const args = [`--app=${url}`, `--window-size=${windowSize}`];
-    if (!size && geometry.position) args.push(`--window-position=${geometry.position}`);
+    const args = [`--app=${url}`, `--window-size=${size}`];
+    // Положение задаётся, только когда его есть откуда взять: своего мнения
+    // о том, где на экране должно быть окно, у программы нет.
+    if (box && box.left !== undefined) args.push(`--window-position=${box.left},${box.top}`);
     if (launch(exe, args, 'окно программы')) {
       rememberAppBrowser(exe);
+      // Ключи мог проигнорировать сам браузер — дожимаем через WinAPI.
+      placeWindow(box);
       return true;
     }
   }
@@ -371,10 +385,10 @@ export const NO_BROWSER_HINT = [
  *   по умолчанию или ничем (на Windows это значит, что подходящего браузера
  *   нет и открывать нечем).
  */
-export function openUrl(url, { appWindow = true, size = null, maximized = false } = {}) {
+export function openUrl(url, { appWindow = true, box = null, maximized = false } = {}) {
   try {
     if (process.platform === 'win32') {
-      if (appWindow && openAppWindow(url, { size })) return 'app';
+      if (appWindow && openAppWindow(url, { box })) return 'app';
       // Отчёт открывается ТЕМ ЖЕ браузером, в котором живёт окно программы —
       // обычным окном, с адресной строкой и вкладками. Браузер по умолчанию
       // для этого не годится: им может оказаться Internet Explorer, а отчёт

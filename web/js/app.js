@@ -299,6 +299,60 @@ function fillOptions(select, themes, value) {
   select.value = themes.some((t) => t.id === value) ? value : themes[0].id;
 }
 
+/**
+ * Размер окна запоминается — и открывается в следующий раз таким же.
+ *
+ * Знает его только сама страница: снаружи окно браузера не измерить, а
+ * подбирать размер под экран программа не должна (требование пользователя
+ * 28.08.2026: «по умолчанию открывай окно как хочешь, но сохраняй последние
+ * пропорции»). Пишем при изменении размера — с задержкой, чтобы не слать
+ * запрос на каждый пиксель тяги мышью, — и ещё раз при закрытии окна,
+ * маячком: обычный запрос браузер на выгрузке страницы уже не отправит.
+ */
+const WINDOW_SAVE_DELAY = 700;
+let windowSaveTimer = null;
+
+function windowBox() {
+  return {
+    width: window.outerWidth,
+    height: window.outerHeight,
+    left: window.screenX,
+    top: window.screenY,
+  };
+}
+
+/** Свёрнутое окно браузер меряет нулями — такое не запоминаем. */
+function usableBox(box) {
+  return box.width >= 640 && box.height >= 640;
+}
+
+function rememberWindowSize() {
+  clearTimeout(windowSaveTimer);
+  windowSaveTimer = setTimeout(() => {
+    const box = windowBox();
+    if (!usableBox(box)) return;
+    api.saveSettings({ window: box }).catch(() => {
+      // Не сохранилось — не беда: в следующий раз окно откроется прежним.
+    });
+  }, WINDOW_SAVE_DELAY);
+}
+
+function initWindowMemory() {
+  window.addEventListener('resize', rememberWindowSize);
+  // Закрытие окна: `fetch` на выгрузке уже не уходит, а маячок — уходит.
+  window.addEventListener('pagehide', () => {
+    try {
+      const box = windowBox();
+      if (!usableBox(box)) return;
+      const body = new Blob([JSON.stringify({ window: box })],
+        { type: 'application/json' });
+      navigator.sendBeacon('api/settings', body);
+    } catch {
+      // Маячок не обязателен: размер уже сохранён при последнем изменении.
+    }
+  });
+}
+
 // ------------------------------------------------------------- Окружение
 
 async function loadEnvironment() {
@@ -966,6 +1020,7 @@ keepAlive();
 // Тема — раньше ключа: под замком показывается форма ввода ключа, и она
 // должна быть того же вида, что и вся программа.
 loadSettings();
+initWindowMemory();
 
 $('#appCopyright').textContent = `© ${new Date().getFullYear()}`;
 
