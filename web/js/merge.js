@@ -21,6 +21,7 @@
 
 import { api } from './api.js';
 import { $, $$, escapeHtml, formatNumber } from './ui.js';
+import { kindIcon, kindGroup, kindKey } from './kinds.js';
 
 const state = {
   updateId: null,
@@ -352,7 +353,7 @@ function renderTree() {
     }
   }
 
-  box.innerHTML = objects.map(renderObject).join('');
+  box.innerHTML = groupByKind(objects).map(renderKindGroup).join('');
 
   $$('details[data-key]', box).forEach((node) => {
     node.addEventListener('toggle', () => {
@@ -367,6 +368,38 @@ function renderTree() {
   });
 }
 
+/**
+ * Верхний уровень дерева — вид объектов: «Документы», «Регистры сведений».
+ *
+ * Так устроено дерево конфигурации, и разработчик ищет объект именно так
+ * (требование владельца 28.08.2026). Порядок групп задаёт сервер: объекты
+ * приходят уже расставленными, как в конфигурации, и первое появление вида
+ * задаёт место его группы.
+ */
+function groupByKind(objects) {
+  const groups = new Map();
+  for (const object of objects) {
+    const key = kindKey(object.kind);
+    if (!groups.has(key)) {
+      groups.set(key, { key, kind: object.kind, title: kindGroup(object.kind), objects: [] });
+    }
+    groups.get(key).objects.push(object);
+  }
+  return [...groups.values()];
+}
+
+function renderKindGroup(group) {
+  const files = group.objects.reduce((sum, object) => sum + object.files.length, 0);
+  return `
+  <section class="mgk">
+    <h3 class="mgk__head">
+      ${kindIcon(group.kind, group.title)}
+      <span class="mgk__title">${escapeHtml(group.title)}</span>
+      <span class="mgt__stat">${formatNumber(files)}</span>
+    </h3>
+    ${group.objects.map(renderObject).join('')}
+  </section>`;
+}
 /** Место ждёт человека, пока он не принял решение: и нерешённое, и разобранное сама. */
 function needsWork(file) {
   return !file.decision;
@@ -382,7 +415,7 @@ function renderObject(object) {
   return `
   <details class="mgt" data-key="${escapeHtml(object.key)}" ${state.open.has(object.key) ? 'open' : ''}>
     <summary>
-      ${objectMark(object)}
+      ${kindIcon(object.kind, object.kind)}
       <span class="mgt__title">${escapeHtml(object.title || object.key)}</span>
       <span class="mgt__stat">${object.files.length}</span>
     </summary>
@@ -393,90 +426,6 @@ function renderObject(object) {
 }
 
 
-/**
- * Значок вида объекта метаданных.
- *
- * Буквенный, а не срисованная пиктограмма платформы: сокращение читается
- * с одного взгляда («Док», «РС», «ОМ»), не зависит от версии 1С и не тянет
- * в продукт чужую графику. Цвет — по семейству: данные, документы, регистры,
- * код, права. Вид приходит с сервера русским названием, но английский тег
- * тоже понимается: у части объектов в дереве стоит именно он.
- */
-const OBJECT_MARKS = new Map([
-  ['справочник', ['Спр', 'data']],
-  ['документ', ['Док', 'doc']],
-  ['журналдокументов', ['ЖД', 'doc']],
-  ['перечисление', ['Пер', 'data']],
-  ['константа', ['Кон', 'data']],
-  ['планвидовхарактеристик', ['ПВХ', 'data']],
-  ['плансчетов', ['ПС', 'data']],
-  ['планвидоврасчета', ['ПВР', 'data']],
-  ['планобмена', ['ПО', 'data']],
-  ['регистрсведений', ['РС', 'reg']],
-  ['регистрнакопления', ['РН', 'reg']],
-  ['регистрбухгалтерии', ['РБ', 'reg']],
-  ['регистррасчета', ['РР', 'reg']],
-  ['последовательность', ['Псл', 'reg']],
-  ['бизнеспроцесс', ['БП', 'proc']],
-  ['задача', ['Зад', 'proc']],
-  ['отчет', ['Отч', 'proc']],
-  ['обработка', ['Обр', 'proc']],
-  ['общиймодуль', ['ОМ', 'code']],
-  ['общаяформа', ['ОФ', 'code']],
-  ['общаякоманда', ['Ком', 'code']],
-  ['общиймакет', ['Мкт', 'code']],
-  ['общаякартинка', ['Крт', 'code']],
-  ['подпискунасобытие', ['Пдп', 'code']],
-  ['подпискинасобытия', ['Пдп', 'code']],
-  ['регламентноезадание', ['РЗ', 'code']],
-  ['webсервис', ['Веб', 'code']],
-  ['httpсервис', ['HTTP', 'code']],
-  ['пакетxdto', ['XDTO', 'code']],
-  ['роль', ['Роль', 'right']],
-  ['подсистема', ['Пдс', 'right']],
-  ['языки', ['Язк', 'right']],
-  ['язык', ['Язк', 'right']],
-  ['конфигурация', ['Кфг', 'right']],
-  // Виды, которых поначалу не было: без них дерево показывало объект
-  // вовсе без значка (замечание владельца 28.08.2026).
-  ['определяемыйтип', ['ОпТ', 'data']],
-  ['функциональнаяопция', ['ФО', 'code']],
-  ['параметрфункциональнойопции', ['ПФО', 'code']],
-  ['критерийотбора', ['КО', 'data']],
-  ['общийреквизит', ['ОбР', 'data']],
-  ['параметрсеанса', ['ПрС', 'code']],
-  ['хранилищенастроек', ['ХН', 'code']],
-  ['группакоманд', ['ГК', 'code']],
-  ['стильоформления', ['Стл', 'code']],
-  ['стиль', ['Стл', 'code']],
-  ['wsссылка', ['WS', 'code']],
-  ['внешнийисточникданных', ['ВИД', 'data']],
-  ['нумератор', ['Нум', 'doc']],
-]);
-
-/**
- * Значок для вида, которого нет в таблице.
- *
- * Прежде такой объект оставался вовсе без значка, и в дереве он выглядел
- * иначе, чем соседи. Берём первые буквы: даже приблизительное сокращение
- * лучше пустого места, а цвет у него нейтральный — «вид неизвестен».
- */
-function fallbackMark(kind) {
-  const words = String(kind).split(/[\s-]+/).filter(Boolean);
-  if (!words.length) return '';
-  const text = words.length > 1
-    ? words.map((word) => word[0].toUpperCase()).join('').slice(0, 4)
-    : words[0].slice(0, 3);
-  return `<i class="ob-mark ob-mark--other" title="${escapeHtml(kind)}">${escapeHtml(text)}</i>`;
-}
-
-function objectMark(object) {
-  const kind = String(object.kind || '').toLowerCase().replace(/[\s-]/g, '').replace(/ё/g, 'е');
-  const found = OBJECT_MARKS.get(kind);
-  if (!found) return object.kind ? fallbackMark(object.kind) : '';
-  const [text, family] = found;
-  return `<i class="ob-mark ob-mark--${family}" title="${escapeHtml(object.kind)}">${text}</i>`;
-}
 function renderFile(file) {
   const mark = fileMark(file);
   const active = state.file?.key === fileKey(file) ? ' is-active' : '';

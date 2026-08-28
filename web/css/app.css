@@ -1093,6 +1093,37 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgi--manual { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 .mgi--manual::after { content: '!'; }
 
+/*
+ * Верхний уровень дерева — вид объектов, как в дереве конфигурации.
+ *
+ * Заголовок липнет к верху: список объектов длиной в сотню строк, и, уехав
+ * вниз, человек переставал понимать, справочники он смотрит или регистры
+ * (требование владельца 28.08.2026).
+ */
+.mgk { margin-bottom: 6px; }
+.mgk__head {
+  position: sticky;
+  top: -8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  /* Отрицательные поля с запасом: у прокручиваемого списка свои отступы,
+     и без них между липким заголовком и краем просвечивал бы фон. */
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .01em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.mgk__title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* Объекты вида отступают от края: видно, что они внутри группы. */
+.mgk > .mgt { margin-left: 10px; }
+
 .mgt { border-bottom: 1px solid var(--line-soft); }
 .mgt:last-child { border-bottom: 0; }
 .mgt > summary {
@@ -1233,38 +1264,34 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  * от версии 1С и не тянет в продукт чужую графику. Цвет — по семейству:
  * данные, документы, регистры, код, права.
  */
-.ob-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 30px;
-  height: 16px;
-  padding: 0 4px;
-  margin-right: 6px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  font-family: var(--mono);
-  font-style: normal;
-  font-weight: 700;
-  font-size: 9.5px;
-  line-height: 1;
-  flex-shrink: 0;
-}
 /*
- * Цвета — своя палитра (`--kind-*`), а не сигнальные.
+ * Значок вида объекта — рисованный.
  *
- * Значок вида и значок состояния стоят в дереве рядом, и пока «Док» был
- * жёлтым, он читался как «решение за вами» (замечание владельца 28.08.2026).
- * Ни зелёного `--good`, ни жёлтого `--warn`, ни акцента темы здесь нет.
+ * Буквенные плашки («Спр», «Док») читались, но дерево из сорока таких плашек
+ * выглядело таблицей, а не деревом конфигурации (требование владельца
+ * 28.08.2026). Пиктограммы платформы не переносятся: рисунки свои, узнаваемые
+ * по силуэту.
+ *
+ * Цвета — своя палитра (`--kind-*`), а не сигнальные. Значок вида и значок
+ * состояния стоят в дереве рядом, и пока «Док» был жёлтым, он читался
+ * как «решение за вами».
  */
-.ob-mark--data  { color: var(--kind-data);  background: color-mix(in srgb, var(--kind-data) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-data) 36%, transparent); }
-.ob-mark--doc   { color: var(--kind-doc);   background: color-mix(in srgb, var(--kind-doc) 16%, transparent);   border-color: color-mix(in srgb, var(--kind-doc) 36%, transparent); }
-.ob-mark--reg   { color: var(--kind-reg);   background: color-mix(in srgb, var(--kind-reg) 16%, transparent);   border-color: color-mix(in srgb, var(--kind-reg) 36%, transparent); }
-.ob-mark--proc  { color: var(--kind-proc);  background: color-mix(in srgb, var(--kind-proc) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-proc) 36%, transparent); }
-.ob-mark--code  { color: var(--kind-code);  background: color-mix(in srgb, var(--kind-code) 16%, transparent);  border-color: color-mix(in srgb, var(--kind-code) 36%, transparent); }
-.ob-mark--right { color: var(--kind-right); background: color-mix(in srgb, var(--kind-right) 16%, transparent); border-color: color-mix(in srgb, var(--kind-right) 36%, transparent); }
-/* Незнакомый вид: значок всё равно рисуется — из первых букв названия. */
-.ob-mark--other { color: var(--kind-other); background: color-mix(in srgb, var(--kind-other) 16%, transparent); border-color: color-mix(in srgb, var(--kind-other) 36%, transparent); }
+.ob-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  /* Значок стоит вплотную к тексту и обязан сидеть на его строке. */
+  vertical-align: -3px;
+}
+.ob-icon--data  { color: var(--kind-data); }
+.ob-icon--doc   { color: var(--kind-doc); }
+.ob-icon--reg   { color: var(--kind-reg); }
+.ob-icon--proc  { color: var(--kind-proc); }
+.ob-icon--code  { color: var(--kind-code); }
+.ob-icon--right { color: var(--kind-right); }
+/* Вид, которого мы не знаем: значок всё равно есть, но нейтральный. */
+.ob-icon--other { color: var(--kind-other); }
+
 /* Значок вида метода — тот же, что в отчёте о качестве кода. */
 .rt-mark {
   display: inline-flex;
@@ -1598,3 +1625,18 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 }
 .mgw__arrow:hover { border-color: var(--accent-line); color: var(--ink); }
 .mgw__arrow:active { background: var(--surface-2); }
+
+/*
+ * Программа обновилась, а работает ещё прежняя.
+ *
+ * Полоса во всю ширину и над всем остальным: пока окно не перезапущено,
+ * часть возможностей молча не работает, и человек должен видеть причину,
+ * а не гадать.
+ */
+.stale-note {
+  padding: 9px 16px;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--on-signal);
+  background: var(--warn);
+}
