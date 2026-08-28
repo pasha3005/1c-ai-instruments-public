@@ -5,7 +5,7 @@
  * без npm install и без шага сборки.
  */
 
-import { api, subscribeToAudit, keepAlive } from './api.js';
+import { api, subscribeToAudit, keepAlive, onLicenseRequired } from './api.js';
 import {
   initUpdate, showUpdateStages, reloadUpdateHistory, openUpdateReview, refreshUpdateAfterReview,
 } from './update.js';
@@ -910,30 +910,36 @@ function gradeClass(score) {
 // -------------------------------------------------------- Лицензионный ключ
 
 /**
- * Ворота при открытии окна.
+ * Форма ключа — одна и та же и при запуске, и посреди работы.
  *
- * Без действующего ключа сервер отвечает 403 на любой запрос к API, поэтому
- * остальную инициализацию начинать бессмысленно: форма аудита под замком
- * выглядела бы работающей, а первая же кнопка отдавала бы ошибку.
+ * Ключ действует сутки и может истечь в любой момент: сервер начинает
+ * отвечать 403 на каждый запрос. Прежде это выглядело как голое сообщение
+ * «Требуется лицензионный ключ» в том разделе, где человека застало, —
+ * ни ввести ключ, ни вернуться (живой случай 28.08.2026). Теперь любой такой
+ * отказ поднимает эту форму, а запрос после ввода повторяется сам
+ * (`api.js`, `onLicenseRequired`).
+ *
+ * Обещание одно на всех: пока форма открыта, все запросы, получившие отказ,
+ * ждут ОДНОГО ввода, а не показывают форму каждый по разу.
  */
-async function requireLicense() {
+let asking = null;
+
+function askLicense() {
+  if (asking) return asking;
+
   const gate = $('#licenseGate');
   const form = $('#licenseForm');
   const input = $('#licenseKey');
   const error = $('#licenseError');
   const submit = $('#licenseSubmit');
 
-  try {
-    if ((await api.licenseStatus()).active) return true;
-  } catch {
-    // Сервер не ответил — покажем форму: хуже от этого не будет.
-  }
-
   gate.hidden = false;
+  error.hidden = true;
+  input.value = '';
   input.focus();
 
-  return new Promise((resolve) => {
-    form.addEventListener('submit', async (event) => {
+  asking = new Promise((resolve) => {
+    const send = async (event) => {
       event.preventDefault();
       const key = input.value.trim();
       if (!key) return;
@@ -943,6 +949,10 @@ async function requireLicense() {
       try {
         await api.activateLicense(key);
         gate.hidden = true;
+        // Обработчик снимается: форма живёт дольше одного ввода, и без
+        // этого на ней копились бы обработчики от прошлых показов.
+        form.removeEventListener('submit', send);
+        asking = null;
         resolve(true);
       } catch (err) {
         error.textContent = err.message;
@@ -951,16 +961,38 @@ async function requireLicense() {
       } finally {
         submit.disabled = false;
       }
-    });
+    };
+    form.addEventListener('submit', send);
   });
+
+  return asking;
 }
 
+/**
+ * Ворота при открытии окна.
+ *
+ * Без действующего ключа сервер отвечает 403 на любой запрос к API, поэтому
+ * остальную инициализацию начинать бессмысленно: форма аудита под замком
+ * выглядела бы работающей, а первая же кнопка отдавала бы ошибку.
+ */
+async function requireLicense() {
+  try {
+    if ((await api.licenseStatus()).active) return true;
+  } catch {
+    // Сервер не ответил — покажем форму: хуже от этого не будет.
+  }
+  return askLicense();
+}
 // --------------------------------------------------------------- Старт
 
 // Поток «окно открыто» поднимается ДО ключа: закрытие окна должно
 // останавливать программу и тогда, когда ключ ещё не введён. Иначе брошенное
 // окно с формой ключа оставляло бы висеть работающий сервер, а вместе с ним —
 // каталог приложения, который Windows не даёт удалить.
+// Любой отказ по ключу — из любого раздела и в любой момент — поднимает
+// форму ввода, а запрос после ввода повторяется сам.
+onLicenseRequired(askLicense);
+
 keepAlive();
 
 // Тема — раньше ключа: под замком показывается форма ввода ключа, и она

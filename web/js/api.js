@@ -1,6 +1,30 @@
 /** Тонкая обёртка над HTTP API приложения. */
 
-async function request(url, options = {}) {
+/**
+ * Что делать, когда сервер ответил «требуется лицензионный ключ».
+ *
+ * Ключ действует сутки, и истечь он может ПОСРЕДИ РАБОТЫ: человек нажал
+ * «Разобрать спорные места», а в ответ — голое сообщение об отказе, без
+ * формы ввода и без возврата (живой случай 28.08.2026). Поэтому запрос,
+ * получивший такой отказ, не падает: интерфейс показывает ту же форму ключа,
+ * что и при запуске, и после ввода запрос повторяется сам — работа
+ * продолжается с того места, где остановилась.
+ *
+ * Сама форма живёт в `app.js`; сюда она отдаётся крючком, чтобы обёртка над
+ * HTTP не знала про разметку страницы.
+ */
+let licensePrompt = null;
+
+export function onLicenseRequired(ask) {
+  licensePrompt = ask;
+}
+
+/** Отказ по ключу — не «ошибка 403», а повод спросить ключ. */
+function licenseDenied(response, payload) {
+  return response.status === 403 && Boolean(payload && payload.licenseRequired);
+}
+
+async function request(url, options = {}, askedAlready = false) {
   const response = await fetch(url, {
     headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
     ...options,
@@ -10,12 +34,17 @@ async function request(url, options = {}) {
   const payload = isJson ? await response.json().catch(() => null) : await response.text();
 
   if (!response.ok) {
+    // Ключ истёк: спрашиваем его и повторяем запрос — ОДИН раз. Второй отказ
+    // означает, что дело не в ключе, и его надо показать как есть.
+    if (licenseDenied(response, payload) && !askedAlready && licensePrompt) {
+      await licensePrompt();
+      return request(url, options, true);
+    }
     const message = (payload && payload.error) || `Ошибка ${response.status}`;
     throw new Error(message);
   }
   return payload;
 }
-
 export const api = {
   /** Действует ли введённый ранее ключ. */
   licenseStatus: () => request('api/license'),
@@ -178,65 +207,102 @@ export function subscribeToQuality(qualityId, handlers) {
   return subscribeToStream(`api/quality/${qualityId}/stream`, handlers);
 }
 
+/**
+ * Поток событий прогона.
+ *
+ * Источник пересоздаётся, когда причиной обрыва оказался истёкший ключ:
+ * ответ 403 закрывает `EventSource` навсегда (так велит спецификация),
+ * и прогон, который идёт прямо сейчас, потерял бы прогресс на ровном месте.
+ * Спросив ключ, подписываемся заново — тем же адресом и теми же
+ * обработчиками.
+ */
 function subscribeToStream(url, handlers) {
-  const source = new EventSource(url);
+  let source = null;
+  let stopped = false;
 
-  const forward = (event) => {
-    try {
-      handlers.onUpdate?.(JSON.parse(event.data));
-    } catch {
-      /* некорректный пакет — игнорируем */
+  const open = () => {
+    source = new EventSource(url);
+
+    const forward = (event) => {
+      try {
+        handlers.onUpdate?.(JSON.parse(event.data));
+      } catch {
+        /* некорректный пакет — игнорируем */
+      }
+    };
+
+    for (const name of ['snapshot', 'stage', 'log']) {
+      source.addEventListener(name, forward);
     }
+
+    // Конвейер обновления может остановиться и спросить разрешение на запись
+    // в базу. Событие отдельное: у него нет снимка состояния, зато есть вопрос,
+    // и пока на него не ответят, прогон стоит.
+    source.addEventListener('ask', (event) => {
+      try {
+        handlers.onAsk?.(JSON.parse(event.data));
+      } catch { /* некорректный пакет — игнорируем */ }
+    });
+    source.addEventListener('answered', () => handlers.onAnswered?.());
+
+    source.addEventListener('finish', (event) => {
+      forward(event);
+      handlers.onFinish?.();
+      stopped = true;
+      source.close();
+    });
+
+    // Прерывание пользователем — отдельное событие: это не сбой.
+    source.addEventListener('cancelled', (event) => {
+      forward(event);
+      let payload = {};
+      try {
+        payload = JSON.parse(event.data);
+      } catch { /* без подробностей */ }
+      handlers.onCancelled?.(payload.error, payload.durationMs);
+      stopped = true;
+      source.close();
+    });
+
+    source.addEventListener('error', async (event) => {
+      // SSE шлёт error и при обрыве соединения — различаем по наличию данных.
+      if (event.data) {
+        try {
+          const payload = JSON.parse(event.data);
+          handlers.onUpdate?.(payload);
+          handlers.onError?.(payload.error);
+        } catch {
+          handlers.onError?.('Соединение с сервером прервано');
+        }
+        stopped = true;
+        source.close();
+        return;
+      }
+      if (source.readyState !== EventSource.CLOSED || stopped) return;
+
+      // Оборвалось из-за ключа — спрашиваем его и подписываемся заново.
+      if (await licenseGone()) {
+        if (licensePrompt) await licensePrompt();
+        if (!stopped) open();
+        return;
+      }
+      handlers.onError?.('Соединение с сервером прервано');
+    });
   };
 
-  for (const name of ['snapshot', 'stage', 'log']) {
-    source.addEventListener(name, forward);
+  open();
+  return () => {
+    stopped = true;
+    source?.close();
+  };
+}
+
+/** Ключ перестал действовать? Спрашиваем сервер: маршрут открытый. */
+async function licenseGone() {
+  try {
+    return !(await api.licenseStatus()).active;
+  } catch {
+    // Сервер не ответил вовсе — это уже не про ключ.
+    return false;
   }
-
-  // Конвейер обновления может остановиться и спросить разрешение на запись
-  // в базу. Событие отдельное: у него нет снимка состояния, зато есть вопрос,
-  // и пока на него не ответят, прогон стоит.
-  source.addEventListener('ask', (event) => {
-    try {
-      handlers.onAsk?.(JSON.parse(event.data));
-    } catch { /* некорректный пакет — игнорируем */ }
-  });
-  source.addEventListener('answered', () => handlers.onAnswered?.());
-
-  source.addEventListener('finish', (event) => {
-    forward(event);
-    handlers.onFinish?.();
-    source.close();
-  });
-
-  // Прерывание пользователем — отдельное событие: это не сбой.
-  source.addEventListener('cancelled', (event) => {
-    forward(event);
-    let payload = {};
-    try {
-      payload = JSON.parse(event.data);
-    } catch { /* без подробностей */ }
-    handlers.onCancelled?.(payload.error, payload.durationMs);
-    source.close();
-  });
-
-  source.addEventListener('error', (event) => {
-    // SSE шлёт error и при обрыве соединения — различаем по наличию данных.
-    if (event.data) {
-      try {
-        const payload = JSON.parse(event.data);
-        handlers.onUpdate?.(payload);
-        handlers.onError?.(payload.error);
-      } catch {
-        handlers.onError?.('Соединение с сервером прервано');
-      }
-      source.close();
-      return;
-    }
-    if (source.readyState === EventSource.CLOSED) {
-      handlers.onError?.('Соединение с сервером прервано');
-    }
-  });
-
-  return () => source.close();
 }
