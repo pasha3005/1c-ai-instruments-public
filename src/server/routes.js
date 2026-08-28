@@ -1246,12 +1246,7 @@ export function buildRouter() {
       sendError(res, 400, err.message);
       return;
     }
-    // Размер окна приходит от самой страницы: она одна знает, каким его
-    // оставил человек. Проверяет значения хранилище — данные из браузера.
-    const patch = {};
-    if (body.theme !== undefined) patch.theme = body.theme;
-    if (body.window !== undefined) patch.window = body.window;
-    const settings = await writeSettings(patch);
+    const settings = await writeSettings({ theme: body.theme });
     sendJson(res, 200, { settings });
   });
 
