@@ -104,6 +104,8 @@ function places(element) {
     out.push({
       kind: 'auto',
       where: item.where || '',
+      routineKind: item.routineKind || '',
+      routineHasParams: Boolean(item.routineHasParams),
       how: item.how || '',
       why: item.why || '',
       oursStartLine: item.oursStartLine || 0,
@@ -121,17 +123,21 @@ function places(element) {
     out.push({
       kind: 'manual',
       where: item.where || '',
+      routineKind: item.routineKind || '',
+      routineHasParams: Boolean(item.routineHasParams),
       how: '',
       why: '',
       oursStartLine: item.oursStartLine || 0,
       theirsStartLine: item.theirsStartLine || 0,
       baseStartLine: item.baseStartLine || 0,
-      // При нерешённом месте в выгрузке лежит наша версия — она же и результат.
+      // При нерешённом месте в выгрузке лежит версия ПОСТАВЩИКА (см. merge3):
+      // обновление идёт на новый релиз, а своя версия возвращается выбором
+      // у самого участка.
       text: {
         ours: item.ours?.lines || [],
         theirs: item.theirs?.lines || [],
         base: item.base?.lines || [],
-        result: item.ours?.lines || [],
+        result: item.theirs?.lines || [],
       },
     });
   }
@@ -212,13 +218,6 @@ export function unresolvedByKind(result, state = emptyReviewState()) {
   };
 }
 
-/** Пути мест, разобранных программой и ещё не подтверждённых человеком. */
-export function autoFilesToConfirm(result, state = emptyReviewState()) {
-  return reviewFiles(result)
-    .filter((f) => f.status === 'auto' && !state.files?.[f.rel])
-    .map((f) => f.rel);
-}
-
 // --- Чтение и запись ---------------------------------------------------------
 
 /** Путь внутри каталога, без выхода наружу: `rel` приходит из браузера. */
@@ -290,8 +289,15 @@ export async function readReviewFile(result, state, rel) {
       base: locate(base, place.text.base, place.baseStartLine),
       result: locate(current, place.text.result, place.oursStartLine),
     },
-    // Сами строки участка окну не нужны: он показывает файлы целиком.
-    text: undefined,
+    // Строки сторон окну НУЖНЫ: у каждого участка есть выбор, откуда брать
+    // текст («взять из новой поставки» / «взять из основной конфигурации»),
+    // и подставляет его окно у себя, не спрашивая сервер заново. Отдаются
+    // сырые строки, а не подсвеченные: в файл уходит именно текст.
+    text: {
+      ours: place.text?.ours || [],
+      theirs: place.text?.theirs || [],
+      result: place.text?.result || [],
+    },
   }));
 
   // Раскладка и цвета считаются на паре, которую человек видит рядом: слева

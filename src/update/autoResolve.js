@@ -30,6 +30,7 @@ const TACTICS = [
   vendorAlreadyInOurs,
   ourChangeInVendor,
   ourAdditionAroundVendor,
+  bothInserted,
   ourCommentsOnly,
 ];
 
@@ -61,7 +62,10 @@ export function autoResolve({ rel, baseText, oursText, theirsText, merge }) {
       continue;
     }
     const at = conflict.mergedStartLine - 1;
-    lines.splice(at, conflict.ours.length, ...decision.lines);
+    // В результате лежит версия поставщика (см. merge3), и заменяем именно
+    // её. Длина берётся из конфликта, а не из `ours`: перепутав, сдвинем
+    // весь дальнейший текст.
+    lines.splice(at, conflict.placedLines ?? conflict.ours.length, ...decision.lines);
     resolved.push({
       ...conflict,
       how: decision.how,
@@ -181,6 +185,34 @@ function ourAdditionAroundVendor(conflict) {
     how: 'вставка перенесена',
     why: `Наша правка — вставка ${insertion.length} стр. рядом с типовым кодом, `
       + 'который вендор изменил. Взят новый код поставщика, вставка возвращена на место.',
+  };
+}
+
+/**
+ * Обе стороны дописали в одно место — и ни одна ничего не удалила.
+ *
+ * В базе на этом месте не было ни строки: поставщик добавил своё, мы — своё,
+ * и «спор» здесь только в том, что точка вставки одна. Удалять нечего,
+ * терять нечего: сохраняются обе вставки — сначала код новой поставки, следом
+ * наш. Порядок такой, потому что цель обновления — новый релиз, а доработка
+ * живёт поверх него.
+ *
+ * Живой случай 27.08.2026 (модуль менеджера документа на реальной ERP): наша
+ * вставка стояла перед типовой строкой, которую поставщик не трогал, а сам он
+ * дописал своё чуть выше — и место уходило человеку, хотя решать было нечего.
+ */
+function bothInserted(conflict) {
+  const { base, ours, theirs } = conflict;
+  if (base.length || !ours.length || !theirs.length) return null;
+  // Одинаковые вставки и вложенные одна в другую разбирают приёмы выше.
+  if (normalizedEqual(ours, theirs)) return null;
+  if (isSubsequence(ours, theirs) || isSubsequence(theirs, ours)) return null;
+
+  return {
+    lines: [...theirs, ...ours],
+    how: 'сохранены обе вставки',
+    why: `В этом месте ни одна сторона ничего не удаляла: поставщик добавил ${theirs.length} стр., `
+      + `вы — ${ours.length}. Сохранено и то и другое: сначала код новой поставки, следом ваш.`,
   };
 }
 

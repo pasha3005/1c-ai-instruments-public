@@ -41,10 +41,25 @@ export function renderStages(container, stages) {
       <span class="stage-icon">${icons[stage.status] ?? ''}</span>
       <span class="stage-body">
         <span class="stage-title">${escapeHtml(stage.title)}</span>
-        ${stage.detail ? `<span class="stage-detail">${escapeHtml(stage.detail)}</span>` : ''}
+        ${stage.detail ? `<span class="stage-detail">${detailHtml(stage.detail)}</span>` : ''}
         ${stage.note ? `<span class="stage-note">${escapeHtml(stage.note)}</span>` : ''}
       </span>
     </li>`).join('');
+}
+
+/**
+ * Подпись этапа: перевод строки в ней — не украшение, а раскладка.
+ *
+ * У объединения подпись длинная — «46 500 из 136 391» плюс путь к файлу,
+ * и путь на реальной конфигурации бывает такой, что строка переносится
+ * посреди имени. Считать глазами скачущее число неудобно, поэтому конвейер
+ * ставит перевод строки сам: счёт остаётся на строке этапа, путь уходит
+ * на следующую и приглушается.
+ */
+function detailHtml(detail) {
+  const [head, ...rest] = String(detail).split('\n');
+  const tail = rest.join(' ').trim();
+  return escapeHtml(head) + (tail ? `<span class="stage-detail__more">${escapeHtml(tail)}</span>` : '');
 }
 
 export function formatDuration(ms) {

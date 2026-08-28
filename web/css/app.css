@@ -621,6 +621,20 @@ body {
   white-space: nowrap;
   margin-top: 2px;
 }
+/*
+ * Вторая строка подписи — путь к файлу, который сейчас разбирают.
+ *
+ * Отдельной строкой, а не в продолжение счёта: на реальной конфигурации пути
+ * длинные, и строка переносилась посреди имени, а счёт при этом скакал влево
+ * и вправо. Теперь счёт стоит на месте, путь живёт под ним и обрезается.
+ */
+.stage-detail__more {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .85;
+}
 .stage-note { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; }
 .is-warning .stage-note { color: var(--warn); }
 .is-failed .stage-note { color: var(--danger); }
@@ -971,6 +985,14 @@ body {
 .is-wide body,
 body.is-wide { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 body.is-wide .appfoot { display: none; }
+/*
+ * В окне разбора нет ни шапки программы, ни подвала.
+ *
+ * Требование пользователя 27.08.2026: окно занимает экран целиком, и строка
+ * с названием раздела и «Историей» отнимает место у кода, ради которого сюда
+ * и пришли. Возврат к обновлению — своей кнопкой в самом окне.
+ */
+body.is-wide .topbar { display: none; }
 body.is-wide .wrap {
   max-width: none;
   flex: 1;
@@ -1122,38 +1144,115 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 }
 .mgw__file-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 4px; overflow-wrap: anywhere; }
 
-/* Участков у большого модуля десятки — полоса не должна съедать окна кода. */
-.mgw__places {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
-  flex: 0 0 auto;
-  max-height: 92px;
-  overflow: auto;
+/*
+ * Верх страницы разбора: только возврат.
+ *
+ * Заголовка и шапки раздела здесь нет — окно занимает экран целиком, и каждая
+ * строка над рабочей областью отнята у кода (требование пользователя
+ * 27.08.2026). Счёт мест переехал в левую панель, к фильтрам.
+ */
+.mgw__top { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.mgw__lead {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-faint);
 }
-.mgp {
+.mgw__lead b { font-weight: 600; }
+
+/*
+ * Места правки — таблицей, строка на метод.
+ *
+ * Чипами в строку они переносились как придётся, и в модуле с пятью
+ * процедурами прочитать список было нельзя (замечание пользователя
+ * 27.08.2026). Таблица держит четыре колонки: значок состояния, метод
+ * со значком вида, что сделала программа и откуда брать текст.
+ */
+.mgw__places {
+  flex: 0 0 auto;
+  max-height: 168px;
+  overflow: auto;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.mgp { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mgp__row { cursor: pointer; border-bottom: 1px solid var(--line-soft); }
+.mgp__row:last-child { border-bottom: 0; }
+.mgp__row:hover { background: var(--surface-2); }
+.mgp__row.is-active { background: var(--accent-soft); }
+.mgp__row td { padding: 5px 8px; vertical-align: middle; }
+.mgp__mark { width: 24px; }
+.mgp__where { color: var(--ink); overflow-wrap: anywhere; }
+.mgp__how { color: var(--good); font-size: 11.5px; white-space: nowrap; }
+.mgp__pick { width: 232px; text-align: right; }
+.mgp__select {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  color: var(--ink-mid);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.mgp__select:hover { border-color: var(--accent-line); }
+
+/*
+ * Значок вида объекта метаданных в дереве — буквенный, а не срисованная
+ * пиктограмма платформы: сокращение читается с одного взгляда, не зависит
+ * от версии 1С и не тянет в продукт чужую графику. Цвет — по семейству:
+ * данные, документы, регистры, код, права.
+ */
+.ob-mark {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-size: 12.5px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-  color: var(--ink-soft);
-  cursor: pointer;
+  justify-content: center;
+  min-width: 30px;
+  height: 16px;
+  padding: 0 4px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 9.5px;
+  line-height: 1;
+  flex-shrink: 0;
 }
-.mgp:hover { border-color: var(--accent-line); color: var(--ink); }
-.mgp.is-active { border-color: var(--accent); color: var(--ink); }
-.mgp__how { color: var(--good); font-size: 11.5px; }
-
+.ob-mark--data  { color: var(--diff-chg-ink); background: color-mix(in srgb, var(--diff-chg) 16%, transparent); border-color: color-mix(in srgb, var(--diff-chg) 36%, transparent); }
+.ob-mark--doc   { color: var(--warn);         background: color-mix(in srgb, var(--warn) 16%, transparent);     border-color: color-mix(in srgb, var(--warn) 36%, transparent); }
+.ob-mark--reg   { color: var(--good);         background: color-mix(in srgb, var(--good) 16%, transparent);     border-color: color-mix(in srgb, var(--good) 36%, transparent); }
+.ob-mark--proc  { color: var(--accent);       background: var(--accent-soft);                                   border-color: var(--accent-line); }
+.ob-mark--code  { color: var(--ink-soft);     background: var(--surface-2);                                     border-color: var(--line); }
+.ob-mark--right { color: var(--diff-del-ink); background: color-mix(in srgb, var(--diff-del) 16%, transparent); border-color: color-mix(in srgb, var(--diff-del) 36%, transparent); }
+/* Значок вида метода — тот же, что в отчёте о качестве кода. */
+.rt-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 16px;
+  padding: 0 4px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.rt-mark--procedure { color: var(--diff-del-ink); background: color-mix(in srgb, var(--diff-del) 18%, transparent); border-color: color-mix(in srgb, var(--diff-del) 40%, transparent); }
+.rt-mark--function  { color: var(--diff-chg-ink); background: color-mix(in srgb, var(--diff-chg) 18%, transparent); border-color: color-mix(in srgb, var(--diff-chg) 40%, transparent); }
 .mgw__panes {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
-  flex: 1 1 55%;
+  flex: 1 1 38%;
   min-height: 0;
 }
 @media (max-width: 900px) {
@@ -1183,7 +1282,11 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 
 .mgw__code {
   flex: 1;
-  min-height: 120px;
+  /*
+   * Читаемым колонкам хватает и меньшего: правят не их, а результат внизу,
+   * и место в первую очередь его (требование пользователя 27.08.2026).
+   */
+  min-height: 90px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
@@ -1210,9 +1313,14 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgc tr.is-here .mgc__t { color: var(--ink); }
 
 /* ---------- Результат ---------- */
+/*
+ * Результат — главное окно разбора: его правят, и он уходит в базу.
+ * Поэтому места ему больше, чем читаемым колонкам сверху (требование
+ * пользователя 27.08.2026).
+ */
 .mgw__result {
   margin-top: 14px;
-  flex: 1 1 45%;
+  flex: 1 1 62%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1253,6 +1361,7 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   body.is-wide .wrap { display: block; }
   body.is-wide .view.is-active { display: block; }
   body.is-wide .appfoot { display: block; }
+  body.is-wide .topbar { display: block; }
   .mgw { display: block; }
   .mgw__tree { margin-bottom: 14px; }
   .mgw__tree-body { max-height: 40vh; }
@@ -1332,7 +1441,7 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgw__editor {
   position: relative;
   flex: 1;
-  min-height: 100px;
+  min-height: 220px;
   border: 1px solid var(--line);
   border-top: 0;
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
@@ -1357,6 +1466,25 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   color: var(--ink-mid);
   pointer-events: none;
 }
+/*
+ * Номера строк результата — своим столбцом слева.
+ *
+ * Внутрь текста их не вставить: поле ввода отдаёт ровно тот текст, который
+ * уйдёт в файл, а сдвиг текста разъехался бы с подсветкой. Столбец
+ * прокручивается вместе с полем (`sync` в merge.js), ширина фиксированная —
+ * иначе на переходе с 999-й строки на 1000-ю дёргается весь код.
+ */
+.mgw__nums {
+  width: 56px;
+  text-align: right;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+  overflow: hidden !important;
+  user-select: none;
+}
+.mgw__editor #mgResultHl,
+.mgw__editor textarea { padding-left: 66px; }
 .mgw__editor textarea {
   position: absolute;
   inset: 0;

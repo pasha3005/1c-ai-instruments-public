@@ -188,8 +188,9 @@ async function runPipeline({ updateId, input, progress }) {
         ? 'текущая поставка указана — объединяем'
         : 'конфигурация поставщика в базе есть — объединяем');
     }
-    // Дальше идёт длинный путь; типовое обновление в нём не участвует.
-    progress.skip('update-cfg', 'не подходит: обновление идёт объединением');
+    // Дальше идёт длинный путь; типовое обновление в нём не участвует — и со
+    // шкалы убирается совсем: строка «не подходит» ничего не сообщает.
+    progress.drop('update-cfg');
 
     // ---------- 5. Основная конфигурация ----------
     startStage('export-main', 'Выгрузка основной конфигурации в XML (может занять несколько минут)');
@@ -301,7 +302,9 @@ async function runPipeline({ updateId, input, progress }) {
       targetTree,
       conflictRoot,
       onProgress: (done, total, rel) => {
-        progress.update('merge', `${done} из ${total}: ${rel}`);
+        // Счёт и путь — разными строками: путь бывает длиннее строки.
+        progress.update('merge', `${done} из ${total}
+${rel}`);
       },
     });
     const manualCount = (merge.totals.conflicted || 0) + (merge.totals.manual || 0);
@@ -414,8 +417,11 @@ async function runPipeline({ updateId, input, progress }) {
 async function runTypical({
   updateId, input, platform, conn, workRoot, progress, startedAt, warnings, collectCtx,
 }) {
+  // Объединения не будет — этапы, которые к нему относятся, убираем со шкалы
+  // целиком: перечень «пропущено, пропущено, пропущено» читателю ничего
+  // не даёт, а место занимает.
   for (const id of ['export-main', 'vendor-new', 'vendor-ahead', 'vendor-old', 'merge']) {
-    progress.skip(id, 'не требуется: объединения не будет');
+    progress.drop(id);
   }
 
   progress.message(
@@ -690,20 +696,20 @@ async function vendorAheadChanges({
   input, platform, conn, workRoot, mainProps, progress, parentCf = null,
 }) {
   if (String(input.vendorConfigPath || '').trim()) {
-    progress.skip('vendor-ahead', 'не нужно: текущая поставка указана файлом');
+    dropAhead(progress, 'не нужно: текущая поставка указана файлом');
     return null;
   }
 
   // Поставка есть целиком — прежние значения свойств известны точно, и второе
   // сравнение доказывать больше нечего.
   if (parentCf?.ok) {
-    progress.skip('vendor-ahead', 'не нужно: текущая поставка есть в выгрузке');
+    dropAhead(progress, 'не нужно: текущая поставка есть в выгрузке');
     return null;
   }
 
   const targetFile = String(input.targetConfigPath || '').trim();
   if (!/\.cfe?$/i.test(targetFile)) {
-    progress.skip('vendor-ahead', 'новая поставка задана не файлом .cf');
+    dropAhead(progress, 'новая поставка задана не файлом .cf');
     return null;
   }
 
@@ -885,9 +891,9 @@ async function applyToBase({
     infobase: conn.display,
     text: waiting.total > 0
       ? `${waitingSentence(waiting)} Пока хоть одно место не разобрано, записать в базу `
-        + 'нельзя: в нерешённом месте в выгрузке лежит ваша версия участка, а правка '
-        + 'поставщика в нём потеряна, а решение программы — предположение, которое вы '
-        + 'ещё не видели.'
+        + 'нельзя: в нерешённом месте лежит версия новой поставки, и ваша доработка '
+        + 'в нём потеряется, а решение программы — предположение, которое вы ещё '
+        + 'не видели.'
       : 'Объединение выполнено полностью, мест, требующих вашего внимания, не осталось.',
   });
 
@@ -1435,6 +1441,18 @@ function checkTarget({ mainProps, baseProps, targetProps, warnings, progress }) 
     warnings.push(text);
     progress.message(text, 'warn');
   }
+}
+
+/**
+ * Второе сравнение не понадобилось — этап уходит со шкалы.
+ *
+ * Причина остаётся в журнале прогона, а строки «Правки поставщика в новом
+ * релизе — не нужно: текущая поставка есть в выгрузке» на шкале больше нет:
+ * читателю она ничего не объясняет (замечание пользователя 27.08.2026).
+ */
+function dropAhead(progress, why) {
+  log.info(`Второе сравнение с поставщиком не выполняется: ${why}`);
+  progress.drop('vendor-ahead');
 }
 
 /**

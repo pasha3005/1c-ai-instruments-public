@@ -187,14 +187,67 @@ function launch(exe, args, what) {
 }
 
 /**
+ * Сколько места на экране без панели задач.
+ *
+ * Спрашивается у Windows один раз за запуск: окно программы открывается
+ * однажды, и полсекунды на PowerShell тут не жалко. Не вышло — работаем
+ * по прежнему размеру по умолчанию, окно просто будет меньше экрана.
+ *
+ * @returns {{width: number, height: number}|null}
+ */
+function screenWorkArea() {
+  if (screenWorkArea.cached !== undefined) return screenWorkArea.cached;
+  screenWorkArea.cached = null;
+  try {
+    const command = 'Add-Type -AssemblyName System.Windows.Forms;'
+      + ' $a = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea;'
+      + ' "$($a.Width)x$($a.Height)"';
+    const found = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
+      encoding: 'utf8', timeout: 6000, windowsHide: true,
+    });
+    const parsed = /^(\d+)x(\d+)$/.exec(String(found.stdout || '').trim());
+    if (parsed) {
+      screenWorkArea.cached = { width: Number(parsed[1]), height: Number(parsed[2]) };
+    }
+  } catch {
+    // Не спросили — не беда: размер по умолчанию тоже рабочий.
+  }
+  return screenWorkArea.cached;
+}
+
+/**
+ * Размер и место окна программы.
+ *
+ * Требование пользователя (27.08.2026): окно во всю высоту экрана, а по
+ * ширине — ровно столько, чтобы помещались три раздела главной. Ширина
+ * содержимого 1120 пикселей плюс поля и полоса прокрутки; шире окно делать
+ * незачем — пустые поля по краям читаемости не добавляют.
+ */
+const APP_WINDOW_WIDTH = 1220;
+
+export function appWindowGeometry() {
+  const area = screenWorkArea();
+  if (!area) return { size: `${APP_WINDOW_WIDTH},900`, position: null };
+
+  const width = Math.min(APP_WINDOW_WIDTH, area.width);
+  const height = area.height;
+  const left = Math.max(0, Math.round((area.width - width) / 2));
+  return { size: `${width},${height}`, position: `${left},0` };
+}
+
+/**
  * Открывает адрес отдельным окном без адресной строки и вкладок.
  * @returns {boolean} удалось ли
  */
-export function openAppWindow(url, { size = '1280,900' } = {}) {
+export function openAppWindow(url, { size } = {}) {
   if (process.platform !== 'win32') return false;
+  const geometry = appWindowGeometry();
+  const windowSize = size || geometry.size;
   for (const exe of browserOrder(rememberedBrowser(), appWindowBrowsers())) {
     if (!existsSync(exe)) continue;
-    if (launch(exe, [`--app=${url}`, `--window-size=${size}`], 'окно программы')) {
+    const args = [`--app=${url}`, `--window-size=${windowSize}`];
+    if (!size && geometry.position) args.push(`--window-position=${geometry.position}`);
+    if (launch(exe, args, 'окно программы')) {
       rememberAppBrowser(exe);
       return true;
     }
@@ -318,7 +371,7 @@ export const NO_BROWSER_HINT = [
  *   по умолчанию или ничем (на Windows это значит, что подходящего браузера
  *   нет и открывать нечем).
  */
-export function openUrl(url, { appWindow = true, size = '1280,900', maximized = false } = {}) {
+export function openUrl(url, { appWindow = true, size = null, maximized = false } = {}) {
   try {
     if (process.platform === 'win32') {
       if (appWindow && openAppWindow(url, { size })) return 'app';

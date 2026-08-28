@@ -66,10 +66,35 @@ const state = {
   /** Участки отличий открытого файла и номер того, на котором стоим. */
   hunks: [],
   hunk: -1,
+  /**
+   * Что выбрано у каждого участка: 'theirs' | 'ours' | 'auto'.
+   *
+   * Выбор живёт только пока открыт файл: сохраняется он не отдельно,
+   * а вместе со всем текстом результата — по кнопке «Сохранить результат».
+   */
+  picked: new Map(),
+  /**
+   * Где сейчас лежит каждый участок в тексте результата: номера строк.
+   *
+   * Пересчитывается при каждой замене: участок другой длины сдвигает всё,
+   * что ниже, и без пересчёта следующий выбор попал бы не в то место.
+   */
+  spans: new Map(),
 };
 
-/** Насколько большой текст ещё имеет смысл подсвечивать на лету. */
-const EDITOR_HIGHLIGHT_LIMIT = 400_000;
+/**
+ * Насколько большой текст ещё имеет смысл подсвечивать на лету.
+ *
+ * Прежние 400 КБ оказались занижены: модуль менеджера крупного документа
+ * бывает больше, и его результат оставался серым, хотя колонки рядом были
+ * раскрашены (замечание пользователя 27.08.2026). Замер лексера: 900 КБ —
+ * 87 мс, так что дело было не в цене работы. Порог оставлен на случай
+ * по-настоящему огромного файла, где мешала бы уже передача разметки.
+ */
+const EDITOR_HIGHLIGHT_LIMIT = 2_000_000;
+
+/** С какого размера подсветку просят реже: перекрашивать мегабайт на каждое нажатие незачем. */
+const BIG_TEXT = 200_000;
 
 /**
  * Как часто спрашивать раскраску у сервера, пока человек печатает.
@@ -139,33 +164,7 @@ export function initMerge(onBack) {
   linkScroll($('#mgOurs'), $('#mgTheirs'));
 
   $('#mgSave').addEventListener('click', () => decide('save'));
-  $('#mgAccept').addEventListener('click', () => decide('accept'));
   $('#mgRevert').addEventListener('click', () => decide('revert'));
-  $('#mgConfirmAuto').addEventListener('click', confirmAuto);
-}
-
-/**
- * Подтвердить разом всё, что разобрала программа.
- *
- * Спрашивается подтверждение: действие снимает вопрос сразу со многих мест,
- * а отменить его можно только по одному. Число в вопросе — то же, что
- * на кнопке.
- */
-async function confirmAuto() {
-  const left = groupData().totals.leftAuto || 0;
-  if (!left) return;
-  const what = state.group === 'checks' ? 'исправлений программы' : 'мест, разобранных программой';
-  if (!confirm(`Подтвердить ${what}: ${left}? Каждое из них останется в списке — `
-    + 'открыть и поправить любое можно и после подтверждения.')) return;
-  try {
-    await api.updateReviewDecide(state.updateId, {
-      action: 'accept-auto',
-      checks: state.group === 'checks',
-    });
-    await loadReview();
-  } catch (err) {
-    setNote(err.message, true);
-  }
 }
 
 /**
@@ -236,14 +235,6 @@ async function loadReview() {
     chip.textContent = counts[key] ? `${base} (${formatNumber(counts[key])})` : base;
     chip.classList.toggle('is-active', key === state.group);
   });
-
-  // Кнопка подтверждения показывается, только когда есть что подтверждать.
-  const confirmBtn = $('#mgConfirmAuto');
-  const leftAuto = t.leftAuto || 0;
-  confirmBtn.hidden = leftAuto === 0;
-  confirmBtn.textContent = state.group === 'checks'
-    ? `Подтвердить исправления программы (${formatNumber(leftAuto)})`
-    : `Подтвердить объединённое программой (${formatNumber(leftAuto)})`;
 
   renderTree();
 
@@ -333,6 +324,7 @@ function renderObject(object) {
   return `
   <details class="mgt" data-key="${escapeHtml(object.key)}" ${state.open.has(object.key) ? 'open' : ''}>
     <summary>
+      ${objectMark(object)}
       <span class="mgt__title">${escapeHtml(object.title || object.key)}</span>
       <span class="mgt__stat">${object.files.length}</span>
     </summary>
@@ -342,6 +334,59 @@ function renderObject(object) {
   </details>`;
 }
 
+
+/**
+ * Значок вида объекта метаданных.
+ *
+ * Буквенный, а не срисованная пиктограмма платформы: сокращение читается
+ * с одного взгляда («Док», «РС», «ОМ»), не зависит от версии 1С и не тянет
+ * в продукт чужую графику. Цвет — по семейству: данные, документы, регистры,
+ * код, права. Вид приходит с сервера русским названием, но английский тег
+ * тоже понимается: у части объектов в дереве стоит именно он.
+ */
+const OBJECT_MARKS = new Map([
+  ['справочник', ['Спр', 'data']],
+  ['документ', ['Док', 'doc']],
+  ['журналдокументов', ['ЖД', 'doc']],
+  ['перечисление', ['Пер', 'data']],
+  ['константа', ['Кон', 'data']],
+  ['планвидовхарактеристик', ['ПВХ', 'data']],
+  ['плансчетов', ['ПС', 'data']],
+  ['планвидоврасчета', ['ПВР', 'data']],
+  ['планобмена', ['ПО', 'data']],
+  ['регистрсведений', ['РС', 'reg']],
+  ['регистрнакопления', ['РН', 'reg']],
+  ['регистрбухгалтерии', ['РБ', 'reg']],
+  ['регистррасчета', ['РР', 'reg']],
+  ['последовательность', ['Псл', 'reg']],
+  ['бизнеспроцесс', ['БП', 'proc']],
+  ['задача', ['Зад', 'proc']],
+  ['отчет', ['Отч', 'proc']],
+  ['обработка', ['Обр', 'proc']],
+  ['общиймодуль', ['ОМ', 'code']],
+  ['общаяформа', ['ОФ', 'code']],
+  ['общаякоманда', ['Ком', 'code']],
+  ['общиймакет', ['Мкт', 'code']],
+  ['общаякартинка', ['Крт', 'code']],
+  ['подпискунасобытие', ['Пдп', 'code']],
+  ['подпискинасобытия', ['Пдп', 'code']],
+  ['регламентноезадание', ['РЗ', 'code']],
+  ['webсервис', ['Веб', 'code']],
+  ['httpсервис', ['HTTP', 'code']],
+  ['пакетxdto', ['XDTO', 'code']],
+  ['роль', ['Роль', 'right']],
+  ['подсистема', ['Пдс', 'right']],
+  ['языки', ['Язк', 'right']],
+  ['конфигурация', ['Кфг', 'right']],
+]);
+
+function objectMark(object) {
+  const kind = String(object.kind || '').toLowerCase().replace(/[\s-]/g, '').replace(/ё/g, 'е');
+  const found = OBJECT_MARKS.get(kind);
+  if (!found) return '';
+  const [text, family] = found;
+  return `<i class="ob-mark ob-mark--${family}" title="${escapeHtml(object.kind)}">${text}</i>`;
+}
 function renderFile(file) {
   const mark = fileMark(file);
   const active = state.file?.key === fileKey(file) ? ' is-active' : '';
@@ -418,14 +463,21 @@ async function openFile(key) {
   // Раскраска прошлого файла к этому отношения не имеет: кэш обнуляется,
   // иначе строки чужого модуля попали бы в слой под новым текстом.
   state.paint = null;
+  // Выбор сторон — свой у каждого файла. Границы участков берутся оттуда же,
+  // откуда их нашёл сервер: по содержимому, а не по номеру строки.
+  state.picked = new Map();
+  state.spans = new Map();
+  (file.places || []).forEach((place, index) => {
+    if (place.range?.result?.start) state.spans.set(index, { ...place.range.result });
+  });
   $('#mgResultHl').textContent = text;
+  renderLineNumbers();
   repaintEditor();
 
   $('#mgResultNote').textContent = resultNote(file);
   $('#mgSave').disabled = !file.editable;
   $('#mgRevert').hidden = state.group === 'checks';
   $('#mgRevert').disabled = !file.hasAuto;
-  $('#mgAccept').hidden = state.group === 'checks';
   $('#mgSkip').hidden = state.group !== 'checks' || file.status !== 'manual';
   renderTree();
 
@@ -458,7 +510,7 @@ function resultNote(file) {
   }
   return file.status === 'auto'
     ? 'записано программой — проверьте и подтвердите'
-    : 'здесь лежит ваша версия: правку поставщика надо перенести самому';
+    : 'по умолчанию взята новая поставка — свою версию верните выбором у метода';
 }
 
 /**
@@ -538,16 +590,71 @@ function renderPlaces(file) {
     return;
   }
   box.hidden = false;
-  box.innerHTML = places.map((place, index) => `
-    <button class="mgp mgp--${place.kind}" type="button" data-place="${index}">
-      <i class="mgi mgi--${place.kind === 'auto' ? 'auto' : 'manual'}" aria-hidden="true"></i>
-      <span class="mgp__where">${escapeHtml(place.where || 'участок')}</span>
-      ${place.how ? `<span class="mgp__how">${escapeHtml(place.how)}</span>` : ''}
-    </button>`).join('');
+  box.innerHTML = `
+    <table class="mgp">
+      <tbody>
+        ${places.map((place, index) => `
+        <tr class="mgp__row mgp__row--${place.kind}" data-place="${index}">
+          <td class="mgp__mark">
+            <i class="mgi mgi--${place.kind === 'auto' ? 'auto' : 'manual'}" aria-hidden="true"></i>
+          </td>
+          <td class="mgp__where">${routineMark(place)}${escapeHtml(place.where || 'участок')}</td>
+          <td class="mgp__how">${place.how ? escapeHtml(place.how) : ''}</td>
+          <td class="mgp__pick">${sidePicker(place, index)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
 
-  $$('[data-place]', box).forEach((btn) => {
-    btn.addEventListener('click', () => selectPlace(Number(btn.dataset.place)));
+  $$('[data-place]', box).forEach((row) => {
+    row.addEventListener('click', (event) => {
+      // Щелчок по выпадающему списку выбирает сторону, а не участок.
+      if (event.target.closest('select')) return;
+      selectPlace(Number(row.dataset.place));
+    });
   });
+  $$('select[data-pick]', box).forEach((select) => {
+    select.addEventListener('change', () => {
+      const index = Number(select.dataset.pick);
+      selectPlace(index);
+      takeSide(index, select.value);
+    });
+  });
+}
+
+/**
+ * Значок вида метода — тот же, что в отчёте о качестве кода.
+ *
+ * «P()» у процедуры, «F(x)» у функции: скобки говорят, есть ли параметры.
+ * Вид приходит с сервера из разбора модуля; не разобралось — значка нет,
+ * выдумывать вид нельзя.
+ */
+function routineMark(place) {
+  if (place.routineKind !== 'procedure' && place.routineKind !== 'function') return '';
+  const letter = place.routineKind === 'function' ? 'F' : 'P';
+  const inner = place.routineHasParams ? (place.routineKind === 'function' ? 'x' : '…') : '';
+  return `<i class="rt-mark rt-mark--${place.routineKind}">${letter}(${inner})</i> `;
+}
+
+/**
+ * Откуда брать текст участка.
+ *
+ * По умолчанию — из новой поставки: цель обновления в том, чтобы перейти
+ * на новый релиз, сохранив доработки (требование пользователя 27.08.2026).
+ * Место, которое программа разобрала сама, стоит на своём решении — его тоже
+ * можно переключить, и тогда в результат ляжет выбранная сторона целиком.
+ */
+function sidePicker(place, index) {
+  // У ошибок проверок сторон нет: там правят один файл, а не сводят две
+  // версии. Выпадающий список в этой вкладке был бы бессмыслицей.
+  if (state.group === 'checks') return '';
+  const chosen = state.picked.get(index) || (place.kind === 'auto' ? 'auto' : 'theirs');
+  const options = [
+    place.kind === 'auto' ? ['auto', 'решение программы'] : null,
+    ['theirs', 'взять из новой поставки'],
+    ['ours', 'взять из основной конфигурации'],
+  ].filter(Boolean);
+  return `<select class="mgp__select" data-pick="${index}">${options.map(([value, title]) =>
+    `<option value="${value}"${value === chosen ? ' selected' : ''}>${title}</option>`).join('')}</select>`;
 }
 
 /**
@@ -654,6 +761,57 @@ function selectInResult(range) {
   scrollPane(box, (range.start - 1) * lineHeight);
 }
 
+/**
+ * Заменить участок в результате версией выбранной стороны.
+ *
+ * Меняется ровно один участок — тот, у которого переключили список; остальной
+ * текст остаётся как есть, включая правки, сделанные руками. Участки заданы
+ * номерами строк, поэтому после замены границы всех, что ниже, сдвигаются
+ * на разницу длин: иначе следующий выбор попал бы не туда.
+ */
+function takeSide(index, side) {
+  const place = state.file?.places?.[index];
+  const span = state.spans.get(index);
+  if (!place || !span) return;
+
+  const lines = linesOf(side, place);
+  if (!lines) return;
+
+  const box = $('#mgResult');
+  const all = box.value.split('\n');
+  const before = span.end - span.start + 1;
+  all.splice(span.start - 1, before, ...lines);
+  box.value = all.join('\n');
+
+  const shift = lines.length - before;
+  state.spans.set(index, { start: span.start, end: span.start + lines.length - 1 });
+  if (shift) {
+    for (const [key, other] of state.spans) {
+      if (key === index || other.start <= span.start) continue;
+      state.spans.set(key, { start: other.start + shift, end: other.end + shift });
+    }
+  }
+  state.picked.set(index, side);
+
+  state.paint = null;
+  paintFromCache();
+  renderLineNumbers();
+  repaintEditor();
+  selectPlace(index);
+  setNote(side === 'ours'
+    ? 'Участок взят из основной конфигурации. Нажмите «Сохранить результат», чтобы записать.'
+    : (side === 'auto'
+      ? 'Возвращено решение программы. Нажмите «Сохранить результат», чтобы записать.'
+      : 'Участок взят из новой поставки. Нажмите «Сохранить результат», чтобы записать.'));
+}
+
+/** Текст одной стороны участка: то, что подставляется в результат. */
+function linesOf(side, place) {
+  if (side === 'ours') return place.text?.ours || null;
+  if (side === 'theirs') return place.text?.theirs || null;
+  return place.text?.result || null;
+}
+
 /** Прокрутка так, чтобы участок оказался в верхней трети окна. */
 function scrollPane(box, offsetTop) {
   box.scrollTop = Math.max(0, offsetTop - box.clientHeight / 3);
@@ -700,9 +858,11 @@ function initEditor() {
   const box = $('#mgResult');
   const layer = $('#mgResultHl');
 
+  const nums = $('#mgResultNums');
   const sync = () => {
     layer.scrollTop = box.scrollTop;
     layer.scrollLeft = box.scrollLeft;
+    nums.scrollTop = box.scrollTop;
   };
   box.addEventListener('scroll', sync);
   box.addEventListener('focus', () => $('#mgEditor').classList.add('is-focused'));
@@ -712,6 +872,7 @@ function initEditor() {
   });
   box.addEventListener('input', () => {
     paintFromCache();
+    renderLineNumbers();
     sync();
     schedulePaint();
   });
@@ -772,12 +933,30 @@ function paintLine(line) {
 function schedulePaint() {
   if (state.paintPending) return;
   state.paintPending = true;
-  const wait = Math.max(0, PAINT_INTERVAL - (Date.now() - state.paintAt));
+  const size = $('#mgResult').value.length;
+  const interval = size > BIG_TEXT ? PAINT_INTERVAL * 4 : PAINT_INTERVAL;
+  const wait = Math.max(0, interval - (Date.now() - state.paintAt));
   clearTimeout(state.paintTimer);
   state.paintTimer = setTimeout(() => {
     state.paintPending = false;
     repaintEditor();
   }, wait);
+}
+
+/**
+ * Номера строк результата.
+ *
+ * Считаются по тексту поля, а не по исходному файлу: человек правит текст
+ * прямо здесь, и номера обязаны идти за ним.
+ */
+function renderLineNumbers() {
+  const box = $('#mgResult');
+  const nums = $('#mgResultNums');
+  if (!box || !nums) return;
+  const count = box.value.split('\n').length;
+  const out = [];
+  for (let n = 1; n <= count; n += 1) out.push(n);
+  nums.textContent = out.join('\n');
 }
 
 /** Перекрасить слой под полем ввода. */
@@ -834,7 +1013,7 @@ async function decide(action) {
     + 'а место снова станет неразобранным.',
   )) return;
 
-  const buttons = ['#mgSave', '#mgAccept', '#mgRevert', '#mgSkip'];
+  const buttons = ['#mgSave', '#mgRevert', '#mgSkip'];
   buttons.forEach((id) => { $(id).disabled = true; });
   setNote('Сохранение…');
   try {

@@ -13,11 +13,10 @@ import { createProgress, getProgress, runningProgresses, STAGES, UPDATE_STAGES, 
 import { runAudit } from '../pipeline/runAudit.js';
 import { runUpdate, loadUpdateResult } from '../pipeline/runUpdate.js';
 import {
-  buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount, autoFilesToConfirm,
-  highlightLines,
+  buildReview, readReviewFile, readAutoResult, writeReviewFile, unresolvedCount, highlightLines,
 } from '../update/mergeReview.js';
 import {
-  buildCheckReview, readCheckItem, writeCheckItem, checksLeft, autoChecksToConfirm,
+  buildCheckReview, readCheckItem, writeCheckItem, checksLeft,
 } from '../update/checkReview.js';
 import { runQuality } from '../pipeline/runQuality.js';
 import * as store from '../store/auditStore.js';
@@ -915,48 +914,8 @@ export function buildRouter() {
     }
 
     const rel = String(body.rel || '');
-    const action = ['save', 'accept', 'revert', 'skip', 'accept-auto'].includes(body.action)
+    const action = ['save', 'accept', 'revert', 'skip'].includes(body.action)
       ? body.action : 'save';
-
-    // Подтвердить разом всё, что разобрала программа.
-    //
-    // Просмотр каждого места по отдельности остаётся: список показан, значки
-    // расставлены, любое место открывается и правится. Но подтверждать сотню
-    // одинаковых решений по одному — работа ради работы, а осознанности от
-    // неё не прибавляется. Действие называет число и пишется в журнал.
-    if (action === 'accept-auto') {
-      const before = await updateStore.getReviewState(params.id);
-
-      // Та же кнопка во второй вкладке окна: замечания платформы, которые
-      // программа исправила сама.
-      if (body.checks) {
-        const ids = autoChecksToConfirm(result.checks, before);
-        for (const id of ids) {
-          await updateStore.setCheckDecision(params.id, id, { mode: 'accepted' });
-        }
-        const state = await updateStore.getReviewState(params.id);
-        log.info(`Обновление ${params.id}: подтверждено разом исправлений программы: ${ids.length}`);
-        sendJson(res, 200, {
-          ok: true, action, confirmed: ids.length, ...buildCheckReview(result.checks, state).totals,
-        });
-        return;
-      }
-
-      const files = autoFilesToConfirm(result, before);
-      for (const item of files) {
-        await updateStore.setReviewDecision(params.id, item, { mode: 'accepted' });
-      }
-      const state = await updateStore.getReviewState(params.id);
-      log.info(`Обновление ${params.id}: подтверждено разом мест, разобранных программой: ${files.length}`);
-      sendJson(res, 200, {
-        ok: true,
-        action,
-        confirmed: files.length,
-        left: unresolvedCount(result, state),
-        ...buildReview(result, state).totals,
-      });
-      return;
-    }
 
     // Ошибка проверки платформы: правится тот же текст, но живёт она не в
     // выгрузке объединения, а там, куда указала платформа, — и у неё есть

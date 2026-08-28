@@ -108,7 +108,8 @@ export function changedHunks(base, side) {
  *   lines: string[],
  *   conflicts: {baseStartLine: number, baseEndLine: number,
  *               oursStartLine: number, theirsStartLine: number, mergedStartLine: number,
- *               base: string[], ours: string[], theirs: string[]}[],
+ *               base: string[], ours: string[], theirs: string[],
+ *               placed: 'theirs', placedLines: number}[],
  *   fromVendor: number, keptOurs: number, sameBoth: number,
  *   clean: boolean, changed: boolean,
  * }}
@@ -182,6 +183,12 @@ export function merge3(baseText, oursText, theirsText) {
       out.push(...oursLines);
       sameBoth += 1;
     } else {
+      // Дважды изменённое место. В результат кладётся версия ПОСТАВЩИКА —
+      // требование пользователя (27.08.2026): «цель-то в том, чтобы обновиться
+      // на новую конфигурацию поставщика, сохранив по максимуму наши
+      // доработки». Своя версия никуда не пропадает: место значится спорным,
+      // прогон стоит, пока его не разберут, а в окне разбора у каждого участка
+      // есть выбор, откуда брать текст.
       conflicts.push({
         baseStartLine: clusterStart + 1,
         baseEndLine: clusterEnd,
@@ -191,9 +198,11 @@ export function merge3(baseText, oursText, theirsText) {
         base: base.slice(clusterStart, clusterEnd),
         ours: oursLines,
         theirs: theirsLines,
+        /** Что из этого лежит в результате и сколько там строк. */
+        placed: 'theirs',
+        placedLines: theirsLines.length,
       });
-      out.push(...oursLines);
-      keptOurs += 1;
+      out.push(...theirsLines);
     }
 
     cursor = clusterEnd;

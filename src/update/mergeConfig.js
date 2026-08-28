@@ -864,8 +864,11 @@ async function attachConflicts(state, rel, element, result, texts) {
 }
 
 function fragment(conflict, where) {
+  const place = where(conflict.oursStartLine, conflict.baseStartLine, conflict.baseEndLine) || {};
   return {
-    where: where(conflict.oursStartLine, conflict.baseStartLine, conflict.baseEndLine),
+    where: place.where || '',
+    routineKind: place.routineKind || '',
+    routineHasParams: Boolean(place.routineHasParams),
     baseStartLine: conflict.baseStartLine,
     oursStartLine: conflict.oursStartLine,
     theirsStartLine: conflict.theirsStartLine,
@@ -886,11 +889,13 @@ function placeFinder(rel, oursText, baseText = '') {
 
   if (ext === '.xml') {
     const outline = buildXmlOutline(baseText || oursText);
-    return (oursLine, baseStart, baseEnd) => describeXmlRange(
-      outline,
-      baseText ? baseStart : oursLine,
-      baseText ? baseEnd : oursLine,
-    );
+    return (oursLine, baseStart, baseEnd) => ({
+      where: describeXmlRange(
+        outline,
+        baseText ? baseStart : oursLine,
+        baseText ? baseEnd : oursLine,
+      ),
+    });
   }
 
   if (ext === '.bsl') {
@@ -898,14 +903,23 @@ function placeFinder(rel, oursText, baseText = '') {
       const { routines } = analyzeStructure(tokenize(oursText).tokens);
       return (oursLine) => {
         const routine = findRoutineAtLine(routines, oursLine);
-        return routine ? `Процедура «${routine.name}»` : 'Вне процедур';
+        if (!routine) return { where: 'Вне процедур' };
+        // Вид метода называется правильно: «Функция» у функции, «Процедура»
+        // у процедуры. Значок и скобки в окне разбора рисуются по этим же
+        // полям — теми же, что в отчёте о качестве кода.
+        return {
+          where: `${routine.kind === 'function' ? 'Функция' : 'Процедура'} «${routine.name}»`,
+          routineKind: routine.kind,
+          routineHasParams: (routine.params || []).length > 0,
+          routineName: routine.name,
+        };
       };
     } catch {
-      return () => '';
+      return () => ({ where: '' });
     }
   }
 
-  return () => '';
+  return () => ({ where: '' });
 }
 
 /** Отличия от новой поставки, когда объединять нечем. */
@@ -926,14 +940,19 @@ async function attachTwoWay(state, rel, element) {
   const where = placeFinder(rel, oursText);
 
   const hunks = twoWayHunks(oursText, theirsText, { limit: CONFLICTS_PER_FILE });
-  element.conflicts = hunks.map((hunk) => ({
-    where: where(hunk.oursStartLine),
-    oursStartLine: hunk.oursStartLine,
-    theirsStartLine: hunk.theirsStartLine,
-    base: [],
-    ours: cut(hunk.ours),
-    theirs: cut(hunk.theirs),
-  }));
+  element.conflicts = hunks.map((hunk) => {
+    const place = where(hunk.oursStartLine) || {};
+    return {
+      where: place.where || '',
+      routineKind: place.routineKind || '',
+      routineHasParams: Boolean(place.routineHasParams),
+      oursStartLine: hunk.oursStartLine,
+      theirsStartLine: hunk.theirsStartLine,
+      base: [],
+      ours: cut(hunk.ours),
+      theirs: cut(hunk.theirs),
+    };
+  });
   element.conflictCount = element.conflicts.length;
 }
 

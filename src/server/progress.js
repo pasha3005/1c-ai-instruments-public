@@ -171,6 +171,23 @@ export class AuditProgress extends EventEmitter {
     this.#push('stage', { stage: stageId, note });
   }
 
+  /**
+   * Убрать этап со шкалы совсем.
+   *
+   * «Пропущен» и «не относится к делу» — разные вещи. Строка «Типовое
+   * обновление силами платформы — не подходит: обновление идёт объединением»
+   * не сообщает ничего: раз мы объединяем, ясно, что платформа его не делает.
+   * Такие этапы убираются, а их вес возвращается остальным, чтобы шкала
+   * доходила до ста процентов (замечание пользователя 27.08.2026).
+   */
+  drop(stageId) {
+    const stage = this.stages.get(stageId);
+    if (!stage) return;
+    this.stages.delete(stageId);
+    this.totalWeight = Math.max(1, this.totalWeight - stage.weight);
+    this.#push('stage', { stage: stageId, dropped: true });
+  }
+
   /** Этап завершён с ошибкой, но конвейер продолжает работу. */
   warn(stageId, note = '') {
     const stage = this.stages.get(stageId);

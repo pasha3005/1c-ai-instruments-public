@@ -182,14 +182,6 @@ export function checksLeft(checks, state = {}) {
   return buildCheckItems(checks).filter((item) => !decided[item.id]).length;
 }
 
-/** Опознаватели мест, исправленных программой и ещё не подтверждённых. */
-export function autoChecksToConfirm(checks, state = {}) {
-  const decided = state.checks || {};
-  return buildCheckItems(checks)
-    .filter((item) => item.status === 'auto' && !decided[item.id])
-    .map((item) => item.id);
-}
-
 /** Дерево для окна: расширение либо «Проверка модулей» → места. */
 export function buildCheckReview(checks, state = {}) {
   const decided = state.checks || {};
