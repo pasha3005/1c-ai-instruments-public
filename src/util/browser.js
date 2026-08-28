@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR, SERVER } from '../config.js';
+import { APP, DATA_DIR, SERVER } from '../config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('browser');
@@ -218,23 +218,87 @@ function screenWorkArea() {
 /**
  * Размер и место окна программы.
  *
- * Требование пользователя (27.08.2026): окно во всю высоту экрана, а по
- * ширине — ровно столько, чтобы помещались три раздела главной. Ширина
- * содержимого 1120 пикселей плюс поля и полоса прокрутки; шире окно делать
- * незачем — пустые поля по краям читаемости не добавляют.
+ * Размер задан числами, а не подобран под экран: 28.08.2026 владелец
+ * растянул окно так, как ему удобно, и попросил открывать таким всегда.
+ * Измерено у живого окна: 1143×803 по внешней рамке, 1127×795 внутри.
  */
-const APP_WINDOW_WIDTH = 1220;
+const APP_WINDOW_WIDTH = 1143;
+const APP_WINDOW_HEIGHT = 803;
 
+/**
+ * Куда поставить окно на экране с такой рабочей областью.
+ *
+ * Вынесена отдельно от `screenWorkArea` ради теста: спрашивать Windows
+ * в тестах нечем, а ужатие под маленький экран проверить надо — на ноутбуке
+ * 1366×768 окно высотой 803 не поместилось бы целиком.
+ *
+ * @param {{width: number, height: number}|null} area рабочая область экрана
+ */
+export function windowGeometryFor(area) {
+  const width = Math.min(APP_WINDOW_WIDTH, area?.width ?? APP_WINDOW_WIDTH);
+  const height = Math.min(APP_WINDOW_HEIGHT, area?.height ?? APP_WINDOW_HEIGHT);
+  // Экрана не знаем — размер ставим, а место оставляем браузеру: промахнуться
+  // мимо видимой части хуже, чем открыться там, где он сам решит.
+  const left = area ? Math.max(0, Math.round((area.width - width) / 2)) : null;
+  const top = area ? Math.max(0, Math.round((area.height - height) / 2)) : null;
+  return {
+    size: `${width},${height}`,
+    position: left === null ? null : `${left},${top}`,
+    box: { width, height, left, top },
+  };
+}
 export function appWindowGeometry() {
-  const area = screenWorkArea();
-  if (!area) return { size: `${APP_WINDOW_WIDTH},900`, position: null };
-
-  const width = Math.min(APP_WINDOW_WIDTH, area.width);
-  const height = area.height;
-  const left = Math.max(0, Math.round((area.width - width) / 2));
-  return { size: `${width},${height}`, position: `${left},0` };
+  return windowGeometryFor(screenWorkArea());
 }
 
+/** Сценарий, ставящий окну размер средствами Windows. */
+const PLACE_SCRIPT = path.join(ROOT, 'src', 'tools', 'place-window.ps1');
+
+/**
+ * Ставит окну программы размер после того, как браузер его открыл.
+ *
+ * Ключей `--window-size` и `--window-position` для этого НЕ ХВАТАЕТ.
+ * Chromium применяет их только когда создаёт окно приложения впервые,
+ * а дальше берёт геометрию из своего профиля и ключи игнорирует. Проверено
+ * дважды, 28.08.2026: просили 1500×950 в позиции 100,50 и 1000×700 —
+ * оба раза получили 945×1012 в позиции 10,10, то есть прошлое окно.
+ * Поэтому размер ставится снаружи, через MoveWindow; окно ищется
+ * по заголовку (`src/tools/place-window.ps1`).
+ *
+ * Не вышло — это не беда: окно просто останется таким, каким его открыл
+ * браузер, и программа в нём работает.
+ */
+function placeWindow(box) {
+  if (!box || box.left === null) return;
+
+  try {
+    // Без `detached`: с ним PowerShell на этой машине не отрабатывает вовсе —
+    // процесс запускается и молча ничего не делает (проверено 28.08.2026:
+    // тот же вызов без флага возвращает «ok»). Сценарий живёт секунды, так
+    // что держать его потомком сервера безопасно.
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', PLACE_SCRIPT,
+      '-Title', APP.name,
+      '-Left', String(box.left), '-Top', String(box.top),
+      '-Width', String(box.width), '-Height', String(box.height),
+    ], { windowsHide: true });
+
+    let answer = '';
+    child.stdout?.on('data', (chunk) => { answer += chunk; });
+    child.on('error', (err) => log.warn(`Размер окну поставить не удалось: ${err.message}`));
+    child.on('close', () => {
+      const said = answer.trim();
+      if (said.startsWith('ok')) {
+        log.info(`Окну поставлен размер ${box.width}×${box.height} в позиции ${box.left},${box.top}`);
+      } else {
+        log.warn(`Размер окну поставить не удалось: ${said || 'ответа нет'}`);
+      }
+    });
+  } catch (err) {
+    log.warn(`Размер окну поставить не удалось: ${err.message}`);
+  }
+}
 /**
  * Открывает адрес отдельным окном без адресной строки и вкладок.
  * @returns {boolean} удалось ли
@@ -249,12 +313,13 @@ export function openAppWindow(url, { size } = {}) {
     if (!size && geometry.position) args.push(`--window-position=${geometry.position}`);
     if (launch(exe, args, 'окно программы')) {
       rememberAppBrowser(exe);
+      // Ключи браузер, скорее всего, пропустит мимо ушей — размер ставим сами.
+      if (!size) placeWindow(geometry.box);
       return true;
     }
   }
   return false;
 }
-
 /**
  * Каким браузером открыто окно программы.
  *
