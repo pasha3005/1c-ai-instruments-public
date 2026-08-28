@@ -24,7 +24,7 @@
   сервером — и правки, которым нужен сервер, молча не работают (живой случай
   28.08.2026: пропали кнопки «Показать все» и «Показать весь модуль»).
 -->
-<meta name="app-version" content="1.96.0">
+<meta name="app-version" content="1.97.0">
 <link rel="manifest" href="app.webmanifest">
 <link rel="icon" type="image/svg+xml" href="icon-1c-ai.svg">
 <!--
@@ -1262,20 +1262,17 @@
         <div class="mgw__file" id="mgFileHead">
           <div class="mgw__file-main">
             <div class="mgw__file-title" id="mgFileTitle">Выберите место слева</div>
-            <div class="mgw__file-line">
-              <div class="mgw__file-sub" id="mgFileSub"></div>
-              <!--
-                Что показывать. Обе кнопки — переключатели, обе по умолчанию
-                отжаты: список — только дважды изменённые методы, окно
-                результата — только выбранный метод.
-              -->
-              <div class="mgw__show" id="mgShow" hidden>
-                <button class="chip" type="button" id="mgShowAll"
-                        title="Показать в списке все методы модуля, а не только дважды изменённые">Показать все</button>
-                <button class="chip" type="button" id="mgShowModule"
-                        title="Показать в результате объединения весь модуль, а не только выбранный метод">Показать весь модуль</button>
-              </div>
-            </div>
+            <div class="mgw__file-sub" id="mgFileSub"></div>
+          </div>
+          <!--
+            Чем сузить список методов. Кнопка-переключатель: нажата — остаются
+            только дважды изменённые, отжата — виден весь состав модуля обеими
+            версиями. Стоит у заголовка, потому что относится к таблице
+            под ним.
+          -->
+          <div class="mgw__show" id="mgShow" hidden>
+            <button class="chip" type="button" id="mgShowAll"
+                    title="Оставить в списке только дважды изменённые методы">Только дважды изменённые</button>
           </div>
           <button class="btn" id="mgBack" type="button">К обновлению</button>
         </div>
@@ -1333,6 +1330,13 @@
               сравнивают, и колонки сверху тогда лишние. Заголовок файла
               и переключатели показа остаются на месте.
             -->
+            <!--
+              Показывать ли весь модуль. Отжатая кнопка оставляет в поле
+              только выбранный метод — здесь же, рядом с полем, к которому
+              она относится.
+            -->
+            <button class="chip" type="button" id="mgShowModule"
+                    title="Показать в результате объединения весь модуль, а не только выбранный метод">Показать весь модуль</button>
             <button class="mgw__grow" id="mgGrow" type="button"
                     title="Развернуть результат на всё окно" aria-label="Развернуть результат"></button>
           </div>

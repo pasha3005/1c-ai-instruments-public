@@ -46,6 +46,13 @@ const state = {
    * выбирал (замечено 26.08.2026).
    */
   open: new Set(),
+  /**
+   * Какие группы видов свёрнуты.
+   *
+   * Хранится «что закрыто», а не «что открыто»: групп много, открыты они
+   * по умолчанию, и запоминать нужно исключения.
+   */
+  closedKinds: new Set(),
   /** Отмеченный участок: подсветка и прокрутка колонок. */
   place: -1,
   /** Отложенная перекраска поля результата. */
@@ -68,6 +75,13 @@ const state = {
   hunks: [],
   hunk: -1,
   /**
+   * Какие строки экрана сейчас показаны в колонках: null — все.
+   *
+   * По ним же ходят стрелки перехода к правкам: показан один метод — значит
+   * и правки нужны только его.
+   */
+  visibleRows: null,
+  /**
    * Что выбрано у каждого участка: 'theirs' | 'ours' | 'auto'.
    *
    * Выбор живёт только пока открыт файл: сохраняется он не отдельно,
@@ -89,8 +103,13 @@ const state = {
    * 28.08.2026). Пусто — показан файл целиком.
    */
   routine: null,
-  /** Показывать в списке ВСЕ методы модуля, а не только дважды изменённые. */
-  showAll: false,
+  /**
+   * Оставить в списке только дважды изменённые методы.
+   *
+   * Отжатая кнопка показывает весь состав модуля обеими версиями — по нему
+   * видно, что поставщик добавил, а что удалил.
+   */
+  onlyConflicts: false,
   /** Показывать в результате весь модуль, а не только выбранный метод. */
   showModule: false,
   /** Результат развёрнут на всю рабочую область: колонки сравнения убраны. */
@@ -106,13 +125,13 @@ const state = {
   /** Какие строки полного текста показаны в поле: {start, end} с единицы. */
   viewSpan: null,
   /**
-   * Границы выбранного метода в полном тексте — уже с поправкой на правки.
+   * Границы КАЖДОГО метода в полном тексте — уже с поправкой на правки.
    *
-   * Серверные границы верны только до первой замены стороны: взяв версию
-   * другой длины, метод становится длиннее или короче, и показанный кусок
-   * по старым границам обрезал бы его конец.
+   * Серверные границы верны только до первой правки: взяв версию другой длины
+   * или удалив метод, мы сдвигаем всё, что ниже. Держим их здесь и двигаем
+   * сами — иначе следующий выбор попал бы не в тот кусок текста.
    */
-  routineSpan: null,
+  routineSpans: new Map(),
 };
 
 /**
@@ -203,8 +222,8 @@ export function initMerge(onBack) {
   // Показывать ли в списке все методы модуля. Кнопка нажимается и отжимается:
   // отжатая оставляет только дважды изменённые, как было.
   $('#mgShowAll').addEventListener('click', () => {
-    state.showAll = !state.showAll;
-    $('#mgShowAll').classList.toggle('is-active', state.showAll);
+    state.onlyConflicts = !state.onlyConflicts;
+    $('#mgShowAll').classList.toggle('is-active', state.onlyConflicts);
     renderPlaces(state.file);
   });
 
@@ -366,6 +385,30 @@ function renderTree() {
   $$('[data-rel]', box).forEach((node) => {
     node.addEventListener('click', () => openFile(node.dataset.rel));
   });
+
+  // Группа вида сворачивается щелчком по заголовку: в дереве на сотню строк
+  // свернуть ненужное — первое, что делает человек.
+  $$('.mgk__head', box).forEach((head) => {
+    head.addEventListener('click', () => {
+      const section = head.closest('.mgk');
+      const key = section.dataset.kind;
+      const closed = section.classList.toggle('is-closed');
+      head.setAttribute('aria-expanded', String(!closed));
+      if (closed) state.closedKinds.add(key);
+      else state.closedKinds.delete(key);
+    });
+  });
+}
+
+/** Место ждёт человека, пока он не принял решение: и нерешённое, и разобранное сама. */
+function needsWork(file) {
+  return !file.decision;
+}
+
+function matchesFilter(file) {
+  if (state.filter === 'manual') return file.status === 'manual';
+  if (state.filter === 'auto') return file.status === 'auto';
+  return true;
 }
 
 /**
@@ -390,33 +433,36 @@ function groupByKind(objects) {
 
 function renderKindGroup(group) {
   const files = group.objects.reduce((sum, object) => sum + object.files.length, 0);
+  const key = 'kind:' + group.key;
+  const open = !state.closedKinds.has(key);
+
+  // У конфигурации объект один и называется так же, как группа: второй
+  // уровень с тем же словом ничего не добавляет, и файлы висят прямо
+  // в группе (требование владельца 28.08.2026).
+  const flat = group.objects.length === 1
+    && kindKey(group.objects[0].kind) === kindKey(group.objects[0].title);
+
+  const body = flat
+    ? `<div class="mgt__body">${group.objects[0].files.map(renderFile).join('')}</div>`
+    : group.objects.map(renderObject).join('');
+
   return `
-  <section class="mgk">
-    <h3 class="mgk__head">
+  <section class="mgk${open ? '' : ' is-closed'}" data-kind="${escapeHtml(key)}">
+    <button class="mgk__head" type="button" aria-expanded="${open}">
+      <span class="mgk__twist" aria-hidden="true"></span>
       ${kindIcon(group.kind, group.title)}
       <span class="mgk__title">${escapeHtml(group.title)}</span>
       <span class="mgt__stat">${formatNumber(files)}</span>
-    </h3>
-    ${group.objects.map(renderObject).join('')}
+    </button>
+    <div class="mgk__body">${body}</div>
   </section>`;
 }
-/** Место ждёт человека, пока он не принял решение: и нерешённое, и разобранное сама. */
-function needsWork(file) {
-  return !file.decision;
-}
-
-function matchesFilter(file) {
-  if (state.filter === 'manual') return file.status === 'manual';
-  if (state.filter === 'auto') return file.status === 'auto';
-  return true;
-}
-
 function renderObject(object) {
   return `
   <details class="mgt" data-key="${escapeHtml(object.key)}" ${state.open.has(object.key) ? 'open' : ''}>
     <summary>
       ${kindIcon(object.kind, object.kind)}
-      <span class="mgt__title">${escapeHtml(object.title || object.key)}</span>
+      <span class="mgt__title">${escapeHtml(objectName(object))}</span>
       <span class="mgt__stat">${object.files.length}</span>
     </summary>
     <div class="mgt__body">
@@ -425,7 +471,19 @@ function renderObject(object) {
   </details>`;
 }
 
-
+/**
+ * Имя объекта без вида и кавычек.
+ *
+ * Вид уже назван группой, в которой объект лежит, и повторять его в каждой
+ * строке — «Подсистема «Склад»» под заголовком «ПОДСИСТЕМЫ» — значит
+ * тратить ширину панели на то, что и так известно (требование владельца
+ * 28.08.2026).
+ */
+function objectName(object) {
+  const title = String(object.title || object.key || '');
+  const found = /«([^»]+)»/.exec(title);
+  return found ? found[1] : title;
+}
 function renderFile(file) {
   const mark = fileMark(file);
   const active = state.file?.key === fileKey(file) ? ' is-active' : '';
@@ -502,8 +560,8 @@ async function openFile(key) {
   // В поле лежит только то, что человек сейчас смотрит; целое — здесь.
   state.fullText = text;
   state.routine = null;
-  state.routineSpan = null;
   state.viewSpan = null;
+  initRoutineSpans(file);
   box.readOnly = !file.editable;
   state.loadedText = text;
   // Раскраска прошлого файла к этому отношения не имеет: кэш обнуляется,
@@ -529,7 +587,7 @@ async function openFile(key) {
   // методов бывает лишь у модулей.
   const hasRoutines = (file.routines || []).length > 0;
   $('#mgShow').hidden = !hasRoutines;
-  $('#mgShowAll').classList.toggle('is-active', state.showAll);
+  $('#mgShowAll').classList.toggle('is-active', state.onlyConflicts);
   $('#mgShowModule').classList.toggle('is-active', state.showModule);
 
   renderPlaces(file);
@@ -608,6 +666,7 @@ function renderRight() {
     right: routineRange(rightSide),
   });
 
+  state.visibleRows = rows;
   renderCode('#mgOurs', file.ours, align.left, align.marks, rows);
   renderCode('#mgTheirs', checks ? file.theirs : (isBase ? file.base : file.theirs),
     align.right, align.marks, rows);
@@ -625,23 +684,43 @@ function renderRight() {
  * и тот же. Горячие клавиши — те же, что у платформы: Alt+Shift+P и Alt+Shift+N.
  */
 function goToHunk(step) {
-  const hunks = state.hunks || [];
+  const hunks = visibleHunks();
   if (!hunks.length) {
-    setNote('Отличий в этом файле нет.');
+    setNote(state.routine && !state.showModule
+      ? 'В этом методе отличий нет.'
+      : 'Отличий в этом файле нет.');
     return;
   }
   const current = state.hunk ?? -1;
   const next = step > 0
-    ? hunks.findIndex((h, i) => i > current)
-    : [...hunks].reduce((found, h, i) => (i < current ? i : found), -1);
-  const at = next === -1 ? (step > 0 ? 0 : hunks.length - 1) : next;
-  state.hunk = at;
+    ? hunks.findIndex((h) => h.at > current)
+    : [...hunks].reduce((found, h) => (h.at < current ? h : found), null);
+  const target = step > 0
+    ? (next === -1 ? hunks[0] : hunks[next])
+    : (next || hunks[hunks.length - 1]);
+  state.hunk = target.at;
 
   for (const selector of ['#mgOurs', '#mgTheirs']) {
-    const row = $(selector).querySelector(`tr[data-r="${hunks[at].row}"]`);
+    const row = $(selector).querySelector(`tr[data-r="${target.row}"]`);
     if (row) scrollPane($(selector), row.offsetTop);
   }
-  setNote(`Правка ${at + 1} из ${hunks.length}.`);
+  setNote(`Правка ${hunks.indexOf(target) + 1} из ${hunks.length}.`);
+}
+
+/**
+ * Правки, до которых можно дойти стрелками.
+ *
+ * Показан один метод — значит и ходить надо по его правкам: прежде стрелки
+ * вели к отличиям во всём модуле и указывали на строки, которых на экране нет
+ * (замечание владельца 28.08.2026). Строка правки берётся в координатах
+ * экрана, и видимость проверяется по тем же строкам, что рисуют колонки.
+ */
+function visibleHunks() {
+  const all = (state.hunks || []).map((hunk, at) => ({ ...hunk, at }));
+  const rows = state.visibleRows;
+  if (!rows) return all;
+  const shown = new Set(rows);
+  return all.filter((hunk) => shown.has(hunk.row));
 }
 
 /**
@@ -663,16 +742,26 @@ function renderPlaces(file) {
   box.hidden = false;
   box.innerHTML = `
     <table class="mgp">
+      <thead>
+        <tr>
+          <th class="mgp__mark"></th>
+          <th class="mgp__side">Основная конфигурация</th>
+          <th class="mgp__side">Новая поставка</th>
+          <th class="mgp__how"></th>
+          <th class="mgp__pick"></th>
+        </tr>
+      </thead>
       <tbody>
         ${rows.map((row) => `
-        <tr class="mgp__row mgp__row--${row.kind}"${row.place >= 0 ? ` data-place="${row.place}"` : ''}
+        <tr class="mgp__row mgp__row--${row.kind}${sideClass(row)}"${row.place >= 0 ? ` data-place="${row.place}"` : ''}
             data-routine="${escapeHtml(row.routine || '')}">
           <td class="mgp__mark">
             ${row.kind === 'plain' ? '' : `<i class="mgi mgi--${row.kind === 'auto' ? 'auto' : 'manual'}" aria-hidden="true"></i>`}
           </td>
-          <td class="mgp__where">${routineMark(row)}${escapeHtml(row.where || 'участок')}</td>
+          <td class="mgp__side">${nameCell(row, row.inOurs)}</td>
+          <td class="mgp__side">${nameCell(row, row.inTheirs)}</td>
           <td class="mgp__how">${row.how ? escapeHtml(row.how) : ''}</td>
-          <td class="mgp__pick">${row.place >= 0 ? sidePicker(file.places[row.place], row.place) : ''}</td>
+          <td class="mgp__pick">${sidePicker(row)}</td>
         </tr>`).join('')}
       </tbody>
     </table>`;
@@ -687,58 +776,100 @@ function renderPlaces(file) {
   });
   $$('select[data-pick]', box).forEach((select) => {
     select.addEventListener('change', () => {
-      const index = Number(select.dataset.pick);
-      selectPlace(index);
-      takeSide(index, select.value);
+      const key = select.dataset.pick;
+      const place = select.dataset.place === undefined ? -1 : Number(select.dataset.place);
+      if (place >= 0) selectPlace(place);
+      else selectRoutine(key);
+
+      // «Удалить» касается метода целиком, поэтому и участок правки тут
+      // не годится: убирать надо весь метод, а не кусок внутри него.
+      if (place >= 0 && select.value !== 'delete') takeSide(place, select.value);
+      else takeRoutine(key, select.value);
+      renderPlaces(state.file);
     });
   });
 
-  if (state.place >= 0) highlightRow();
+  highlightRow();
+}
+
+/** Цвет строки: чего нет в новой поставке — красным, чего нет у нас — зелёным. */
+function sideClass(row) {
+  if (!row.inTheirs) return ' mgp__row--gone';
+  if (!row.inOurs) return ' mgp__row--new';
+  return '';
+}
+
+/** Имя метода в колонке версии; нет его в этой версии — так и говорим. */
+function nameCell(row, present) {
+  if (!present) return '<span class="mgp__none">&lt;отсутствует&gt;</span>';
+  return `${routineMark(row)}${escapeHtml(row.name)}`;
 }
 
 /**
- * Строки списка: дважды изменённые места и — по кнопке «Показать все» —
- * остальные методы модуля.
+ * Строки списка: методы модуля обеими версиями.
  *
- * Метод, у которого спорных мест нет, показывается без значка состояния
- * и без выбора стороны: выбирать там нечего, а вот открыть его, чтобы
- * посмотреть, человек вправе.
+ * Показываются все методы — по ним видно, что поставщик добавил, а что удалил
+ * (требование владельца 28.08.2026). Кнопка «Только дважды изменённые»
+ * оставляет одни спорные места.
  */
 function placeRows(file) {
   const places = file?.places || [];
-  const rows = places.map((place, index) => ({
-    place: index,
-    kind: place.kind,
-    where: place.where,
-    how: place.how,
-    routine: (place.routineName || '').toLowerCase(),
-    routineKind: place.routineKind,
-    routineHasParams: place.routineHasParams,
-  }));
+  const routines = file?.routines || [];
+  const byName = new Map(routines.map((routine) => [routine.name.toLowerCase(), routine]));
 
-  if (!state.showAll) return rows;
+  const rows = places.map((place, index) => {
+    const key = (place.routineName || '').toLowerCase();
+    const routine = byName.get(key);
+    return {
+      place: index,
+      kind: place.kind,
+      how: place.how,
+      routine: key,
+      name: routine?.name || nameOf(place.where),
+      where: place.where,
+      routineKind: place.routineKind || routine?.kind || '',
+      routineHasParams: place.routineHasParams ?? routine?.hasParams ?? false,
+      inOurs: routine ? Boolean(routine.ranges?.ours) : true,
+      inTheirs: routine ? Boolean(routine.ranges?.theirs) : true,
+      inBase: routine ? Boolean(routine.ranges?.base) : true,
+      inResult: routine ? Boolean(routine.ranges?.result) : true,
+    };
+  });
+
+  if (state.onlyConflicts) return rows;
 
   const taken = new Set(rows.map((row) => row.routine).filter(Boolean));
-  for (const routine of file?.routines || []) {
+  for (const routine of routines) {
     const key = routine.name.toLowerCase();
     if (taken.has(key)) continue;
     rows.push({
       place: -1,
       kind: 'plain',
-      where: routine.where,
       how: '',
       routine: key,
+      name: routine.name,
+      where: routine.where,
       routineKind: routine.kind,
       routineHasParams: routine.hasParams,
+      inOurs: Boolean(routine.ranges?.ours),
+      inTheirs: Boolean(routine.ranges?.theirs),
+      inBase: Boolean(routine.ranges?.base),
+      inResult: Boolean(routine.ranges?.result),
     });
   }
 
   // Порядок — как в модуле: список читают сверху вниз вместе с кодом.
   const at = (row) => {
-    const found = (file?.routines || []).findIndex((r) => r.name.toLowerCase() === row.routine);
+    const found = routines.findIndex((r) => r.name.toLowerCase() === row.routine);
     return found === -1 ? Number.MAX_SAFE_INTEGER : found;
   };
   return rows.sort((a, b) => at(a) - at(b));
+}
+
+/** Имя метода из описания места — на случай, если списка методов нет. */
+function nameOf(where) {
+  const found = /«([^»]+)»/.exec(String(where || ''));
+  return found ? found[1] : String(where || 'участок');
 }
 
 /**
@@ -756,25 +887,45 @@ function routineMark(place) {
 }
 
 /**
- * Откуда брать текст участка.
+ * Откуда брать текст метода.
  *
  * По умолчанию — из новой поставки: цель обновления в том, чтобы перейти
  * на новый релиз, сохранив доработки (требование пользователя 27.08.2026).
- * Место, которое программа разобрала сама, стоит на своём решении — его тоже
- * можно переключить, и тогда в результат ляжет выбранная сторона целиком.
+ * Метод, которого в новой поставке НЕТ, а в текущей поставке был, поставщик
+ * удалил — такому по умолчанию стоит «Удалить» (требование владельца
+ * 28.08.2026). А вот метод, которого нет ни в новой поставке, ни в текущей,
+ * дописан нами, и удалять его нельзя: по умолчанию он берётся из основной
+ * конфигурации.
  */
-function sidePicker(place, index) {
+function sidePicker(row) {
   // У ошибок проверок сторон нет: там правят один файл, а не сводят две
   // версии. Выпадающий список в этой вкладке был бы бессмыслицей.
   if (state.group === 'checks') return '';
-  const chosen = state.picked.get(index) || (place.kind === 'auto' ? 'auto' : 'theirs');
+
   const options = [
-    place.kind === 'auto' ? ['auto', 'решение программы'] : null,
-    ['theirs', 'взять из новой поставки'],
-    ['ours', 'взять из основной конфигурации'],
+    row.kind === 'auto' ? ['auto', 'решение программы'] : null,
+    row.inTheirs ? ['theirs', 'взять из новой поставки'] : null,
+    row.inOurs ? ['ours', 'взять из основной конфигурации'] : null,
+    ['delete', 'удалить'],
   ].filter(Boolean);
-  return `<select class="mgp__select" data-pick="${index}">${options.map(([value, title]) =>
-    `<option value="${value}"${value === chosen ? ' selected' : ''}>${title}</option>`).join('')}</select>`;
+
+  const chosen = state.picked.get(row.place >= 0 ? row.place : `routine:${row.routine}`)
+    || defaultSide(row);
+
+  const place = row.place >= 0 ? ` data-place="${row.place}"` : '';
+  return `<select class="mgp__select" data-pick="${escapeHtml(row.routine)}"${place}>${
+    options.map(([value, title]) =>
+      `<option value="${value}"${value === chosen ? ' selected' : ''}>${title}</option>`).join('')
+  }</select>`;
+}
+
+/** Что стоит в списке, пока человек не выбрал сам. */
+function defaultSide(row) {
+  // Метода в результате нет — значит объединение его уже убрало: так и пишем.
+  if (!row.inResult) return 'delete';
+  if (row.kind === 'auto') return 'auto';
+  if (!row.inTheirs) return row.inBase ? 'delete' : 'ours';
+  return 'theirs';
 }
 
 /**
@@ -788,9 +939,7 @@ function selectPlace(index) {
   const place = state.file?.places?.[index];
   if (!place) return;
   state.place = index;
-  const next = (place.routineName || '').toLowerCase() || null;
-  if (next !== state.routine) state.routineSpan = null;
-  state.routine = next;
+  state.routine = (place.routineName || '').toLowerCase() || null;
   highlightRow();
 
   // Показ ограничивается выбранным методом — во всех трёх окнах сразу.
@@ -814,7 +963,6 @@ function markCurrentPlace() {
 function selectRoutine(name) {
   if (!name) return;
   state.place = -1;
-  if (name !== state.routine) state.routineSpan = null;
   state.routine = name;
   highlightRow();
   renderRight();
@@ -889,9 +1037,7 @@ function visibleRows(align, limits) {
 function renderCode(selector, side, plan = null, marks = null, only = null) {
   const box = $(selector);
   if (side == null) {
-    box.innerHTML = '<div class="empty">Этой версии нет: текущая поставка не нашлась '
-      + 'ни в выгрузке (Ext\\ParentConfigurations), ни на форме, а прежнее значение свойства '
-      + 'платформа в отчёте сравнения не печатает.</div>';
+    box.innerHTML = `<div class="empty">${missingSideNote(selector)}</div>`;
     return;
   }
   if (side.binary) {
@@ -917,6 +1063,31 @@ function renderCode(selector, side, plan = null, marks = null, only = null) {
       + `<td class="mgc__n">${line || ''}</td>`
       + `<td class="mgc__t">${line ? (side.lines[line - 1] || '&nbsp;') : '&nbsp;'}</td></tr>`;
   }).join('')}</tbody></table>`;
+}
+
+/**
+ * Почему в колонке пусто.
+ *
+ * Причины две, и путать их нельзя. Первая: поставщик удалил объект — тогда
+ * пустая правая колонка и есть ответ, а не сбой (замечание владельца
+ * 28.08.2026: «ты наверху верно указал, что поставщик удалил этот объект,
+ * так и напиши»). Вторая: текущей поставки у нас нет вовсе — её не нашлось
+ * ни в выгрузке, ни на форме.
+ */
+function missingSideNote(selector) {
+  const file = state.file;
+  const right = selector === '#mgTheirs';
+
+  if (right && state.side !== 'base' && String(file?.action || '').includes('vendor-deleted')) {
+    return 'Поставщик удалил этот объект: в новой поставке его нет. '
+      + 'Решите, нужен ли он дальше — оставить ваш вариант или удалить.';
+  }
+  if (right && state.side !== 'base') {
+    return 'В новой поставке этого элемента нет.';
+  }
+  return 'Этой версии нет: текущая поставка не нашлась ни в выгрузке '
+    + '(Ext\\ParentConfigurations), ни на форме, а прежнее значение свойства '
+    + 'платформа в отчёте сравнения не печатает.';
 }
 
 /** Подсветить участок целиком и прокрутить к нему. */
@@ -985,18 +1156,9 @@ function takeSide(index, side) {
 
   const shift = lines.length - before;
   state.spans.set(index, { start: span.start, end: span.start + lines.length - 1 });
-  if (shift) {
-    for (const [key, other] of state.spans) {
-      if (key === index || other.start <= span.start) continue;
-      state.spans.set(key, { start: other.start + shift, end: other.end + shift });
-    }
-  }
+  // Двигаем всё, что ниже: и остальные участки, и границы методов.
+  shiftBelow(span.start, shift, { spans: 'places', key: index });
   state.picked.set(index, side);
-  // Метод стал другой длины — его конец едет вместе с текстом.
-  if (shift && state.routineSpan
-    && span.start >= state.routineSpan.start && span.start <= state.routineSpan.end) {
-    state.routineSpan.end += shift;
-  }
 
   applyResultView();
   selectPlace(index);
@@ -1006,7 +1168,6 @@ function takeSide(index, side) {
       ? 'Возвращено решение программы. Нажмите «Сохранить результат», чтобы записать.'
       : 'Участок взят из новой поставки. Нажмите «Сохранить результат», чтобы записать.'));
 }
-
 /** Текст одной стороны участка: то, что подставляется в результат. */
 function linesOf(side, place) {
   if (side === 'ours') return place.text?.ours || null;
@@ -1253,22 +1414,125 @@ function applyResultView() {
   updateViewNote();
 }
 
-/**
- * Границы выбранного метода в полном тексте.
- *
- * Считаются один раз на выбор метода, дальше живут вместе с правками:
- * замена стороны и набор с клавиатуры сдвигают конец.
- */
+/** Границы выбранного метода в полном тексте: по ним показывается кусок. */
 function currentRoutineSpan() {
   if (!state.routine) return null;
-  if (!state.routineSpan) {
-    const found = routineRange('result');
-    state.routineSpan = found ? { ...found } : null;
-  }
-  return state.routineSpan;
+  return state.routineSpans.get(state.routine) || null;
 }
 
-/** Подпись у поля: показан весь файл или один метод. */
+/** Запомнить границы всех методов файла — с них начинается любая правка. */
+function initRoutineSpans(file) {
+  state.routineSpans = new Map();
+  for (const routine of file?.routines || []) {
+    const span = routine.ranges?.result;
+    if (span?.start) {
+      state.routineSpans.set(routine.name.toLowerCase(), { start: span.start, end: span.end });
+    }
+  }
+}
+
+/**
+ * Текст стал длиннее или короче — двигаем всё, что лежит ниже.
+ *
+ * Двигать приходится и участки правки, и границы методов: обе разметки
+ * заданы номерами строк в одном и том же тексте, и оставить одну без другой
+ * значит промахнуться следующим же выбором.
+ *
+ * @param {number} start строка, с которой шла замена
+ * @param {number} shift насколько текст стал длиннее (может быть отрицательным)
+ * @param {object} [keep] что не двигать: {span?: Map, key?: any}
+ */
+function shiftBelow(start, shift, keep = {}) {
+  if (!shift) return;
+
+  for (const [key, span] of state.spans) {
+    if (keep.spans === 'places' && key === keep.key) continue;
+    if (span.start <= start) continue;
+    state.spans.set(key, { start: span.start + shift, end: span.end + shift });
+  }
+  for (const [key, span] of state.routineSpans) {
+    if (keep.spans === 'routines' && key === keep.key) continue;
+    if (span.start <= start) continue;
+    state.routineSpans.set(key, { start: span.start + shift, end: span.end + shift });
+  }
+}
+
+/**
+ * Взять метод целиком из одной из версий — или удалить его.
+ *
+ * Нужно там, где спорных мест у метода нет: метод, которого нет в новой
+ * поставке, программа предлагает удалить, а метод, дописанный поставщиком,
+ * — взять. Участок правки для этого не годится: его попросту не существует.
+ *
+ * @param {string} key имя метода в нижнем регистре
+ * @param {'ours'|'theirs'|'delete'} side
+ */
+function takeRoutine(key, side) {
+  const routine = (state.file?.routines || [])
+    .find((item) => item.name.toLowerCase() === key);
+  if (!routine) return;
+
+  const next = side === 'delete' ? [] : (routine.text?.[side] || null);
+  if (next === null) {
+    setNote('Этой версии метода нет — брать нечего.', true);
+    return;
+  }
+
+  const span = state.routineSpans.get(key);
+  const all = state.fullText.split('\n');
+
+  if (span) {
+    const before = span.end - span.start + 1;
+    all.splice(span.start - 1, before, ...next);
+    state.fullText = all.join('\n');
+    const shift = next.length - before;
+    if (next.length) state.routineSpans.set(key, { start: span.start, end: span.start + next.length - 1 });
+    else state.routineSpans.delete(key);
+    shiftBelow(span.start, shift, { spans: 'routines', key });
+  } else {
+    // Метода в результате нет вовсе — значит его удаляли. Возвращаем туда,
+    // где он стоял у той стороны, откуда берём: соседний метод — единственный
+    // ориентир, который переживает любые правки.
+    const at = insertionPoint(routine, side === 'delete' ? 'theirs' : side);
+    all.splice(at - 1, 0, ...next);
+    state.fullText = all.join('\n');
+    if (next.length) {
+      state.routineSpans.set(key, { start: at, end: at + next.length - 1 });
+      shiftBelow(at - 1, next.length);
+    }
+  }
+
+  state.picked.set(`routine:${key}`, side);
+  applyResultView();
+  setNote(side === 'delete'
+    ? 'Метод удалён из результата. Нажмите «Сохранить результат», чтобы записать.'
+    : (side === 'ours'
+      ? 'Метод взят из основной конфигурации. Нажмите «Сохранить результат», чтобы записать.'
+      : 'Метод взят из новой поставки. Нажмите «Сохранить результат», чтобы записать.'));
+}
+
+/**
+ * Куда вставить метод, которого в результате сейчас нет.
+ *
+ * Ищем ближайший метод выше по той версии, откуда берём: если он есть
+ * в результате, встаём сразу за ним. Не нашли — в конец: потерять код
+ * страшнее, чем поставить его не на своё место.
+ */
+function insertionPoint(routine, side) {
+  const list = state.file?.routines || [];
+  const mine = routine.ranges?.[side]?.start ?? 0;
+  let best = null;
+  for (const other of list) {
+    if (other === routine) continue;
+    const at = other.ranges?.[side]?.start;
+    const here = state.routineSpans.get(other.name.toLowerCase());
+    if (!at || !here || at >= mine) continue;
+    if (!best || at > best.at) best = { at, end: here.end };
+  }
+  return best ? best.end + 1 : state.fullText.split('\n').length + 1;
+}
+
+/** Подпись у поля: показан весь файл или один метод. *//** Подпись у поля: показан весь файл или один метод. */
 function updateViewNote() {
   const note = $('#mgResultNote');
   if (!note || !state.file) return;
@@ -1296,9 +1560,14 @@ function takeEditorText() {
   const shown = box.value.split('\n');
   lines.splice(span.start - 1, span.end - span.start + 1, ...shown);
   state.fullText = lines.join('\n');
+  const shift = shown.length - (span.end - span.start + 1);
   state.viewSpan = { start: span.start, end: span.start + shown.length - 1 };
-  // Показан метод — значит правили именно его, и его границы теперь такие же.
-  if (state.routineSpan) state.routineSpan = { ...state.viewSpan };
+  // Показан метод — значит правили именно его: его границы теперь такие же,
+  // а всё, что ниже, съехало на разницу длин.
+  if (state.routine && state.routineSpans.has(state.routine)) {
+    state.routineSpans.set(state.routine, { ...state.viewSpan });
+    shiftBelow(span.start, shift, { spans: 'routines', key: state.routine });
+  }
 }
 
 /** Перекрасить слой под полем ввода. */

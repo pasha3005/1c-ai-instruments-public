@@ -1045,7 +1045,10 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   color: var(--ink-faint);
 }
 .mgw__legend span { display: flex; align-items: center; gap: 7px; }
-.mgw__filters { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Три отбора одной строкой: перенос съедал высоту у дерева, а третий чип
+   уезжал вниз в одиночестве. Шрифт мельче — лишь бы уместились. */
+.mgw__filters { display: flex; gap: 4px; flex-wrap: nowrap; }
+.mgw__filters .chip { font-size: 11px; padding: 4px 7px; white-space: nowrap; }
 
 .chip {
   font: inherit;
@@ -1120,7 +1123,28 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
-.mgk__title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mgk__title { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; }
+/* Заголовок группы — кнопка: сворачивается щелчком, а выглядит заголовком. */
+.mgk__head {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.mgk__head:hover { color: var(--ink); }
+/* Стрелка раскрытия: вниз у открытой группы, вправо у свёрнутой. */
+.mgk__twist {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform .12s ease;
+}
+.mgk.is-closed .mgk__twist { transform: rotate(-45deg) translate(-1px, -1px); }
+.mgk.is-closed .mgk__body { display: none; }
 /* Объекты вида отступают от края: видно, что они внутри группы. */
 .mgk > .mgt { margin-left: 10px; }
 
@@ -1236,13 +1260,36 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   border-radius: var(--radius-sm);
 }
 .mgp { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mgp thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
 .mgp__row { cursor: pointer; border-bottom: 1px solid var(--line-soft); }
 .mgp__row:last-child { border-bottom: 0; }
 .mgp__row:hover { background: var(--surface-2); }
 .mgp__row.is-active { background: var(--accent-soft); }
 .mgp__row td { padding: 5px 8px; vertical-align: middle; }
 .mgp__mark { width: 24px; }
-.mgp__where { color: var(--ink); overflow-wrap: anywhere; }
+/*
+ * Две колонки версий — как в окне объединения модулей 1С: слева основная
+ * конфигурация, справа новая поставка. Цвет строки говорит о судьбе метода:
+ * пропал в новой поставке — красным, появился в ней — зелёным, остальные
+ * не красятся вовсе (требование владельца 28.08.2026).
+ */
+.mgp__side { color: var(--ink); overflow-wrap: anywhere; width: 38%; }
+.mgp__none { color: var(--ink-faint); font-style: italic; }
+.mgp__row--gone { background: color-mix(in srgb, var(--diff-del) 14%, transparent); }
+.mgp__row--gone:hover { background: color-mix(in srgb, var(--diff-del) 22%, transparent); }
+.mgp__row--new { background: color-mix(in srgb, var(--diff-add) 14%, transparent); }
+.mgp__row--new:hover { background: color-mix(in srgb, var(--diff-add) 22%, transparent); }
 .mgp__how { color: var(--good); font-size: 11.5px; white-space: nowrap; }
 .mgp__pick { width: 232px; text-align: right; }
 .mgp__select {

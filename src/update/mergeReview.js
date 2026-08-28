@@ -425,12 +425,17 @@ export function moduleRoutines(text) {
 function routinesOfFile(rel, { ours, theirs, base, current }) {
   if ((path.extname(rel) || '').toLowerCase() !== '.bsl') return [];
 
+  const texts = { ours, theirs, base, result: current };
   const sides = {
     ours: moduleRoutines(ours),
     theirs: moduleRoutines(theirs),
     base: moduleRoutines(base),
     result: moduleRoutines(current),
   };
+  const lines = {};
+  for (const side of Object.keys(texts)) {
+    lines[side] = typeof texts[side] === 'string' ? texts[side].split('\n') : [];
+  }
 
   const found = new Map();
   const order = ['result', 'theirs', 'ours', 'base'];
@@ -444,10 +449,19 @@ function routinesOfFile(rel, { ours, theirs, base, current }) {
           hasParams: routine.hasParams,
           where: `${routine.kind === 'function' ? 'Функция' : 'Процедура'} «${routine.name}»`,
           ranges: {},
+          text: {},
         });
       }
       const item = found.get(key);
-      if (!item.ranges[side]) item.ranges[side] = { start: routine.from, end: routine.to };
+      if (!item.ranges[side]) {
+        item.ranges[side] = { start: routine.from, end: routine.to };
+        // СЫРЫЕ строки метода: окно подставляет их в результат, когда человек
+        // выбирает сторону у метода, где спорных мест нет. Читаемые колонки
+        // приходят подсвеченными, и в файл их не запишешь.
+        if (side === 'ours' || side === 'theirs') {
+          item.text[side] = lines[side].slice(routine.from - 1, routine.to);
+        }
+      }
     }
   }
   return [...found.values()];
