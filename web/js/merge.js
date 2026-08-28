@@ -109,7 +109,7 @@ const state = {
    * Отжатая кнопка показывает весь состав модуля обеими версиями — по нему
    * видно, что поставщик добавил, а что удалил.
    */
-  onlyConflicts: false,
+  onlyConflicts: true,
   /** Показывать в результате весь модуль, а не только выбранный метод. */
   showModule: false,
   /** Результат развёрнут на всю рабочую область: колонки сравнения убраны. */
@@ -219,12 +219,15 @@ export function initMerge(onBack) {
   $('#mgRevert').addEventListener('click', () => decide('revert'));
   $('#mgBackError').addEventListener('click', () => state.back?.());
 
-  // Показывать ли в списке все методы модуля. Кнопка нажимается и отжимается:
-  // отжатая оставляет только дважды изменённые, как было.
-  $('#mgShowAll').addEventListener('click', () => {
-    state.onlyConflicts = !state.onlyConflicts;
-    $('#mgShowAll').classList.toggle('is-active', state.onlyConflicts);
-    renderPlaces(state.file);
+  // Границы областей тянутся мышью: что важнее сейчас — список методов,
+  // сравнение или результат, — знает только человек за монитором.
+  // Предел сверху считается от окна, а не задан числом: на большом мониторе
+  // «не выше девятисот точек» — это половина экрана, а на ноутбуке — весь.
+  initGrip('#mgGripPlaces', '#mgPlaces', {
+    min: 56, prop: '--mgp-height', max: () => Math.max(120, window.innerHeight - 320),
+  });
+  initGrip('#mgGripPanes', '#mgPanes', {
+    min: 90, prop: 'height', max: () => Math.max(160, window.innerHeight - 260),
   });
 
   // Показывать ли в результате весь модуль. Отжатая кнопка оставляет
@@ -242,6 +245,63 @@ export function initMerge(onBack) {
     state.grown = !state.grown;
     $('#mgGrow').classList.toggle('is-active', state.grown);
     $('#mgWork').classList.toggle('is-grown', state.grown);
+  });
+}
+
+
+/**
+ * Тянущаяся граница области.
+ *
+ * Меряем от начала перетаскивания, а не по текущему положению курсора:
+ * область могла быть задана процентами, и «поставить высоту равной координате
+ * мыши» дало бы скачок в первый же пиксель движения.
+ *
+ * @param {string} grip разделитель
+ * @param {string} target область над ним
+ * @param {{min: number, max: number, prop: string}} limits
+ */
+function initGrip(grip, target, limits) {
+  const bar = $(grip);
+  const box = $(target);
+  if (!bar || !box) return;
+
+  bar.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = box.getBoundingClientRect().height;
+    bar.classList.add('is-dragging');
+    document.body.classList.add('is-resizing');
+    try {
+      bar.setPointerCapture(event.pointerId);
+    } catch {
+      // Захват не обязателен: без него тяга просто прервётся, если курсор
+      // уйдёт за пределы полосы.
+    }
+
+    const move = (moved) => {
+      const most = typeof limits.max === 'function' ? limits.max() : limits.max;
+      const height = Math.min(most, Math.max(limits.min, startHeight + moved.clientY - startY));
+      // Пара колонок задана долей от высоты, поэтому ей меняем сразу и flex:
+      // без этого она вернулась бы к своей доле при первой же перерисовке.
+      if (limits.prop === 'height') {
+        box.style.flex = '0 0 auto';
+        box.style.height = `${Math.round(height)}px`;
+      } else {
+        box.style.setProperty(limits.prop, `${Math.round(height)}px`);
+      }
+    };
+
+    const stop = () => {
+      bar.classList.remove('is-dragging');
+      document.body.classList.remove('is-resizing');
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('pointerup', stop);
+      bar.removeEventListener('pointercancel', stop);
+    };
+
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('pointerup', stop);
+    bar.addEventListener('pointercancel', stop);
   });
 }
 
@@ -583,11 +643,10 @@ async function openFile(key) {
     if (place.range?.result?.start) state.spans.set(index, { ...place.range.result });
   });
 
-  // Переключатели показа нужны только там, где есть что показывать: список
-  // методов бывает лишь у модулей.
+  // Переключатель «весь модуль» нужен только там, где есть что сужать:
+  // список методов бывает лишь у модулей.
   const hasRoutines = (file.routines || []).length > 0;
-  $('#mgShow').hidden = !hasRoutines;
-  $('#mgShowAll').classList.toggle('is-active', state.onlyConflicts);
+  $('#mgShowModule').hidden = !hasRoutines;
   $('#mgShowModule').classList.toggle('is-active', state.showModule);
 
   renderPlaces(file);
@@ -748,7 +807,10 @@ function renderPlaces(file) {
           <th class="mgp__side">Основная конфигурация</th>
           <th class="mgp__side">Новая поставка</th>
           <th class="mgp__how"></th>
-          <th class="mgp__pick"></th>
+          <th class="mgp__pick">
+            <button class="chip${state.onlyConflicts ? ' is-active' : ''}" type="button" id="mgShowAll"
+                    title="Оставить в списке только дважды изменённые методы">Только дважды изменённые</button>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -765,6 +827,11 @@ function renderPlaces(file) {
         </tr>`).join('')}
       </tbody>
     </table>`;
+
+  $('#mgShowAll').addEventListener('click', () => {
+    state.onlyConflicts = !state.onlyConflicts;
+    renderPlaces(state.file);
+  });
 
   $$('.mgp__row', box).forEach((row) => {
     row.addEventListener('click', (event) => {
@@ -919,12 +986,29 @@ function sidePicker(row) {
   }</select>`;
 }
 
-/** Что стоит в списке, пока человек не выбрал сам. */
+/**
+ * Что стоит в списке, пока человек не выбрал сам.
+ *
+ * Правила ровно три, и путать их нельзя (замечание владельца 28.08.2026 —
+ * программа предлагала удалить методы, которые поставщик как раз добавил):
+ *
+ * 1. Метода нет у нас, есть в новой поставке — поставщик его ДОБАВИЛ, берём
+ *    из поставки. Ради этого обновление и делается.
+ * 2. Метод есть у нас, в новой поставке нет — смотрим на текущую поставку.
+ *    Был там — значит поставщик его УДАЛИЛ, и метод удаляется. Не было —
+ *    значит метод дописан разработчиками, и его надо СОХРАНИТЬ: в поставке
+ *    ему взяться неоткуда.
+ * 3. Есть в обеих — берём новую поставку; место, разобранное программой,
+ *    стоит на её решении.
+ *
+ * Текущая поставка известна не всегда. Когда её нет, «был ли метод у поставщика»
+ * выяснить нечем, и мы сохраняем свой: потерять доработку хуже, чем оставить
+ * лишнее.
+ */
 function defaultSide(row) {
-  // Метода в результате нет — значит объединение его уже убрало: так и пишем.
-  if (!row.inResult) return 'delete';
   if (row.kind === 'auto') return 'auto';
-  if (!row.inTheirs) return row.inBase ? 'delete' : 'ours';
+  if (!row.inOurs && row.inTheirs) return 'theirs';
+  if (row.inOurs && !row.inTheirs) return row.inBase ? 'delete' : 'ours';
   return 'theirs';
 }
 

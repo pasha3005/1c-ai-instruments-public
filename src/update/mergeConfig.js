@@ -244,6 +244,13 @@ async function mergeOne(state, rel) {
     return;
   }
 
+  // Защищённый модуль поставщика: доступа к его тексту нет ни у кого, кроме
+  // самого поставщика, и «дважды изменённым» он быть не может.
+  if (isProtectedModule(rel)) {
+    await mergeProtectedModule(state, rel, { inMain, inTarget });
+    return;
+  }
+
   if (state.mode === 'keys') {
     await mergeByObject(state, rel, { inMain, inTarget });
     return;
@@ -309,6 +316,20 @@ async function mergeOne(state, rel) {
   if (inMain && !inTarget && inBase) {
     if (await same(state, 'main', 'base', rel)) {
       await removeFile(state, rel);
+      return;
+    }
+    // Модуль, который поставщик удалил, а мы правили ВНЕ методов, разбирать
+    // нечего: показывать человеку пустой список процедур и ждать решения —
+    // это работа впустую (замечание владельца 28.08.2026 про общий модуль,
+    // где кнопка «Только дважды изменённые» давала пустой список). Правки,
+    // которых не видно поимённо, вместе с удалённым модулем и уходят.
+    if (!(await weTouchedRoutines(state, rel))) {
+      await removeFile(state, rel);
+      record(state, rel, {
+        action: 'vendor-deleted-quiet',
+        note: 'Поставщик удалил этот модуль. Ваших правок в его процедурах нет, '
+          + 'поэтому модуль удалён вместе с поставкой.',
+      });
       return;
     }
     state.totals.conflicted += 1;
@@ -923,6 +944,99 @@ function placeFinder(rel, oursText, baseText = '') {
   }
 
   return () => ({ where: '' });
+}
+
+
+
+/**
+ * Есть ли в модуле МЕТОДЫ, тронутые нами.
+ *
+ * Считаем поимённо: метод, которого нет в поставке, — добавлен нами; метод
+ * с другим текстом — изменён. Ни того, ни другого не нашлось — значит правки
+ * лежат вне процедур (пустая строка, комментарий в шапке), и удалённый
+ * поставщиком модуль можно убрать молча.
+ *
+ * Не модуль — судим по-старому, по различию файлов целиком: у XML свои
+ * правила, и «процедур» там нет.
+ */
+async function weTouchedRoutines(state, rel) {
+  if (path.extname(rel).toLowerCase() !== '.bsl') return true;
+
+  try {
+    const ours = (await read(state, 'main', rel)).toString('utf8');
+    const base = (await read(state, 'base', rel)).toString('utf8');
+    return routinesDiffer(ours, base);
+  } catch {
+    // Не прочитали или не разобрали — считаем, что правки есть: потерять
+    // доработку страшнее, чем показать лишнее место.
+    return true;
+  }
+}
+
+/**
+ * Есть ли у нас методы, которых нет в поставке или которые мы изменили.
+ *
+ * Вынесено отдельно от чтения с диска ради теста: правило решает судьбу
+ * модуля — показать его человеку или удалить молча, — и проверять его
+ * на живом прогоне слишком дорого.
+ */
+export function routinesDiffer(oursText, baseText) {
+  const ours = routineTexts(oursText);
+  const base = routineTexts(baseText);
+
+  for (const [name, text] of ours) {
+    if (!base.has(name)) return true;
+    if (base.get(name) !== text) return true;
+  }
+  return false;
+}
+
+/** Тексты методов модуля по именам — для сравнения версий. */
+function routineTexts(text) {
+  const out = new Map();
+  const lines = String(text).split('\n');
+  const { routines } = analyzeStructure(tokenize(text).tokens);
+  for (const routine of routines) {
+    out.set(
+      String(routine.name || '').toLowerCase(),
+      lines.slice(routine.startLine - 1, routine.endLine).join('\n').trim(),
+    );
+  }
+  return out;
+}
+
+/**
+ * Скомпилированный модуль защищённого общего модуля («CommonModules/X/Ext/Module.bin»).
+ *
+ * Такие модули поставщик закрывает от изменения: их текста нет ни в выгрузке,
+ * ни у разработчика, и правки в них не вносятся в принципе. Значит и спорным
+ * местом такой файл быть не может — он всегда берётся из новой поставки,
+ * а если поставщик его удалил, удаляется вместе с ней (требование владельца
+ * 28.08.2026).
+ */
+export function isProtectedModule(rel) {
+  // Любой скомпилированный МОДУЛЬ в «Ext»: у общего модуля это «Module.bin»,
+  // у справочника — «ManagerModule.bin», «ObjectModule.bin» и так далее.
+  // Служебные файлы поставки («ParentConfigurations.bin»,
+  // «MobileClientSignature.bin») под правило не подпадают: они не модули.
+  return /(^|[\\/])Ext[\\/][A-Za-z]*Module\.bin$/i.test(String(rel || ''));
+}
+
+/** Защищённый модуль: версия поставщика без вопросов. */
+async function mergeProtectedModule(state, rel, { inMain, inTarget }) {
+  if (inTarget) {
+    await copyFrom(state, 'target', rel);
+    state.totals.fromVendor += 1;
+    record(state, rel, { action: 'from-vendor' });
+    return;
+  }
+  if (inMain) {
+    await removeFile(state, rel);
+    record(state, rel, {
+      action: 'protected-removed',
+      note: 'Защищённый модуль поставщика: в новой поставке его нет, поэтому удалён.',
+    });
+  }
 }
 
 /** Отличия от новой поставки, когда объединять нечем. */

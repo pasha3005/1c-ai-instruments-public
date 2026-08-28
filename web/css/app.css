@@ -1251,11 +1251,17 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
  */
 .mgw__places {
   flex: 0 0 auto;
-  /* Ровно четыре строки: пятая уже отнимает место у кода, ради которого
-     окно и открыли (требование владельца 28.08.2026). Дальше — прокрутка. */
-  max-height: calc(4 * 29px);
+  /*
+   * Ровно четыре строки плюс шапка — и ни половиной строки больше: обрезанная
+   * посередине строка читается как сбой отрисовки (замечание владельца
+   * 28.08.2026). Высоту можно потянуть за нижнюю границу, поэтому она задана
+   * переменной, а не числом.
+   */
+  --mgp-rows: 4;
+  height: var(--mgp-height, calc(var(--mgp-rows) * 30px + 26px));
+  min-height: 56px;
   overflow: auto;
-  margin-bottom: 10px;
+  margin-bottom: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
 }
@@ -1291,8 +1297,14 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgp__row--new { background: color-mix(in srgb, var(--diff-add) 14%, transparent); }
 .mgp__row--new:hover { background: color-mix(in srgb, var(--diff-add) 22%, transparent); }
 .mgp__how { color: var(--good); font-size: 11.5px; white-space: nowrap; }
-.mgp__pick { width: 232px; text-align: right; }
+.mgp__pick { width: 236px; text-align: right; }
+/* Кнопка отбора живёт в шапке таблицы и прижата к правому краю. */
+.mgp thead .mgp__pick { text-align: right; padding: 3px 6px; }
+.mgp thead .chip { font-size: 11px; padding: 3px 8px; white-space: nowrap; }
+/* Ширина одна на все строки: иначе «удалить» и «взять из новой поставки»
+   двигают колонку туда-сюда (замечание владельца 28.08.2026). */
 .mgp__select {
+  width: 100%;
   font: inherit;
   font-size: 12px;
   padding: 3px 6px;
@@ -1445,6 +1457,9 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
 .mgw.is-grown .mgw__result { margin-top: 0; flex: 1 1 auto; }
 
 /* Кнопка разворота: четыре стрелки от центра, а в нажатом виде — к центру. */
+/* «Показать весь модуль» стоит вплотную к развороту: обе про одно окно. */
+.mgw__result .mgw__pane-head #mgShowModule { margin-left: auto; }
+.mgw__result .mgw__pane-head #mgShowModule + .mgw__grow { margin-left: -4px; }
 .mgw__grow {
   width: 26px;
   height: 26px;
@@ -1687,3 +1702,35 @@ body.is-wide .view.is-active { flex: 1; min-height: 0; display: flex; flex-direc
   color: var(--on-signal);
   background: var(--warn);
 }
+
+/*
+ * Границы областей тянутся мышью.
+ *
+ * Разбор — рабочее место, и что важнее в конкретную минуту (список методов,
+ * сравнение или результат), знает только человек за монитором. Дерево слева
+ * не трогаем: его ширины хватает всегда.
+ */
+.mgw__grip {
+  flex: 0 0 auto;
+  height: 7px;
+  margin: 1px 0;
+  border-radius: 3px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background .12s ease;
+}
+.mgw__grip::before {
+  content: '';
+  display: block;
+  width: 46px;
+  height: 3px;
+  margin: 2px auto;
+  border-radius: 2px;
+  background: var(--line);
+}
+.mgw__grip:hover::before,
+.mgw__grip.is-dragging::before { background: var(--accent); }
+/* Пока тянут, выделять текст под курсором незачем. */
+body.is-resizing, body.is-resizing * { user-select: none !important; cursor: row-resize !important; }
+/* Развёрнутый результат прячет и сравнение, и его разделитель. */
+.mgw.is-grown #mgGripPanes { display: none; }

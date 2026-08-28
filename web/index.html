@@ -24,7 +24,7 @@
   сервером — и правки, которым нужен сервер, молча не работают (живой случай
   28.08.2026: пропали кнопки «Показать все» и «Показать весь модуль»).
 -->
-<meta name="app-version" content="1.97.0">
+<meta name="app-version" content="1.98.0">
 <link rel="manifest" href="app.webmanifest">
 <link rel="icon" type="image/svg+xml" href="icon-1c-ai.svg">
 <!--
@@ -1264,20 +1264,16 @@
             <div class="mgw__file-title" id="mgFileTitle">Выберите место слева</div>
             <div class="mgw__file-sub" id="mgFileSub"></div>
           </div>
-          <!--
-            Чем сузить список методов. Кнопка-переключатель: нажата — остаются
-            только дважды изменённые, отжата — виден весь состав модуля обеими
-            версиями. Стоит у заголовка, потому что относится к таблице
-            под ним.
-          -->
-          <div class="mgw__show" id="mgShow" hidden>
-            <button class="chip" type="button" id="mgShowAll"
-                    title="Оставить в списке только дважды изменённые методы">Только дважды изменённые</button>
-          </div>
           <button class="btn" id="mgBack" type="button">К обновлению</button>
         </div>
 
+        <!--
+          Список методов: своя шапка с кнопкой отбора и своя высота, которую
+          можно потянуть за нижнюю границу.
+        -->
         <div class="mgw__places" id="mgPlaces" hidden></div>
+        <div class="mgw__grip" id="mgGripPlaces" role="separator" aria-orientation="horizontal"
+             title="Потяните, чтобы изменить высоту списка"></div>
 
         <!--
           Две верхние колонки — ровно то, что показывает конфигуратор:
@@ -1320,6 +1316,9 @@
             <div class="mgw__code" id="mgTheirs"></div>
           </div>
         </div>
+
+        <div class="mgw__grip" id="mgGripPanes" role="separator" aria-orientation="horizontal"
+             title="Потяните, чтобы изменить высоту сравнения"></div>
 
         <div class="mgw__result" id="mgResultBox" hidden>
           <div class="mgw__pane-head">
